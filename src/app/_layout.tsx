@@ -1,18 +1,32 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router';
-import * as SplashScreen from 'expo-splash-screen';
-import { useColorScheme } from 'react-native';
+import { DarkTheme, Stack, ThemeProvider } from 'expo-router';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { StatusBar } from 'expo-status-bar';
 
-import { AnimatedSplashOverlay } from '@/components/animated-icon';
-import AppTabs from '@/components/app-tabs';
+import { relayColors } from '@/features/relay';
+import { EkhoProvider } from '@/lib';
 
-SplashScreen.preventAutoHideAsync();
+const ekhoTheme = {
+  ...DarkTheme,
+  colors: {
+    ...DarkTheme.colors,
+    primary: relayColors.cyan,
+    background: relayColors.background,
+    card: relayColors.background,
+    text: relayColors.primary,
+    border: relayColors.line,
+    notification: relayColors.red,
+  },
+};
 
-export default function TabLayout() {
-  const colorScheme = useColorScheme();
+export default function RootLayout() {
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <AnimatedSplashOverlay />
-      <AppTabs />
-    </ThemeProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+    <EkhoProvider>
+      <ThemeProvider value={ekhoTheme}>
+        <StatusBar style="light" />
+        <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: relayColors.background } }} />
+      </ThemeProvider>
+    </EkhoProvider>
+    </GestureHandlerRootView>
   );
 }
