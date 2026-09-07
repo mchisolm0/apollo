@@ -62,6 +62,13 @@
         "projectId": "abbd4780-e7ac-4ac1-8727-b278e6bd0ec3"
       }
     },
-    "owner": "mchisolm0"
+    "owner": "mchisolm0",
+    "runtimeVersion": {
+      "policy": "fingerprint"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/abbd4780-e7ac-4ac1-8727-b278e6bd0ec3",
+      "fallbackToCacheTimeout": 0
+    }
   }
 }

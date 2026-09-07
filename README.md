@@ -22,6 +22,8 @@ pnpm ios
 
 Use `pnpm android` for Android. Camera and SecureStore are native dependencies, so Expo Go is not the supported development path.
 
+For preview and production builds, versioning, and OTA publishing commands, see [Builds, versions, and OTA updates](docs/development/eas-updates.md).
+
 ## Connect Hermes
 
 Enable Hermes on loopback in `~/.hermes/.env`:

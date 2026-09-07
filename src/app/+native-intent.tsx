@@ -1,8 +1,8 @@
 export function redirectSystemPath({ path }: { path: string; initial: boolean }): string {
   try {
     const url = new URL(path, 'ekho://app');
-    if ((url.protocol === 'ekho:' || url.protocol === 'ekho-dev:') && url.hostname === 'pair') {
-      return `/connect?link=${encodeURIComponent(path.replace(/^ekho-dev:/, 'ekho:'))}`;
+    if (['ekho:', 'ekho-dev:', 'ekho-preview:'].includes(url.protocol) && url.hostname === 'pair') {
+      return `/connect?link=${encodeURIComponent(path.replace(/^ekho-(?:dev|preview):/, 'ekho:'))}`;
     }
     return path;
   } catch {

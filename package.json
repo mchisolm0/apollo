@@ -59,7 +59,12 @@
     "start:dev": "EKHO_APP_VARIANT=development expo start --dev-client --port 8085",
     "ios:dev": "EKHO_APP_VARIANT=development expo run:ios --port 8085",
     "build:ios:preview": "eas build --profile preview:device --platform ios",
-    "update:dev": "EKHO_APP_VARIANT=development eas update --channel ekho-dev --environment development"
+    "update:dev": "EKHO_APP_VARIANT=development eas update --channel ekho-dev --environment development",
+    "build:ios:production": "eas build --profile production --platform ios",
+    "build:android:preview": "eas build --profile preview:device --platform android",
+    "build:android:production": "eas build --profile production --platform android",
+    "update:preview": "EKHO_APP_VARIANT=preview eas update --channel preview --environment preview",
+    "update:production": "EKHO_APP_VARIANT=production eas update --channel production --environment production"
   },
   "private": true,
   "enriched-markdown": {

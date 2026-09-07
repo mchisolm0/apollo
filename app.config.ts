@@ -1,21 +1,22 @@
 import type { ConfigContext, ExpoConfig } from 'expo/config';
 
-/** Install the local test client beside Ekho, with its own pairing and draft state. */
+/** Each variant has its own installation, pairing, and draft storage. */
 export default function configure({ config }: ConfigContext): ExpoConfig {
-  const development = process.env.EKHO_APP_VARIANT === 'development';
+  const variant = process.env.EKHO_APP_VARIANT ?? 'production';
+  if (!['development', 'preview', 'production'].includes(variant)) {
+    throw new Error(`Unknown EKHO_APP_VARIANT: ${variant}`);
+  }
+  const suffix = variant === 'development' ? '.dev' : variant === 'preview' ? '.preview' : '';
   return {
     ...config,
-    name: development ? 'Ekho Dev' : config.name ?? 'Ekho',
+    name: variant === 'development' ? 'Ekho Dev' : variant === 'preview' ? 'Ekho Preview' : config.name ?? 'Ekho',
     slug: config.slug ?? 'ekho',
-    scheme: development ? 'ekho-dev' : 'ekho',
-    ...(development ? {
-      runtimeVersion: { policy: 'fingerprint' as const },
-      updates: {
-        url: 'https://u.expo.dev/abbd4780-e7ac-4ac1-8727-b278e6bd0ec3',
-        requestHeaders: { 'expo-channel-name': 'ekho-dev' },
-      },
-    } : {}),
-    ios: { ...config.ios, bundleIdentifier: development ? 'com.matthewchisolm.ekho.dev' : 'com.matthewchisolm.ekho' },
-    android: { ...config.android, package: development ? 'com.matthewchisolm.ekho.dev' : 'com.matthewchisolm.ekho' },
+    scheme: variant === 'development' ? 'ekho-dev' : variant === 'preview' ? 'ekho-preview' : 'ekho',
+    updates: {
+      ...config.updates,
+      requestHeaders: { 'expo-channel-name': variant === 'development' ? 'ekho-dev' : variant },
+    },
+    ios: { ...config.ios, bundleIdentifier: `com.matthewchisolm.ekho${suffix}` },
+    android: { ...config.android, package: `com.matthewchisolm.ekho${suffix}` },
   };
 }

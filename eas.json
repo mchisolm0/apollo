@@ -1,7 +1,7 @@
 {
   "cli": {
     "version": ">= 20.2.0",
-    "appVersionSource": "local",
+    "appVersionSource": "remote",
     "requireCommit": false
   },
   "build": {
@@ -19,23 +19,36 @@
       }
     },
     "production:internal": {
-      "distribution": "internal",
-      "environment": "production",
-      "ios": {
-        "buildConfiguration": "Release",
-        "simulator": false
-      }
+      "extends": "production",
+      "distribution": "internal"
     },
     "preview:device": {
+      "extends": "production",
       "distribution": "internal",
-      "environment": "development",
-      "channel": "ekho-dev",
+      "environment": "preview",
+      "channel": "preview",
       "env": {
-        "EKHO_APP_VARIANT": "development"
+        "EKHO_APP_VARIANT": "preview"
       },
+      "autoIncrement": false,
+      "android": {
+        "buildType": "apk"
+      }
+    },
+    "production": {
+      "distribution": "store",
+      "environment": "production",
+      "channel": "production",
+      "env": {
+        "EKHO_APP_VARIANT": "production"
+      },
+      "autoIncrement": true,
       "ios": {
         "buildConfiguration": "Release",
         "simulator": false
+      },
+      "android": {
+        "buildType": "app-bundle"
       }
     }
   }
