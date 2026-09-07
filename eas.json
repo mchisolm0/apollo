@@ -1,0 +1,42 @@
+{
+  "cli": {
+    "version": ">= 20.2.0",
+    "appVersionSource": "local",
+    "requireCommit": false
+  },
+  "build": {
+    "development:device": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "ios": {
+        "buildConfiguration": "Debug",
+        "simulator": false
+      },
+      "environment": "development",
+      "channel": "ekho-dev",
+      "env": {
+        "EKHO_APP_VARIANT": "development"
+      }
+    },
+    "production:internal": {
+      "distribution": "internal",
+      "environment": "production",
+      "ios": {
+        "buildConfiguration": "Release",
+        "simulator": false
+      }
+    },
+    "preview:device": {
+      "distribution": "internal",
+      "environment": "development",
+      "channel": "ekho-dev",
+      "env": {
+        "EKHO_APP_VARIANT": "development"
+      },
+      "ios": {
+        "buildConfiguration": "Release",
+        "simulator": false
+      }
+    }
+  }
+}

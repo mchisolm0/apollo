@@ -9,7 +9,11 @@
       "@/assets/*": [
         "./assets/*"
       ]
-    }
+    },
+    "allowImportingTsExtensions": true,
+    "types": [
+      "node"
+    ]
   },
   "include": [
     "**/*.ts",
