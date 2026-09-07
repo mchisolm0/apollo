@@ -1,0 +1,300 @@
+import { normalizeEndpoint } from './endpoint';
+import EventSource, { type EventSourceListener } from 'react-native-sse';
+
+import {
+  booleanValue,
+  errorMessage,
+  isJsonObject,
+  numberValue,
+  stringValue,
+} from './protocol';
+import type {
+  ApprovalOptions,
+  HermesApprovalRequest,
+  HermesApprovalResponse,
+  HermesCapabilities,
+  HermesMessage,
+  HermesRunEvent,
+  HermesRunState,
+  HermesRunStatus,
+  HermesSession,
+  StartRunOptions,
+} from './types';
+
+export class HermesRequestError extends Error {
+  readonly status: number;
+  readonly code?: string;
+
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = 'HermesRequestError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+export interface RunEventSubscription {
+  close(): void;
+}
+
+export interface RunEventHandlers {
+  onEvent(event: HermesRunEvent): void;
+  onError?(error: Error): void;
+}
+
+function parseCapabilities(value: unknown): HermesCapabilities {
+  if (!isJsonObject(value)) throw new Error('Hermes capabilities response was invalid');
+  const features: Record<string, boolean | string | Record<string, unknown>> = {};
+  if (isJsonObject(value.features)) {
+    for (const [key, feature] of Object.entries(value.features)) {
+      if (typeof feature === 'boolean' || typeof feature === 'string' || isJsonObject(feature)) {
+        features[key] = feature;
+      }
+    }
+  } else if (Array.isArray(value.features)) {
+    for (const feature of value.features) {
+      if (typeof feature === 'string') features[feature] = true;
+    }
+  }
+  const endpoints: Record<string, { method?: string; path?: string }> = {};
+  if (isJsonObject(value.endpoints)) {
+    for (const [key, endpoint] of Object.entries(value.endpoints)) {
+      if (isJsonObject(endpoint)) {
+        endpoints[key] = { method: stringValue(endpoint.method), path: stringValue(endpoint.path) };
+      }
+    }
+  }
+  return {
+    object: stringValue(value.object),
+    platform: stringValue(value.platform),
+    model: stringValue(value.model),
+    auth: isJsonObject(value.auth)
+      ? { type: stringValue(value.auth.type), required: booleanValue(value.auth.required) }
+      : undefined,
+    features,
+    endpoints,
+  };
+}
+
+function parseSession(value: unknown): HermesSession {
+  if (!isJsonObject(value) || typeof value.id !== 'string') throw new Error('Hermes session response was invalid');
+  return {
+    id: value.id,
+    source: stringValue(value.source),
+    model: stringValue(value.model),
+    title: stringValue(value.title),
+    startedAt: numberValue(value.started_at),
+    endedAt: numberValue(value.ended_at),
+    endReason: stringValue(value.end_reason),
+    messageCount: numberValue(value.message_count),
+    lastActive: numberValue(value.last_active),
+    parentSessionId: stringValue(value.parent_session_id),
+    pinned: booleanValue(value.pinned),
+    archived: booleanValue(value.archived),
+    hidden: booleanValue(value.hidden),
+    preview: stringValue(value.preview),
+  };
+}
+
+function parseMessage(value: unknown): HermesMessage {
+  if (!isJsonObject(value) || typeof value.role !== 'string') throw new Error('Hermes message response was invalid');
+  const toolCalls = Array.isArray(value.tool_calls)
+    ? value.tool_calls.filter(isJsonObject)
+    : undefined;
+  return {
+    id: stringValue(value.id),
+    sessionId: stringValue(value.session_id),
+    role: value.role,
+    content: stringValue(value.content),
+    toolCallId: stringValue(value.tool_call_id),
+    toolName: stringValue(value.tool_name),
+    toolCalls,
+    timestamp: numberValue(value.timestamp),
+    finishReason: stringValue(value.finish_reason),
+    reasoning: stringValue(value.reasoning),
+    reasoningContent: stringValue(value.reasoning_content),
+    displayKind: stringValue(value.display_kind),
+  };
+}
+
+const runStates = new Set<HermesRunState>([
+  'queued', 'started', 'running', 'waiting_for_approval', 'stopping',
+  'completed', 'failed', 'cancelled', 'interrupted',
+]);
+
+function parseRun(value: unknown): HermesRunStatus {
+  if (!isJsonObject(value) || typeof value.run_id !== 'string' || typeof value.status !== 'string') {
+    throw new Error('Hermes run response was invalid');
+  }
+  if (!runStates.has(value.status as HermesRunState)) throw new Error(`Unknown Hermes run status: ${value.status}`);
+  const status = value.status as HermesRunState;
+  const approval = isJsonObject(value.approval) ? value.approval as HermesApprovalRequest : undefined;
+  const usage = isJsonObject(value.usage)
+    ? Object.fromEntries(Object.entries(value.usage).flatMap(([key, item]) => typeof item === 'number' ? [[key, item]] : []))
+    : undefined;
+  return {
+    runId: value.run_id,
+    status,
+    sessionId: stringValue(value.session_id),
+    model: stringValue(value.model),
+    output: stringValue(value.output),
+    error: stringValue(value.error),
+    lastEvent: stringValue(value.last_event),
+    createdAt: numberValue(value.created_at),
+    updatedAt: numberValue(value.updated_at),
+    approval,
+    usage,
+  };
+}
+
+function parseEvent(value: unknown): HermesRunEvent | undefined {
+  if (!isJsonObject(value) || typeof value.event !== 'string') return undefined;
+  return {
+    ...value,
+    event: value.event,
+    runId: stringValue(value.run_id),
+    timestamp: numberValue(value.timestamp),
+    text: stringValue(value.text),
+    tool: stringValue(value.tool),
+    preview: stringValue(value.preview),
+  };
+}
+
+function createIdempotencyKey(): string {
+  const bytes = new Uint8Array(16);
+  const cryptoApi = (globalThis as typeof globalThis & {
+    crypto?: { getRandomValues(values: Uint8Array): Uint8Array };
+  }).crypto;
+  if (cryptoApi) cryptoApi.getRandomValues(bytes);
+  else for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+export class HermesClient {
+  private readonly baseUrl: string;
+  private readonly token: string;
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(options: { endpoint: string; token: string; fetchImpl?: typeof fetch }) {
+    this.baseUrl = normalizeEndpoint(options.endpoint);
+    this.token = options.token;
+    this.fetchImpl = options.fetchImpl ?? fetch;
+  }
+
+  private async request(path: string, init: RequestInit = {}): Promise<unknown> {
+    const response = await this.fetchImpl(`${this.baseUrl}/${path.replace(/^\/+/, '')}`, {
+      ...init,
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${this.token}`,
+        ...(init.headers ?? {}),
+      },
+    });
+    const body: unknown = await response.json().catch(() => undefined);
+    if (!response.ok) {
+      const code = isJsonObject(body) && isJsonObject(body.error) ? stringValue(body.error.code) : undefined;
+      throw new HermesRequestError(errorMessage(body, `Hermes request failed (${response.status})`), response.status, code);
+    }
+    return body;
+  }
+
+  async capabilities(): Promise<HermesCapabilities> {
+    return parseCapabilities(await this.request('/v1/capabilities'));
+  }
+
+  async sessions(): Promise<readonly HermesSession[]> {
+    const body = await this.request('/api/sessions?limit=200');
+    if (!isJsonObject(body) || !Array.isArray(body.data)) throw new Error('Hermes sessions response was invalid');
+    return body.data.map(parseSession);
+  }
+
+  async sessionMessages(sessionId: string): Promise<readonly HermesMessage[]> {
+    const body = await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/messages`);
+    if (!isJsonObject(body) || !Array.isArray(body.data)) throw new Error('Hermes messages response was invalid');
+    return body.data.map(parseMessage);
+  }
+
+  async createSession(options: { id?: string; title?: string } = {}): Promise<HermesSession> {
+    const body = await this.request('/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(options),
+    });
+    if (!isJsonObject(body)) throw new Error('Hermes create session response was invalid');
+    return parseSession(body.session);
+  }
+
+  async startRun(input: string, options: StartRunOptions = {}): Promise<HermesRunStatus> {
+    if (!input.trim()) throw new Error('Run input cannot be empty');
+    const payload: Record<string, unknown> = { input };
+    if (options.sessionId) payload.session_id = options.sessionId;
+    if (options.instructions) payload.instructions = options.instructions;
+    if (options.conversationHistory) payload.conversation_history = options.conversationHistory;
+    if (options.previousResponseId) payload.previous_response_id = options.previousResponseId;
+    if (options.model) payload.model = options.model;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': options.idempotencyKey ?? createIdempotencyKey(),
+    };
+    if (options.sessionKey) headers['X-Hermes-Session-Key'] = options.sessionKey;
+    return parseRun(await this.request('/v1/runs', { method: 'POST', headers, body: JSON.stringify(payload) }));
+  }
+
+  runStatus(runId: string): Promise<HermesRunStatus> {
+    return this.request(`/v1/runs/${encodeURIComponent(runId)}`).then(parseRun);
+  }
+
+  async stopRun(runId: string): Promise<HermesRunStatus> {
+    return parseRun(await this.request(`/v1/runs/${encodeURIComponent(runId)}/stop`, { method: 'POST' }));
+  }
+
+  async approveRun(runId: string, choice: 'once' | 'session' | 'always' | 'deny', options: ApprovalOptions = {}): Promise<HermesApprovalResponse> {
+    const body: Record<string, unknown> = { choice };
+    if (options.requestId) body.request_id = options.requestId;
+    if (options.all !== undefined) body.all = options.all;
+    if (options.resolveAll !== undefined) body.resolve_all = options.resolveAll;
+    const response = await this.request(`/v1/runs/${encodeURIComponent(runId)}/approval`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (!isJsonObject(response) || typeof response.run_id !== 'string' || typeof response.choice !== 'string' || typeof response.resolved !== 'number') {
+      throw new Error('Hermes approval response was invalid');
+    }
+    if (!['once', 'session', 'always', 'deny'].includes(response.choice)) {
+      throw new Error('Hermes approval response contained an invalid choice');
+    }
+    return {
+      runId: response.run_id,
+      choice: response.choice as HermesApprovalResponse['choice'],
+      resolved: response.resolved,
+      requestId: stringValue(response.request_id),
+    };
+  }
+
+  subscribeRunEvents(runId: string, handlers: RunEventHandlers): RunEventSubscription {
+    const source = new EventSource<never>(`${this.baseUrl}/v1/runs/${encodeURIComponent(runId)}/events`, {
+      headers: { Authorization: `Bearer ${this.token}` },
+      pollingInterval: 5_000,
+    });
+    const onMessage: EventSourceListener<never, 'message'> = (event) => {
+      if (typeof event.data !== 'string' || !event.data) return;
+      try {
+        const parsed = parseEvent(JSON.parse(event.data) as unknown);
+        if (parsed) handlers.onEvent(parsed);
+      } catch (error) {
+        handlers.onError?.(error instanceof Error ? error : new Error('Invalid Hermes event'));
+      }
+    };
+    const onError: EventSourceListener<never, 'error'> = (event) => {
+      const message = 'message' in event && typeof event.message === 'string' ? event.message : 'Hermes event stream failed';
+      handlers.onError?.(new Error(message));
+    };
+    source.addEventListener('message', onMessage);
+    source.addEventListener('error', onError);
+    return {
+      close: () => {
+        source.removeAllEventListeners();
+        source.close();
+      },
+    };
+  }
+}

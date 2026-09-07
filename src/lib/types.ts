@@ -1,0 +1,158 @@
+export type AgentTransport = 'tailscale' | 'https' | 'lan';
+
+export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'offline' | 'revoked';
+
+export interface AgentEndpoint {
+  url: string;
+  transport: AgentTransport;
+}
+
+/** Non-secret metadata. The token is intentionally stored separately. */
+export interface AgentRecord {
+  id: string;
+  label: string;
+  hostname?: string;
+  endpoint: AgentEndpoint;
+  createdAt: number;
+  lastConnectedAt?: number;
+  activeRunId?: string;
+  capabilities?: HermesCapabilities;
+}
+
+export interface PairingDescriptor {
+  id: string;
+  label: string;
+  hostname?: string;
+  connectorVersion?: string;
+  capabilities?: HermesCapabilities;
+  exchangePath: string;
+}
+
+export interface PairingInput {
+  endpoint: string;
+  bootstrapToken: string;
+}
+
+export interface PairingResult {
+  descriptor: PairingDescriptor;
+  accessToken: string;
+  deviceId?: string;
+  expiresIn?: number;
+}
+
+export interface HermesCapabilities {
+  object?: string;
+  platform?: string;
+  model?: string;
+  auth?: { type?: string; required?: boolean };
+  features: Record<string, boolean | string | Record<string, unknown>>;
+  endpoints?: Record<string, { method?: string; path?: string }>;
+}
+
+export interface HermesSession {
+  id: string;
+  source?: string;
+  model?: string;
+  title?: string;
+  startedAt?: number;
+  endedAt?: number;
+  endReason?: string;
+  messageCount?: number;
+  lastActive?: number;
+  parentSessionId?: string;
+  pinned?: boolean;
+  archived?: boolean;
+  hidden?: boolean;
+  preview?: string;
+}
+
+export interface HermesMessage {
+  id?: string;
+  sessionId?: string;
+  role: string;
+  content?: string;
+  toolCallId?: string;
+  toolName?: string;
+  toolCalls?: readonly Record<string, unknown>[];
+  timestamp?: number;
+  finishReason?: string;
+  reasoning?: string;
+  reasoningContent?: string;
+  displayKind?: string;
+}
+
+export type HermesRunState =
+  | 'queued'
+  | 'started'
+  | 'running'
+  | 'waiting_for_approval'
+  | 'stopping'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted';
+
+export interface HermesRunStatus {
+  runId: string;
+  status: HermesRunState;
+  sessionId?: string;
+  model?: string;
+  output?: string;
+  error?: string;
+  lastEvent?: string;
+  createdAt?: number;
+  updatedAt?: number;
+  approval?: HermesApprovalRequest;
+  usage?: Record<string, number>;
+}
+
+export interface HermesApprovalRequest {
+  requestId?: string;
+  command?: string;
+  tool?: string;
+  description?: string;
+  choices?: readonly string[];
+  [key: string]: unknown;
+}
+
+export interface HermesRunEvent {
+  event: string;
+  runId?: string;
+  timestamp?: number;
+  text?: string;
+  tool?: string;
+  preview?: string;
+  [key: string]: unknown;
+}
+
+export interface StartRunOptions {
+  sessionId?: string;
+  instructions?: string;
+  conversationHistory?: readonly { role: string; content: string }[];
+  previousResponseId?: string;
+  model?: string;
+  sessionKey?: string;
+  idempotencyKey?: string;
+}
+
+export interface ApprovalOptions {
+  requestId?: string;
+  all?: boolean;
+  resolveAll?: boolean;
+}
+
+export interface HermesApprovalResponse {
+  runId: string;
+  choice: 'once' | 'session' | 'always' | 'deny';
+  resolved: number;
+  requestId?: string;
+}
+
+export interface AgentRuntimeState {
+  status: ConnectionStatus;
+  error?: string;
+  capabilities?: HermesCapabilities;
+  sessions: readonly HermesSession[];
+  activeRun?: HermesRunStatus;
+  events: readonly HermesRunEvent[];
+}
