@@ -1,0 +1,24 @@
+{
+  "runtime": "v24.19.0",
+  "corpus": "80 repeated mixed Markdown blocks: headings, prose, emphasis, links, images, lists, TypeScript fences and GFM tables",
+  "results": [
+    {
+      "name": "marked@18.0.11 lexer",
+      "bytes": 16108,
+      "warmups": 10,
+      "iterations": 30,
+      "medianMs": 0.973,
+      "p95Ms": 1.185,
+      "minMs": 0.803
+    },
+    {
+      "name": "markdown-to-jsx@9.10.2 parser",
+      "bytes": 16108,
+      "warmups": 10,
+      "iterations": 30,
+      "medianMs": 0.279,
+      "p95Ms": 0.385,
+      "minMs": 0.232
+    }
+  ]
+}

@@ -1,56 +1,93 @@
-# Welcome to your Expo app 👋
+# Ekho
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Ekho is a private mobile client for [Hermes Agent](https://hermes-agent.nousresearch.com/docs/). It pairs each phone with its own revocable credential, keeps the Hermes root API key on the host, and connects over Tailscale Serve or another private HTTPS route.
 
-## Get started
+## What works
 
-1. Install dependencies
+- QR, deep-link, and paste pairing with identity confirmation
+- Multiple paired agents and per-device revocation
+- Hermes sessions, history, runs, SSE progress, stop, and approvals
+- Foreground reconciliation, explicit retry, and active-run recovery
+- SecureStore credentials and AsyncStorage agent metadata
+- LegendList for session, agent, and run timelines
 
-   ```bash
-   npm install
-   ```
+## Run the app
 
-2. Start the app
+Requirements: Node 22+, pnpm, Xcode for iOS, or Android Studio for Android.
 
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
-```bash
-npm run reset-project
+```sh
+pnpm install
+pnpm ios
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Use `pnpm android` for Android. Camera and SecureStore are native dependencies, so Expo Go is not the supported development path.
 
-### Other setup steps
+## Connect Hermes
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+Enable Hermes on loopback in `~/.hermes/.env`:
 
-## Learn more
+```sh
+API_SERVER_ENABLED=true
+API_SERVER_KEY=replace-with-a-long-random-secret
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+Start Hermes:
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+```sh
+hermes gateway
+```
 
-## Join the community
+To start the connector automatically when you log in and restart it after a
+crash, run this once from the repository. Hermes remains managed by its
+existing gateway process:
 
-Join our community of developers creating universal apps.
+```sh
+pnpm install:macos-services
+```
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+This installs one per-user macOS LaunchAgent for Ekho. It loads
+`~/.hermes/.env`, so the connector uses the same `API_SERVER_KEY` as Hermes.
+Logs are written to `~/Library/Logs/ekho/`.
+
+In this repository, start the connector with the same key:
+
+```sh
+HERMES_API_KEY=replace-with-a-long-random-secret node connector/cli.mjs serve
+```
+
+The connector accepts only a loopback Hermes URL and never returns that root key to the app. Its local admin credential is created automatically in `~/.config/ekho/admin-secret`.
+
+With Tailscale installed, connected, and MagicDNS enabled, run in another terminal:
+
+```sh
+node connector/cli.mjs pair --tailscale --name "My phone"
+```
+
+Scan the printed QR code in Ekho. The fallback link can be pasted into the app or opened directly on the phone. The pairing token expires after five minutes and works once.
+
+Without Tailscale, pass an HTTPS endpoint that already routes privately to the connector:
+
+```sh
+node connector/cli.mjs pair --public-base-url https://agent.example.com
+```
+
+Do not expose the connector with Tailscale Funnel. Tailscale Serve stays private to the tailnet.
+
+## Manage devices
+
+```sh
+node connector/cli.mjs devices
+node connector/cli.mjs revoke DEVICE_ID
+```
+
+For connector options and the HTTP contract, see [connector/README.md](connector/README.md). The architectural and security rationale is in [docs/research/hermes-mobile-architecture.md](docs/research/hermes-mobile-architecture.md).
+
+## Verify
+
+```sh
+pnpm typecheck
+pnpm lint
+pnpm test:connector
+```
+
+Integrated mobile verification follows [.agents/skills/test-ekho-mobile/SKILL.md](.agents/skills/test-ekho-mobile/SKILL.md).
