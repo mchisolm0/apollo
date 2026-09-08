@@ -1,3 +1,4 @@
+import { attachmentMessage, type Attachment, type AttachmentSource } from './attachments';
 import {
   createContext,
   useCallback,
@@ -10,6 +11,7 @@ import {
 } from 'react';
 import { AppState } from 'react-native';
 
+import { reconcileHistory } from './message-history';
 import { AgentCatalog } from './catalog';
 import { eventTransportIdentity, isRunActive, statusAfterEvent } from './run-state';
 import { PairingClient, parsePairingLink } from './pairing';
@@ -37,6 +39,8 @@ export interface EkhoContextValue {
   retryAgent(agentId: string): Promise<void>;
   startRun(agentId: string, input: string, options?: StartRunOptions): Promise<HermesRunStatus>;
   createSession(agentId: string, title?: string): Promise<string>;
+  uploadAttachment(agentId: string, file: { name: string; mimeType: string; data: string }): Promise<Attachment>;
+  attachmentSource(agentId: string, id: string): AttachmentSource | undefined;
   sessionMessages(agentId: string, sessionId: string): Promise<readonly HermesMessage[]>;
   stopRun(agentId: string, runId?: string): Promise<HermesRunStatus>;
   approveRun(
@@ -77,6 +81,7 @@ export function EkhoProvider({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const startingRuns = useRef(new Set<string>());
+  const newSessions = useRef(new Set<string>());
   const clients = useRef(new Map<string, HermesClient>());
   const subscriptions = useRef(new Map<string, RunEventSubscription & { runId: string }>());
 
@@ -137,7 +142,7 @@ export function EkhoProvider({
               ]);
               if (closed) return;
               updateRuntime(agent.id, { sessions });
-              if (history && status.sessionId) setMessages((current) => ({ ...current, [`${agent.id}:${status.sessionId}`]: history }));
+              if (history && status.sessionId) setMessages((current) => ({ ...current, [`${agent.id}:${status.sessionId}`]: reconcileHistory(current[`${agent.id}:${status.sessionId}`] ?? [], history) }));
               closeSubscription(agent.id);
             }
           }).catch(() => undefined);
@@ -145,6 +150,8 @@ export function EkhoProvider({
       },
       onError: (streamError) => {
         if (closed) return;
+        // Hermes consumes and removes disconnected streams. Recover by polling.
+        source.close();
         if (timer) clearTimeout(timer);
         flush();
         updateRuntime(agent.id, { status: 'offline', error: streamError.message });
@@ -158,7 +165,7 @@ export function EkhoProvider({
             if (closed) return;
             pollDelay = 3_000;
             updateRuntime(agent.id, { status: 'connected', activeRun: status, error: undefined });
-            if (history && status.sessionId) setMessages((current) => ({ ...current, [`${agent.id}:${status.sessionId}`]: history }));
+            if (history && status.sessionId) setMessages((current) => ({ ...current, [`${agent.id}:${status.sessionId}`]: reconcileHistory(current[`${agent.id}:${status.sessionId}`] ?? [], history) }));
             if (!isRunActive(status.status)) closeSubscription(agent.id);
           } catch (error) {
             if (!closed) {
@@ -213,7 +220,7 @@ export function EkhoProvider({
       setAgents(catalog.list());
       if (activeRun?.sessionId) {
         const history = await client.sessionMessages(activeRun.sessionId);
-        setMessages((current) => ({ ...current, [`${agentId}:${activeRun.sessionId}`]: history }));
+        setMessages((current) => ({ ...current, [`${agentId}:${activeRun.sessionId}`]: reconcileHistory(current[`${agentId}:${activeRun.sessionId}`] ?? [], history) }));
       }
       setRuntime((current) => ({ ...current, [agentId]: { ...current[agentId], status: 'connected', capabilities, sessions, activeRun, events: current[agentId]?.activeRun?.runId === activeRun?.runId ? current[agentId]?.events ?? [] : [], error: undefined } }));
       if (activeRun && isRunActive(activeRun.status)) subscribe(updated, client, activeRun.runId);
@@ -295,17 +302,37 @@ export function EkhoProvider({
       if (!client) throw new Error('Agent is offline');
       const result = await client.startRun(input, options);
       const status = { ...result, sessionId: result.sessionId ?? options?.sessionId };
-      await catalog.update(agentId, { activeRunId: status.runId });
-      setAgents(catalog.list());
       updateRuntime(agentId, { status: 'connected', activeRun: status, events: [] });
       if (status.sessionId) {
         const key = `${agentId}:${status.sessionId}`;
-        setMessages((current) => ({ ...current, [key]: [...(current[key] ?? []), { id: `run-user-${status.runId}`, role: 'user', content: input, timestamp: status.createdAt }] }));
+        setMessages((current) => ({ ...current, [key]: [...(current[key] ?? []), { id: `run-user-${status.runId}`, role: 'user', content: attachmentMessage(input, options?.attachments), timestamp: status.createdAt }] }));
       }
       subscribe(agent, client, status.runId);
+      if (status.sessionId && newSessions.current.delete(`${agentId}:${status.sessionId}`)) {
+        const sessionId = status.sessionId;
+        void client.generateSessionTitle(sessionId, input || options?.attachments?.map((file) => file.name).join(', ') || 'Attached files').then((title) => {
+          if (title) setRuntime((current) => {
+            const state = current[agentId];
+            return state ? { ...current, [agentId]: { ...state, sessions: state.sessions.map((session) => session.id === sessionId ? { ...session, title } : session) } } : current;
+          });
+        }).catch(() => undefined);
+      }
+      await catalog.update(agentId, { activeRunId: status.runId });
+      setAgents(catalog.list());
       return status;
     } finally { startingRuns.current.delete(agentId); }
   }, [catalog, refreshAgent, runtime, subscribe, updateRuntime]);
+
+  const uploadAttachment = useCallback(async (agentId: string, file: { name: string; mimeType: string; data: string }) => {
+    const client = clients.current.get(agentId);
+    if (!client) throw new Error('Reconnect to upload attachments.');
+    try { return await client.uploadAttachment(file); }
+    catch (error) {
+      if (error instanceof HermesRequestError && error.status === 404) throw new Error('Update the connector on this agent to send attachments.');
+      throw error;
+    }
+  }, []);
+  const attachmentSource = useCallback((agentId: string, id: string) => clients.current.get(agentId)?.attachmentSource(id), []);
 
   const stopRun = useCallback(async (agentId: string, runId?: string): Promise<HermesRunStatus> => {
     const client = clients.current.get(agentId);
@@ -324,6 +351,7 @@ export function EkhoProvider({
     }
     if (!client) throw new Error('Agent is offline');
     const session = await client.createSession(title ? { title } : {});
+    newSessions.current.add(`${agentId}:${session.id}`);
     updateRuntime(agentId, { sessions: [session, ...(runtime[agentId]?.sessions ?? [])] });
     return session.id;
   }, [refreshAgent, runtime, updateRuntime]);
@@ -336,7 +364,7 @@ export function EkhoProvider({
     }
     if (!client) throw new Error('Agent is offline');
     const loaded = await client.sessionMessages(sessionId);
-    setMessages((current) => ({ ...current, [`${agentId}:${sessionId}`]: loaded }));
+    setMessages((current) => ({ ...current, [`${agentId}:${sessionId}`]: reconcileHistory(current[`${agentId}:${sessionId}`] ?? [], loaded) }));
     return loaded;
   }, [refreshAgent]);
 
@@ -389,10 +417,12 @@ export function EkhoProvider({
     startRun,
     createSession,
     sessionMessages,
+    uploadAttachment,
+    attachmentSource,
     stopRun,
     approveRun,
     removeAgent,
-  }), [agents, approveRun, createSession, error, loading, messages, pair, refreshAgent, removeAgent, retryAgent, runtime, sessionMessages, startRun, stopRun]);
+  }), [agents, attachmentSource, uploadAttachment, approveRun, createSession, error, loading, messages, pair, refreshAgent, removeAgent, retryAgent, runtime, sessionMessages, startRun, stopRun]);
 
   return <EkhoContext.Provider value={value}>{children}</EkhoContext.Provider>;
 }

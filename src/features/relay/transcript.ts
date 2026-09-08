@@ -33,6 +33,7 @@ export interface TranscriptProjectionInput {
   readonly runId?: string;
   /** Unix seconds or milliseconds, used to distinguish an older equal answer. */
   readonly runStartedAt?: number;
+  readonly runOutput?: string;
   readonly running: boolean;
 }
 
@@ -497,6 +498,10 @@ function seconds(value: number): number {
 }
 
 function withoutReplay(history: HistoryCache, live: LiveCache, input: TranscriptProjectionInput): readonly TranscriptRow[] {
+  const currentRunFinal = input.runStartedAt !== undefined
+    && history.lastAssistantTimestamp !== undefined
+    && seconds(history.lastAssistantTimestamp) >= seconds(input.runStartedAt);
+  if (!input.running && currentRunFinal && input.runOutput && history.lastAssistantText === input.runOutput) return history.rows;
   const liveRows = [...live.rows];
   const lastAssistantIndex = liveRows.findLastIndex((row) => row.kind === 'assistant');
   const lastAssistant = lastAssistantIndex >= 0 ? liveRows[lastAssistantIndex] : undefined;

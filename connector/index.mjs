@@ -1,3 +1,5 @@
+import { saveAttachment, readAttachment, MAX_UPLOAD_BODY_BYTES } from './attachments.mjs';
+import { generateThreadTitle } from './thread-title.mjs';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { execFile } from "node:child_process";
@@ -183,6 +185,23 @@ export function createConnectorServer(options = {}) {
   const label = options.label ?? process.env.EKHO_AGENT_LABEL ?? hostname();
   const store = options.store ?? new StateStore(options.statePath ?? process.env.EKHO_STATE_FILE ?? defaultStatePath(), label);
 
+  const attachmentDirectory = options.attachmentDirectory ?? `${dirname(options.statePath ?? process.env.EKHO_STATE_FILE ?? defaultStatePath())}/attachments`;
+
+  async function attachmentRequest(req, res, id) {
+    if (!await authenticateDevice(req)) return error(res, 401, "device authentication required", "unauthorized");
+    if (req.method === "POST" && !id) {
+      const attachment = await saveAttachment(attachmentDirectory, parseJson(await readBody(req, MAX_UPLOAD_BODY_BYTES)));
+      return json(res, 201, { attachment });
+    }
+    if (req.method === "GET" && id) {
+      const { attachment, bytes } = await readAttachment(attachmentDirectory, id);
+      const image = /^(image\/(png|jpeg|gif|webp|heic|heif))$/.test(attachment.mimeType);
+      res.writeHead(200, { "content-type": image ? attachment.mimeType : "application/octet-stream", "content-length": bytes.length, "cache-control": "private, no-store", "x-content-type-options": "nosniff", "content-disposition": image ? "inline" : "attachment" });
+      return res.end(bytes);
+    }
+    return error(res, 404, "Attachment route not found.");
+  }
+
   async function authenticateDevice(req) {
     const presented = bearer(req.headers);
     if (!presented) return null;
@@ -271,6 +290,17 @@ export function createConnectorServer(options = {}) {
     return json(res, 201, { device_id: result.device.id, device_name: result.device.name, access_token: result.accessToken, token_type: "Bearer", scopes: result.device.scopes });
   }
 
+  let titleBusy = false;
+  async function threadTitle(req, res) {
+    if (!await authenticateDevice(req)) return error(res, 401, "device authentication required", "unauthorized");
+    const body = parseJson(await readBody(req, 32 * 1024));
+    if (typeof body.input !== "string" || !body.input.trim() || body.input.length > 8000) return error(res, 400, "input must be 1 to 8000 characters");
+    if (titleBusy) return json(res, 200, { title: null });
+    titleBusy = true;
+    try { return json(res, 200, { title: await (options.generateThreadTitle ?? generateThreadTitle)(body.input) ?? null }); }
+    finally { titleBusy = false; }
+  }
+
   async function proxy(req, res, url) {
     if (!validProxyRoute(req.method, url.pathname)) return error(res, 404, "route not available through Ekho", "not_found");
     const device = await authenticateDevice(req);
@@ -307,6 +337,9 @@ export function createConnectorServer(options = {}) {
       if (req.method === "GET" && url.pathname === PUBLIC_DESCRIPTOR_PATH) return json(res, 200, await descriptor());
       if (req.method === "POST" && url.pathname === EXCHANGE_PATH) return exchange(req, res);
       if (url.pathname.startsWith("/admin/")) return handleAdmin(req, res, url);
+      if (req.method === "POST" && url.pathname === "/v1/ekho/thread-title") return threadTitle(req, res);
+      const attachmentRoute = url.pathname.match(/^\/v1\/ekho\/attachments(?:\/([a-f0-9-]{36}))?$/);
+      if (attachmentRoute) return await attachmentRequest(req, res, attachmentRoute[1]);
       return proxy(req, res, url);
     } catch (cause) {
       if (!res.headersSent) error(res, cause.status ?? 500, cause.message ?? "internal connector error", "internal_error");

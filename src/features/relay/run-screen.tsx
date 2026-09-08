@@ -1,3 +1,5 @@
+import { splitAttachmentMessage, type AttachmentSource, type DraftAttachment } from '../../lib/attachments';
+import { AttachmentStrip } from './attachment-strip';
 import { memo, useCallback, useRef, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
@@ -15,6 +17,11 @@ export type RunScreenProps = {
   connection: ConnectionState;
   approval?: ApprovalRequest;
   draft?: string;
+  attachments?: readonly DraftAttachment[];
+  isPicking?: boolean;
+  onAddAttachments?: () => void;
+  onRemoveAttachment?: (id: string) => void;
+  attachmentSource?: (id: string) => AttachmentSource | undefined;
   agentName?: string;
   isSending?: boolean;
   isLoading?: boolean;
@@ -32,27 +39,26 @@ export type RunScreenProps = {
   onDeny?: (approval: ApprovalRequest) => void;
 };
 
-export function RunScreen({ session, events, connection, approval, draft = '', agentName, isSending = false, isLoading = false, isActing = false, statusLabel, error, onBack, onSessionActions, onDraftChange, onSend, onStop, onReconnect, onAgentDetails, onApprove, onDeny }: RunScreenProps) {
+export function RunScreen({ session, events, connection, approval, draft = '', attachments = [], isPicking = false, onAddAttachments, onRemoveAttachment, attachmentSource, agentName, isSending = false, isLoading = false, isActing = false, statusLabel, error, onBack, onSessionActions, onDraftChange, onSend, onStop, onReconnect, onAgentDetails, onApprove, onDeny }: RunScreenProps) {
   const { fontScale } = useWindowDimensions();
   const list = useRef<LegendListRef>(null);
   const dragging = useRef(false);
   const [following, setFollowing] = useState(true);
   const suspendFollow = useCallback(() => setFollowing(false), []);
-  const renderItem = useCallback(({ item }: { item: TranscriptRow }) => <TranscriptEntry row={item} onDisclosure={suspendFollow} />, [suspendFollow]);
-  const canSend = connection === 'connected' && !isSending && !isActing && Boolean(draft.trim());
+  const renderItem = useCallback(({ item }: { item: TranscriptRow }) => <TranscriptEntry row={item} agentName={agentName ?? 'Hermes'} attachmentSource={attachmentSource} onDisclosure={suspendFollow} />, [suspendFollow, agentName, attachmentSource]);
+  const canSend = connection === 'connected' && !isSending && !isActing && !isPicking && Boolean(draft.trim() || attachments.length);
   return (
-    <KeyboardAvoidingView style={uiStyles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <KeyboardAvoidingView key={fontScale} style={uiStyles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={styles.navigation}>
         <Pressable accessibilityRole="button" accessibilityLabel="Back to threads" onPress={onBack} style={styles.back}><SymbolView name={{ ios: 'chevron.left', android: 'arrow_back', web: 'arrow_back' }} size={21} tintColor={colors.primary} /></Pressable>
         <View style={styles.heading}>
-          <Text accessibilityRole="header" style={styles.threadTitle} numberOfLines={1}>{session.title}</Text>
-          <View style={styles.agentLine}><ConnectionMark state={connection} /><Text style={styles.agentName} numberOfLines={1}>{agentName ?? 'Hermes'}{statusLabel ? ` · ${statusLabel}` : ''}</Text></View>
+          <Text accessibilityRole="header" style={styles.threadTitle} numberOfLines={fontScale > 1.3 ? 2 : 1}># {session.title}</Text>
+          <View style={styles.agentLine}><ConnectionMark state={connection} /><Text style={styles.agentName}>{agentName ?? 'Hermes'}{statusLabel ? ` · ${statusLabel}` : ''}</Text></View>
         </View>
         <ConnectionAction state={connection} onReconnect={onReconnect} onDetails={onAgentDetails} />
         <IconButton name="ellipsis" label="Thread actions" onPress={onSessionActions ?? (() => showSessionActions(session.title, [{ label: 'Threads', onPress: () => onBack?.() }]))} />
       </View>
       <LegendList
-        key={fontScale}
         ref={list}
         data={events}
         recycleItems
@@ -98,20 +104,29 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
         </View>
       ) : (
         <View style={styles.composer}>
+          <AttachmentStrip files={attachments.map((file) => ({ ...file, source: { uri: file.uri } }))} onRemove={onRemoveAttachment} disabled={isActing || isPicking} />
           <View style={styles.composerField}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Add attachments" accessibilityState={{ disabled: isActing || isPicking }} disabled={isActing || isPicking} onPress={onAddAttachments} style={styles.attachButton}><SymbolView name={{ ios: 'plus', android: 'add', web: 'add' }} size={22} tintColor={isActing || isPicking ? colors.muted : colors.secondary} /></Pressable>
+            <View style={styles.inputSlot}>
             <TextInput
               style={styles.input}
               value={draft}
+              editable={!isActing}
               onChangeText={onDraftChange}
-              multiline
+              multiline={false}
+              returnKeyType="send"
+              submitBehavior="submit"
+              onSubmitEditing={() => { if (canSend) onSend(draft.trim()); }}
               maxLength={8000}
-              placeholder="Message Hermes"
               placeholderTextColor={colors.secondary}
               selectionColor={colors.cyan}
               accessibilityLabel="Message Hermes"
               accessibilityHint={connection !== 'connected' ? 'Drafts are saved. Reconnect to send.' : undefined}
-              textAlignVertical="top"
             />
+            {!draft ? <View pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={styles.placeholderContainer}>
+              <Text numberOfLines={1} ellipsizeMode="tail" style={styles.placeholder}>Message #{session.title === 'New thread' ? 'new-thread' : session.title}</Text>
+            </View> : null}
+            </View>
             {isSending ? <IconButton name="stop.fill" label="Stop run" tone="destructive" disabled={isActing || connection !== 'connected'} onPress={onStop} />
               : <IconButton name="arrow.up" label={isActing ? 'Sending message' : 'Send message'} tone="primary" disabled={!canSend} onPress={() => onSend(draft.trim())} />}
           </View>
@@ -121,20 +136,32 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
   );
 }
 
-const TranscriptEntry = memo(function TranscriptEntry({ row, onDisclosure }: { row: TranscriptRow; onDisclosure: () => void }) {
+const TranscriptEntry = memo(function TranscriptEntry({ row, agentName, attachmentSource, onDisclosure }: { row: TranscriptRow; agentName: string; attachmentSource?: (id: string) => AttachmentSource | undefined; onDisclosure: () => void }) {
   const [expanded, setExpanded] = useRecyclingState(false);
   if (row.kind === 'work') {
-    // Keep failures and in-progress calls visible even when a long group is folded.
-    const visibleTools = expanded ? row.items : row.items.filter((tool, index) => index < 3 || tool.status !== 'complete');
+    const running = row.items.filter((tool) => tool.status === 'running');
+    const failed = row.items.filter((tool) => tool.status === 'failed');
+    const countLabel = row.items.some((tool) => tool.name === 'Progress update') ? 'activity updates' : row.items.length === 1 ? 'tool call' : 'tool calls';
+    const label = running.length ? `Working · ${friendlyToolName(running[0].name)}` : failed.length ? `${failed.length} failed · ${row.items.length} tool calls` : `${row.items.length} ${countLabel}`;
     return <View style={styles.work}>
-      {visibleTools.map((tool) => <ToolEntry key={tool.id} tool={tool} onDisclosure={onDisclosure} />)}
-      {row.items.length > 3 && (expanded || visibleTools.length < row.items.length) ? <Pressable style={styles.workToggle} accessibilityRole="button" accessibilityState={{ expanded }} onPress={() => { onDisclosure(); setExpanded(!expanded); }}>
-        <Text style={styles.workText}>{expanded ? 'Show fewer tool calls' : `Show all ${row.items.length} tool calls`}</Text>
-      </Pressable> : null}
+      <Pressable style={styles.workToggle} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ expanded }} onPress={() => { onDisclosure(); setExpanded(!expanded); }}>
+        {running.length ? <ActivityIndicator size="small" color={colors.secondary} /> : <SymbolView name={{ ios: 'terminal', android: 'terminal', web: 'terminal' }} size={14} tintColor={failed.length ? colors.red : colors.secondary} />}
+        <Text style={[styles.workText, failed.length > 0 && styles.failedTool]}>{label}</Text>
+        <Text style={styles.workText}>{expanded ? '⌃' : '⌄'}</Text>
+      </Pressable>
+      {expanded ? row.items.map((tool) => <ToolEntry key={tool.id} tool={tool} onDisclosure={onDisclosure} />) : null}
     </View>;
   }
   if (row.kind === 'error') return <View style={styles.error} accessibilityRole="alert"><Text selectable style={styles.errorText}>{row.text}</Text></View>;
-  return <View style={row.kind === 'user' ? styles.user : styles.assistant}>{row.kind === 'user' ? <Text selectable style={styles.userText}>{row.text}</Text> : <MessageContent text={row.text} />}</View>;
+  const user = row.kind === 'user';
+  const message = user ? splitAttachmentMessage(row.text) : undefined;
+  return <View style={styles.message}>
+    <View accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[styles.avatar, user && styles.userAvatar]}><Text style={styles.avatarText}>{user ? 'Y' : agentName.charAt(0).toUpperCase()}</Text></View>
+    <View style={styles.messageBody}>
+      <Text style={styles.author}>{user ? 'You' : agentName}</Text>
+      {message ? <>{message.text ? <Text selectable style={styles.userText}>{message.text}</Text> : null}<AttachmentStrip files={message.attachments.map((file) => ({ ...file, source: attachmentSource?.(file.id) }))} /></> : <MessageContent text={row.text} />}
+    </View>
+  </View>;
 });
 
 const ToolEntry = memo(function ToolEntry({ tool, onDisclosure }: { tool: TranscriptTool; onDisclosure: () => void }) {
@@ -162,12 +189,16 @@ const styles = StyleSheet.create({
   threadTitle: { color: colors.primary, fontSize: 16, fontWeight: '600' },
   agentLine: { flexDirection: 'row', alignItems: 'center', gap: 7 },
   agentName: { flexShrink: 1, color: colors.secondary, fontSize: 12 },
-  listContent: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 16 },
-  user: { alignSelf: 'flex-end', maxWidth: '90%', backgroundColor: '#191919', borderRadius: 17, borderBottomRightRadius: 3, paddingHorizontal: 15, paddingVertical: 12, marginBottom: 26 },
+  listContent: { paddingHorizontal: 12, paddingTop: 20, paddingBottom: 16 },
   userText: { color: colors.primary, fontSize: 16, lineHeight: 24 },
-  assistant: { marginBottom: 12 },
-  work: { marginBottom: 22 },
-  workToggle: { minHeight: 44, justifyContent: 'center' },
+  message: { flexDirection: 'row', gap: 10, marginBottom: 20 },
+  avatar: { width: 30, height: 30, borderRadius: 15, backgroundColor: '#5865f2', alignItems: 'center', justifyContent: 'center', marginTop: 2 },
+  userAvatar: { backgroundColor: '#3d414b' },
+  avatarText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  messageBody: { flex: 1, minWidth: 0, gap: 4 },
+  author: { color: colors.primary, fontSize: 14, fontWeight: '600' },
+  work: { marginLeft: 40, marginBottom: 12 },
+  workToggle: { minHeight: 44, flexDirection: 'row', gap: 8, alignItems: 'center' },
   workText: { color: colors.secondary, fontSize: 13 },
   toolToggle: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 7 },
   toolName: { color: '#d5d5d5', fontSize: 13, maxWidth: '45%', flexShrink: 1 },
@@ -188,15 +219,16 @@ const styles = StyleSheet.create({
   actions: { flexDirection: 'row', gap: 12 },
   action: { flex: 1, minHeight: 48, paddingHorizontal: 14, alignItems: 'center', justifyContent: 'center', borderRadius: 10, borderWidth: 1, borderColor: colors.lineStrong, backgroundColor: colors.background },
   allow: { backgroundColor: colors.primary },
-  send: { backgroundColor: colors.primary },
   darkText: { color: colors.background, fontSize: 15, fontWeight: '600' },
-  deny: { color: colors.red, fontSize: 15, fontWeight: '600' },
-  disabledText: { color: colors.secondary, fontSize: 15 },
   buttonText: { color: colors.primary, fontSize: 15, fontWeight: '600' },
   disabled: { opacity: 0.4 },
-  composer: { paddingHorizontal: 20, paddingVertical: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
-  composerField: { backgroundColor: colors.background, flexDirection: 'row', alignItems: 'flex-end', gap: 6 },
-  input: { flex: 1, color: colors.primary, fontSize: 16, minHeight: 44, maxHeight: 150, paddingVertical: 11 },
+  composer: { paddingHorizontal: 12, paddingVertical: 8 },
+  composerField: { backgroundColor: '#1c1d22', borderRadius: 22, paddingLeft: 4, paddingRight: 4, paddingVertical: 4, flexDirection: 'row', alignItems: 'center', gap: 4 },
+  attachButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  inputSlot: { flex: 1, minWidth: 0 },
+  input: { color: colors.primary, fontSize: 16, lineHeight: 22, minHeight: 44, paddingVertical: 11, paddingHorizontal: 0 },
+  placeholderContainer: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, justifyContent: 'center' },
+  placeholder: { color: colors.secondary, fontSize: 16, lineHeight: 22 },
   empty: { paddingTop: 36, gap: 10 },
   emptyTitle: { color: colors.primary, fontSize: 24, fontWeight: '600' },
   emptyText: { color: colors.secondary, fontSize: 15, lineHeight: 22, maxWidth: 300 },

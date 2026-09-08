@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createConnectorServer } from "./index.mjs";
 
-async function fixture() {
+async function fixture(options = {}) {
   const directory = await mkdtemp(join(tmpdir(), "ekho-connector-"));
   const hermes = await startHermesStub();
-  const connector = createConnectorServer({ port: 0, hermesUrl: hermes.url, hermesApiKey: "hermes-secret", adminSecret: "admin-secret", statePath: join(directory, "nested", "state.json"), label: "Test Hermes" });
+  const connector = createConnectorServer({ port: 0, hermesUrl: hermes.url, hermesApiKey: "hermes-secret", adminSecret: "admin-secret", statePath: join(directory, "nested", "state.json"), label: "Test Hermes", ...options });
   const address = await connector.start();
   const base = `http://127.0.0.1:${address.port}`;
   return { connector, hermes, base, statePath: join(directory, "nested", "state.json") };
@@ -84,4 +84,47 @@ test("allowlisted SSE route is streamed", async (t) => {
   const response = await fetch(`${f.base}/v1/runs/demo/events`, { headers: { authorization: `Bearer ${exchanged.body.access_token}`, accept: "text/event-stream" } });
   assert.equal(response.status, 200);
   assert.match(await response.text(), /run\.completed/u);
+});
+
+
+test("thread titles require device authentication and tolerate unavailable Codex", async (t) => {
+  const f = await fixture({ generateThreadTitle: async (input) => input === "unavailable" ? undefined : "Count files by extension" });
+  t.after(async () => { await f.connector.close(); await f.hermes.close(); });
+  const submit = (input, token) => req(f.base, "/v1/ekho/thread-title", { method: "POST", headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ input }) });
+  assert.equal((await submit("Count files")).response.status, 401);
+  const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
+  const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
+  const token = exchange.body.access_token;
+  assert.equal((await submit("Count files", token)).body.title, "Count files by extension");
+  assert.equal((await submit("unavailable", token)).body.title, null);
+  assert.equal((await submit("", token)).response.status, 400);
+});
+
+test("attachments preserve bytes privately and require an active device token", async (t) => {
+  const f = await fixture();
+  t.after(async () => { await f.connector.close(); await f.hermes.close(); });
+  const path = "/v1/ekho/attachments";
+  const bytes = Buffer.from([0, 255, 127, 10, 65]);
+  const body = JSON.stringify({ name: "../../metadata.json", mimeType: "application/octet-stream", data: bytes.toString("base64") });
+  assert.equal((await req(f.base, path, { method: "POST", body })).response.status, 401);
+  const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
+  const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
+  const headers = { authorization: `Bearer ${exchange.body.access_token}`, "content-type": "application/json" };
+  const uploaded = await req(f.base, path, { method: "POST", headers, body });
+  assert.equal(uploaded.response.status, 201);
+  const file = uploaded.body.attachment;
+  assert.equal(file.name.includes("/"), false);
+  assert.equal(file.size, bytes.length);
+  assert.deepEqual(await readFile(file.path), bytes);
+  assert.equal((await stat(file.path)).mode & 0o777, 0o600);
+  assert.equal((await req(f.base, `${path}/${file.id}`)).response.status, 401);
+  const downloaded = await fetch(`${f.base}${path}/${file.id}`, { headers });
+  assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), bytes);
+  assert.equal(downloaded.headers.get("cache-control"), "private, no-store");
+  assert.equal(downloaded.headers.get("content-disposition"), "attachment");
+  const invalid = await req(f.base, path, { method: "POST", headers, body: JSON.stringify({ name: "bad.txt", mimeType: "text/plain", data: "not base64" }) });
+  assert.equal(invalid.response.status, 400);
+  await req(f.base, `/admin/devices/${exchange.body.device_id}/revoke`, admin({ method: "POST", body: "{}" }));
+  assert.equal((await req(f.base, `${path}/${file.id}`, { headers })).response.status, 401);
+  assert.equal((await req(f.base, path, { method: "POST", headers, body })).response.status, 401);
 });

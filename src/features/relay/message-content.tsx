@@ -2,6 +2,8 @@ import { memo } from 'react';
 import { Alert, Linking, Platform } from 'react-native';
 import { EnrichedMarkdownText, type MarkdownStyle } from 'react-native-enriched-markdown';
 
+import { perlBlocks } from './perl-blocks';
+import { PerlCode } from './perl-code';
 import { relayColors as colors } from './relay-ui';
 
 function openLink({ url }: { url: string }) {
@@ -14,7 +16,7 @@ function openLink({ url }: { url: string }) {
 }
 
 const markdownStyle: MarkdownStyle = (() => {
-    const paragraph = { color: colors.primary, fontSize: 16, lineHeight: 24, marginTop: 0, marginBottom: 16 };
+    const paragraph = { color: colors.primary, fontSize: 16, lineHeight: 24, marginTop: 0, marginBottom: 10 };
     return {
       paragraph,
       h1: { ...paragraph, fontSize: 24, lineHeight: 30, fontWeight: '600', marginTop: 12 },
@@ -45,5 +47,7 @@ const markdownStyle: MarkdownStyle = (() => {
 })();
 
 export const MessageContent = memo(function MessageContent({ text }: { text: string }) {
-  return <EnrichedMarkdownText markdown={text} markdownStyle={markdownStyle} flavor="github" selectable onLinkPress={openLink} containerStyle={{ backgroundColor: colors.background }} />;
+  return <>{perlBlocks(text).map((part, index) => part.kind === 'perl'
+    ? <PerlCode key={index} code={part.text} />
+    : <EnrichedMarkdownText key={index} markdown={part.text} markdownStyle={markdownStyle} flavor="github" selectable onLinkPress={openLink} containerStyle={{ backgroundColor: colors.background }} />)}</>;
 });

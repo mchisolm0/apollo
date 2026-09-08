@@ -1,3 +1,4 @@
+import { attachmentMessage, isAttachment, type Attachment, type AttachmentSource } from './attachments';
 import { normalizeEndpoint } from './endpoint';
 import EventSource, { type EventSourceListener } from 'react-native-sse';
 
@@ -214,6 +215,23 @@ export class HermesClient {
     return body.data.map(parseMessage);
   }
 
+  async uploadAttachment(file: { name: string; mimeType: string; data: string }): Promise<Attachment> {
+    const body = await this.request('/v1/ekho/attachments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(file) });
+    if (!isJsonObject(body) || !isAttachment(body.attachment)) throw new Error('The attachment upload response was invalid.');
+    return body.attachment;
+  }
+
+  attachmentSource(id: string): AttachmentSource {
+    return { uri: `${this.baseUrl}/v1/ekho/attachments/${encodeURIComponent(id)}`, headers: { Authorization: `Bearer ${this.token}` } };
+  }
+
+  async generateSessionTitle(sessionId: string, input: string): Promise<string | undefined> {
+    const body = await this.request('/v1/ekho/thread-title', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input }) });
+    if (!isJsonObject(body) || typeof body.title !== 'string' || !body.title.trim()) return undefined;
+    await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: body.title }) });
+    return body.title;
+  }
+
   async createSession(options: { id?: string; title?: string } = {}): Promise<HermesSession> {
     const body = await this.request('/api/sessions', {
       method: 'POST',
@@ -225,8 +243,8 @@ export class HermesClient {
   }
 
   async startRun(input: string, options: StartRunOptions = {}): Promise<HermesRunStatus> {
-    if (!input.trim()) throw new Error('Run input cannot be empty');
-    const payload: Record<string, unknown> = { input };
+    if (!input.trim() && !options.attachments?.length) throw new Error('Run input cannot be empty');
+    const payload: Record<string, unknown> = { input: attachmentMessage(input, options.attachments) };
     if (options.sessionId) payload.session_id = options.sessionId;
     if (options.instructions) payload.instructions = options.instructions;
     if (options.conversationHistory) payload.conversation_history = options.conversationHistory;
@@ -274,6 +292,7 @@ export class HermesClient {
     const source = new EventSource<never>(`${this.baseUrl}/v1/runs/${encodeURIComponent(runId)}/events`, {
       headers: { Authorization: `Bearer ${this.token}` },
       pollingInterval: 5_000,
+      timeoutBeforeConnection: 0,
     });
     const onMessage: EventSourceListener<never, 'message'> = (event) => {
       if (typeof event.data !== 'string' || !event.data) return;

@@ -50,6 +50,14 @@
           "recordAudioAndroid": false,
           "barcodeScannerEnabled": true
         }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Choose photos to attach to messages.",
+          "cameraPermission": "Allow Ekho to scan a one-time pairing code.",
+          "microphonePermission": false
+        }
       ]
     ],
     "experiments": {

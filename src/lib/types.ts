@@ -126,6 +126,7 @@ export interface HermesRunEvent {
 }
 
 export interface StartRunOptions {
+  attachments?: readonly import('./attachments').Attachment[];
   sessionId?: string;
   instructions?: string;
   conversationHistory?: readonly { role: string; content: string }[];

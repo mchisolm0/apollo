@@ -228,3 +228,17 @@ test('preserves identical timestamped deltas without a transport identity', () =
   assert.equal(rows.length, 1);
   assert.equal(rows[0].kind === 'assistant' && rows[0].text, 'Same chunkSame chunk');
 });
+
+test('a polled final response replaces stale progress after the event stream disconnects', () => {
+  const rows = createTranscriptProjector()({
+    history: [
+      message({ id: 'u', role: 'user', content: 'Count files', timestamp: 100 }),
+      message({ id: 'a', role: 'assistant', content: 'The counts are ready.', timestamp: 110 }),
+    ],
+    events: [event({ event: 'message.delta', delta: 'Checking the files.' }), event({ event: 'tool.started', tool: 'terminal' })],
+    runId: 'disconnected', runStartedAt: 100, runOutput: 'The counts are ready.', running: false,
+  });
+  assert.deepEqual(rows.map((row) => row.kind), ['user', 'assistant']);
+  const final = rows.at(-1);
+  assert.equal(final?.kind === 'assistant' && final.text, 'The counts are ready.');
+});

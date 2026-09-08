@@ -16,3 +16,17 @@ The public descriptor is `/.well-known/ekho/agent`. Exchange a one-time token at
 `pair --tailscale` is the only command that invokes the Tailscale CLI. It reads `tailscale status --json`, configures `tailscale serve --bg --https=<port> http://127.0.0.1:<connector-port>`, and prints a scannable QR code plus the pasteable fallback link.
 
 Tailscale Serve uses HTTPS port `8443` by default, leaving `443` available for t3code. The mobile endpoint is `https://<machine>.<tailnet>.ts.net:8443`. Override it with `pair --tailscale --tailscale-serve-port PORT`. When moving from an older pairing on port 443, run `node connector/cli.mjs pair --tailscale` and pair the phone again using the new link.
+
+## Thread titles
+
+New mobile threads can request a short title at the device-authenticated `POST /v1/ekho/thread-title` endpoint with `{ "input": "first message" }`. The connector runs the host's authenticated `codex exec` with `gpt-5.6-luna`, low reasoning, a temporary working directory, read-only sandbox and an ephemeral session. User configuration is ignored. The mobile client saves the result through Hermes's session PATCH endpoint.
+
+Codex is optional. Missing login, an unavailable Luna model, a 30-second timeout or a busy title request returns a null title and leaves the first-message title in place. Only one title generation runs at a time. The host must have a recent Codex CLI on PATH; no OpenAI credential is sent to the phone.
+
+### Message attachments
+
+Paired devices can `POST /v1/ekho/attachments` with JSON `{ "name": "notes.txt", "mimeType": "text/plain", "data": "<base64 bytes>" }`. The response contains `attachment: { id, name, mimeType, size, path }`. Each upload is limited to 10 MiB. Names are sanitized and stored under a unique directory, with directory mode 0700 and file mode 0600, in `attachments/` beside the connector state file. Uploads remain there for later thread history and agent access; there is no automatic expiry.
+
+`GET /v1/ekho/attachments/:id` returns the original bytes and requires an active device token, as does uploading. Raster images are served inline; other files are downloads. Responses prohibit caching. All paired owner devices share access to these attachments, just as they share Hermes sessions.
+
+The mobile app includes saved attachment paths and metadata in the Runs API input. Hermes must run on the same machine and be able to read these files; image understanding requires its image-reading tool. Message attachments are not uploaded to a public bucket. Existing connectors must be updated before mobile attachment sends work.
