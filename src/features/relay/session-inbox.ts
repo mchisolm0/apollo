@@ -1,5 +1,5 @@
 import type { AgentRuntimeState, HermesRunEvent, HermesRunStatus, HermesSession } from '@/lib';
-import { currentApproval } from '../../lib/run-state.ts';
+import { currentApproval, sessionRun } from '../../lib/run-state.ts';
 
 import type { RelaySession } from './types';
 
@@ -17,7 +17,7 @@ export interface InboxSession extends RelaySession {
 
 export type InboxSettled = Readonly<Record<string, number>>;
 
-export type SessionInboxState = Pick<AgentRuntimeState, 'sessions' | 'activeRun' | 'events'>;
+export type SessionInboxState = Pick<AgentRuntimeState, 'sessions' | 'runs' | 'events'>;
 
 export type InboxEvent = Pick<HermesRunEvent, 'event' | 'runId' | 'timestamp'> & {
   sessionId?: string;
@@ -86,11 +86,12 @@ export function deriveSessionInbox(
 ): InboxSession[] {
   if (!state) return [];
   return sortSessionInbox(state.sessions.map((session) => {
+    const activeRun = sessionRun(state.runs, session.id);
     const events = state.events as readonly InboxEvent[];
-    const runEvents = state.activeRun?.sessionId === session.id ? eventsForRun(events, state.activeRun) : [];
-    const activityAt = Math.max(sessionActivity(session), terminalActivity(session, state.activeRun, runEvents));
-    const presentation = statusForSession(session, state.activeRun, events, settled[session.id], read[session.id]);
-    const running = runIsActive(state.activeRun, session);
+    const runEvents = activeRun?.sessionId === session.id ? eventsForRun(events, activeRun) : [];
+    const activityAt = Math.max(sessionActivity(session), terminalActivity(session, activeRun, runEvents));
+    const presentation = statusForSession(session, activeRun, events, (session.settledAt === undefined ? settled[session.id] : session.settledAt ?? undefined), read[session.id]);
+    const running = runIsActive(activeRun, session);
     return {
       id: session.id,
       agentId,

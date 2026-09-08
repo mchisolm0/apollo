@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createConnectorServer } from "./index.mjs";
+import { StateStore, createConnectorServer } from "./index.mjs";
 
 async function fixture(options = {}) {
   const directory = await mkdtemp(join(tmpdir(), "ekho-connector-"));
@@ -127,4 +127,26 @@ test("attachments preserve bytes privately and require an active device token", 
   await req(f.base, `/admin/devices/${exchange.body.device_id}/revoke`, admin({ method: "POST", body: "{}" }));
   assert.equal((await req(f.base, `${path}/${file.id}`, { headers })).response.status, 401);
   assert.equal((await req(f.base, path, { method: "POST", headers, body })).response.status, 401);
+});
+
+test("settled threads survive a new device and restart; migration cannot undo reopen", async (t) => {
+  const f = await fixture(); t.after(async () => { await f.connector.close(); await f.hermes.close(); });
+  async function device() {
+    const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
+    const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
+    return { authorization: `Bearer ${exchange.body.access_token}`, "content-type": "application/json" };
+  }
+  const first = await device();
+  const patch = (headers, settled, importOnly = false) => req(f.base, "/v1/inbox", { method: "PATCH", headers, body: JSON.stringify({ settled, importOnly }) });
+  assert.equal((await patch({}, { thread: 20 })).response.status, 401);
+  assert.equal((await patch(first, { thread: 20 })).response.status, 200);
+  const second = await device();
+  assert.deepEqual((await req(f.base, "/v1/inbox", { headers: second })).body.settled, { thread: 20 });
+  const reloaded = new StateStore(f.statePath, "Test");
+  assert.deepEqual((await reloaded.load()).inbox_settled, { thread: 20 });
+  await patch(second, { thread: null });
+  await patch(first, { thread: 20, older: 10 }, true);
+  assert.deepEqual((await req(f.base, "/v1/inbox", { headers: second })).body.settled, { thread: null, older: 10 });
+  assert.equal((await patch(first, { broken: -1 })).response.status, 400);
+  assert.equal((await patch(first, { broken: "20" })).response.status, 400);
 });

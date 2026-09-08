@@ -1,5 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useCallback, useMemo, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
+
+import { useEkho } from '@/lib';
 
 import {
   canSettleSession,
@@ -26,6 +28,7 @@ type InboxStoreEntry = {
   snapshot: InboxStoreSnapshot;
   listeners: Set<() => void>;
   load?: Promise<void>;
+  migrating?: boolean;
   write: Promise<void>;
 };
 
@@ -106,8 +109,9 @@ export type SessionInboxResult = {
   error?: string;
 } & SessionInboxActions;
 
-/** Owns the persisted read and settle ledgers and shares it between inbox surfaces. */
+/** Reads stay local; legacy settle entries migrate to the shared connector ledger. */
 export function useSessionInbox(agentId: string, state: SessionInboxState | undefined): SessionInboxResult {
+  const { saveInbox } = useEkho();
   const store = useSyncExternalStore(
     useCallback((listener) => subscribe(agentId, listener), [agentId]),
     useCallback(() => snapshot(agentId), [agentId]),
@@ -115,6 +119,25 @@ export function useSessionInbox(agentId: string, state: SessionInboxState | unde
   );
   const project = useMemo(() => createSessionInboxProjector(), []);
   const sessions = useMemo(() => project(agentId, state, store.settled, store.read), [project, agentId, state, store.settled, store.read]);
+
+  const reportError = useCallback((cause: unknown) => {
+    const entry = entryFor(agentId);
+    entry.error = cause instanceof Error ? cause.message : 'Finished threads could not be synced.';
+    entry.snapshot = { ...entry.snapshot, error: entry.error };
+    entry.listeners.forEach((listener) => listener());
+  }, [agentId]);
+
+  useEffect(() => {
+    const entry = entryFor(agentId);
+    if (!store.loaded || !state?.sessions.length || entry.migrating || !Object.keys(store.settled).length) return;
+    const legacy = store.settled;
+    entry.migrating = true;
+    void saveInbox(agentId, legacy, true).then(async () => {
+      const remaining = { ...entry.settled };
+      for (const [id, timestamp] of Object.entries(legacy)) if (remaining[id] === timestamp) delete remaining[id];
+      await update(agentId, remaining);
+    }).catch(reportError).finally(() => { entry.migrating = false; });
+  }, [agentId, state?.sessions, store.loaded, store.settled, saveInbox, reportError]);
 
   const markRead = useCallback(async (sessionId: string): Promise<void> => {
     if (!store.loaded) return;
@@ -129,21 +152,24 @@ export function useSessionInbox(agentId: string, state: SessionInboxState | unde
     if (!store.loaded) return false;
     const session = sessions.find((candidate) => candidate.id === sessionId);
     if (!session || !canSettleSession(session)) return false;
-    const current = entryFor(agentId).settled;
-    await update(agentId, { ...current, [sessionId]: session.activityAt || Math.floor(Date.now() / 1000) });
-    return true;
-  }, [agentId, sessions, store.loaded]);
+    try {
+      await saveInbox(agentId, { [sessionId]: session.activityAt || Math.floor(Date.now() / 1000) });
+      await update(agentId, entryFor(agentId).settled);
+      return true;
+    } catch (cause) { reportError(cause); return false; }
+  }, [agentId, sessions, store.loaded, saveInbox, reportError]);
 
   const reopen = useCallback(async (sessionId: string): Promise<boolean> => {
-    const current = entryFor(agentId).settled;
     const session = sessions.find((candidate) => candidate.id === sessionId);
     if (!store.loaded || !session?.settled) return false;
-    if (!(sessionId in current)) return true;
-    const next = { ...current };
-    delete next[sessionId];
-    await update(agentId, next);
-    return true;
-  }, [agentId, sessions, store.loaded]);
+    try {
+      await saveInbox(agentId, { [sessionId]: null });
+      const next = { ...entryFor(agentId).settled };
+      delete next[sessionId];
+      await update(agentId, next);
+      return true;
+    } catch (cause) { reportError(cause); return false; }
+  }, [agentId, sessions, store.loaded, saveInbox, reportError]);
 
   return { sessions, loaded: store.loaded, error: store.error, markRead, settle, reopen };
 }

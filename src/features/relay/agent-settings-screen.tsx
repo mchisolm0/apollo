@@ -1,3 +1,5 @@
+import Constants from 'expo-constants';
+import * as Updates from 'expo-updates';
 import type { ReactNode } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
@@ -37,6 +39,10 @@ export function AgentSettingsScreen({ agent, deviceName = 'This device', pairedA
         <SettingSection label="This device">
           <SettingRow label="Name" value={deviceName} />
           {pairedAt ? <SettingRow label="Paired" value={pairedAt} /> : null}
+        </SettingSection>
+        <SettingSection label="App">
+          <SettingRow label="Version" value={Constants.expoConfig?.version ?? 'Unknown'} />
+          <SettingRow label="Fingerprint" value={Updates.runtimeVersion ?? 'Unavailable in development'} />
         </SettingSection>
         <View style={styles.dangerSection}>
           {onRevokeDevice ? <RelayButton tone="amber" onPress={onRevokeDevice}>Revoke this device</RelayButton> : null}

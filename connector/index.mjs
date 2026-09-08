@@ -301,6 +301,30 @@ export function createConnectorServer(options = {}) {
     finally { titleBusy = false; }
   }
 
+  async function inbox(req, res) {
+    if (!await authenticateDevice(req)) return error(res, 401, "device authentication required", "unauthorized");
+    if (req.method === "GET") return json(res, 200, { settled: (await store.read()).inbox_settled ?? {} });
+    if (req.method !== "PATCH") return error(res, 405, "method not allowed");
+    const body = parseJson(await readBody(req, 256 * 1024));
+    const settled = body?.settled;
+    if (!settled || typeof settled !== "object" || Array.isArray(settled) ||
+        (body.importOnly !== undefined && typeof body.importOnly !== "boolean") ||
+        Object.entries(settled).some(([id, value]) => !/^[A-Za-z0-9._~-]{1,256}$/u.test(id) ||
+          ["__proto__", "constructor", "prototype"].includes(id) ||
+          (value !== null && (typeof value !== "number" || !Number.isFinite(value) || value < 0)))) {
+      return error(res, 400, "settled must map session IDs to nonnegative timestamps or null");
+    }
+    const result = await store.update((state) => {
+      state.inbox_settled ??= {};
+      for (const [id, timestamp] of Object.entries(settled)) {
+        // Keep reopen tombstones so another device's legacy import cannot resurrect them.
+        if (!body.importOnly || !Object.hasOwn(state.inbox_settled, id)) state.inbox_settled[id] = timestamp;
+      }
+      return { ...state.inbox_settled };
+    });
+    return json(res, 200, { settled: result });
+  }
+
   async function proxy(req, res, url) {
     if (!validProxyRoute(req.method, url.pathname)) return error(res, 404, "route not available through Ekho", "not_found");
     const device = await authenticateDevice(req);
@@ -340,6 +364,7 @@ export function createConnectorServer(options = {}) {
       if (req.method === "POST" && url.pathname === "/v1/ekho/thread-title") return threadTitle(req, res);
       const attachmentRoute = url.pathname.match(/^\/v1\/ekho\/attachments(?:\/([a-f0-9-]{36}))?$/);
       if (attachmentRoute) return await attachmentRequest(req, res, attachmentRoute[1]);
+      if (url.pathname === "/v1/inbox") return await inbox(req, res);
       return proxy(req, res, url);
     } catch (cause) {
       if (!res.headersSent) error(res, cause.status ?? 500, cause.message ?? "internal connector error", "internal_error");

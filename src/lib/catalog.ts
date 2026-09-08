@@ -54,7 +54,9 @@ function parseAgent(value: unknown): AgentRecord | undefined {
     endpoint: { url, transport },
     createdAt: numberValue(value.createdAt) ?? Date.now(),
     lastConnectedAt: numberValue(value.lastConnectedAt),
-    activeRunId: stringValue(value.activeRunId),
+    activeRunIds: Array.isArray(value.activeRunIds)
+      ? value.activeRunIds.filter((id): id is string => typeof id === 'string')
+      : typeof value.activeRunId === 'string' ? [value.activeRunId] : [],
     capabilities: parseCapabilities(value.capabilities),
   };
 }

@@ -36,3 +36,9 @@ export function eventTransportIdentity(event: HermesRunEvent): string | undefine
   }
   return undefined;
 }
+
+/** Return the most recently started run for this thread. */
+export function sessionRun(runs: Readonly<Record<string, HermesRunStatus>>, sessionId?: string): HermesRunStatus | undefined {
+  if (!sessionId) return undefined;
+  return Object.values(runs).findLast((run) => run.sessionId === sessionId);
+}

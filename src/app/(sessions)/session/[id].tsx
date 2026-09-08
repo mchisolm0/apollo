@@ -13,7 +13,7 @@ import { canSettleSession } from '@/features/relay/session-inbox';
 import { createTranscriptProjector } from '@/features/relay/transcript';
 import { useSessionDraft } from '@/features/relay/use-session-draft';
 import { useEkho } from '@/lib';
-import { currentApproval, isRunActive } from '@/lib/run-state';
+import { currentApproval, isRunActive, sessionRun } from '@/lib/run-state';
 import type { HermesMessage, HermesRunEvent } from '@/lib';
 
 const noMessages: readonly HermesMessage[] = [];
@@ -61,9 +61,11 @@ function Session({ id, agentId }: { id: string; agentId: string }) {
   }, [agentId, resolvedId, sessionMessages]);
 
   const session = state?.sessions.find((candidate) => candidate.id === resolvedId);
-  const run = state?.activeRun?.sessionId === resolvedId && resolvedId ? state.activeRun : undefined;
+  const run = sessionRun(state?.runs ?? {}, resolvedId);
   const running = isRunActive(run?.status);
-  const live = run ? state.events : noEvents;
+  const runId = run?.runId;
+  const allEvents = state?.events ?? noEvents;
+  const live = runId ? allEvents.filter((event) => event.runId === runId) : noEvents;
   const history = resolvedId ? messages[`${agentId}:${resolvedId}`] ?? noMessages : noMessages;
   const events = project({ history, events: live, runId: run?.runId, runStartedAt: run?.createdAt, runOutput: run?.output, running });
   const request = currentApproval(live, run);
@@ -175,7 +177,7 @@ function Session({ id, agentId }: { id: string; agentId: string }) {
         }}
         onDraftChange={setDraft}
         onSend={send}
-        onStop={() => void act(() => stopRun(agentId, run?.runId))}
+        onStop={() => run && void act(() => stopRun(agentId, run.runId))}
         onAgentDetails={() => router.push({ pathname: '/settings/[agentId]', params: { agentId } })}
         onReconnect={() => void act(() => retryAgent(agentId))}
         onApprove={(value) => run && void act(() => approveRun(agentId, run.runId, 'once', { requestId: value.id === 'approval' ? undefined : value.id }))}

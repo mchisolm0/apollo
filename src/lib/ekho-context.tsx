@@ -18,6 +18,7 @@ import { PairingClient, parsePairingLink } from './pairing';
 import { HermesClient, HermesRequestError, type RunEventSubscription } from './hermes-client';
 import type {
   AgentRecord,
+  InboxSettledState,
   AgentRuntimeState,
   AgentTransport,
   ApprovalOptions,
@@ -35,6 +36,7 @@ export interface EkhoContextValue {
   loading: boolean;
   error?: string;
   pair(link: string, deviceName?: string): Promise<AgentRecord>;
+  saveInbox(agentId: string, settled: InboxSettledState, importOnly?: boolean): Promise<void>;
   refreshAgent(agentId: string): Promise<void>;
   retryAgent(agentId: string): Promise<void>;
   startRun(agentId: string, input: string, options?: StartRunOptions): Promise<HermesRunStatus>;
@@ -42,7 +44,7 @@ export interface EkhoContextValue {
   uploadAttachment(agentId: string, file: { name: string; mimeType: string; data: string }): Promise<Attachment>;
   attachmentSource(agentId: string, id: string): AttachmentSource | undefined;
   sessionMessages(agentId: string, sessionId: string): Promise<readonly HermesMessage[]>;
-  stopRun(agentId: string, runId?: string): Promise<HermesRunStatus>;
+  stopRun(agentId: string, runId: string): Promise<HermesRunStatus>;
   approveRun(
     agentId: string,
     runId: string,
@@ -55,7 +57,7 @@ export interface EkhoContextValue {
 const EkhoContext = createContext<EkhoContextValue | undefined>(undefined);
 
 function emptyRuntime(): AgentRuntimeState {
-  return { status: 'idle', sessions: [], events: [] };
+  return { status: 'idle', sessions: [], runs: {}, events: [] };
 }
 
 function transportFor(endpoint: string): AgentTransport {
@@ -76,7 +78,12 @@ export function EkhoProvider({
   const catalog = useMemo(() => suppliedCatalog ?? new AgentCatalog(), [suppliedCatalog]);
   const pairingClient = useMemo(() => suppliedPairingClient ?? new PairingClient(), [suppliedPairingClient]);
   const [agents, setAgents] = useState<readonly AgentRecord[]>([]);
-  const [runtime, setRuntime] = useState<Record<string, AgentRuntimeState>>({});
+  const [runtime, publishRuntime] = useState<Record<string, AgentRuntimeState>>({});
+  const runtimeRef = useRef(runtime);
+  const setRuntime = useCallback((update: (current: Record<string, AgentRuntimeState>) => Record<string, AgentRuntimeState>) => {
+    runtimeRef.current = update(runtimeRef.current);
+    publishRuntime(runtimeRef.current);
+  }, []);
   const [messages, setMessages] = useState<Record<string, readonly HermesMessage[]>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -90,16 +97,27 @@ export function EkhoProvider({
       ...current,
       [agentId]: { ...(current[agentId] ?? emptyRuntime()), ...patch },
     }));
+  }, [setRuntime]);
+
+  const closeSubscription = useCallback((agentId: string, runId?: string) => {
+    for (const [key, subscription] of subscriptions.current) {
+      if (key === JSON.stringify([agentId, subscription.runId]) && (!runId || subscription.runId === runId)) {
+        subscription.close();
+        subscriptions.current.delete(key);
+      }
+    }
   }, []);
 
-  const closeSubscription = useCallback((agentId: string) => {
-    subscriptions.current.get(agentId)?.close();
-    subscriptions.current.delete(agentId);
-  }, []);
+  const updateRun = useCallback((agentId: string, run: HermesRunStatus) => {
+    setRuntime((current) => {
+      const existing = current[agentId] ?? emptyRuntime();
+      return { ...current, [agentId]: { ...existing, runs: { ...existing.runs, [run.runId]: run } } };
+    });
+  }, [setRuntime]);
 
   const subscribe = useCallback((agent: AgentRecord, client: HermesClient, runId: string) => {
-    if (subscriptions.current.get(agent.id)?.runId === runId) return;
-    closeSubscription(agent.id);
+    const key = JSON.stringify([agent.id, runId]);
+    if (subscriptions.current.has(key)) return;
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
     let polling = false;
     let pollDelay = 3_000;
@@ -115,10 +133,10 @@ export function EkhoProvider({
       pending = [];
       setRuntime((current) => {
         const existing = current[agent.id];
-        if (!existing || existing.activeRun?.runId !== runId) return current;
+        if (!existing || !existing.runs[runId]) return current;
         const events = [...existing.events, ...batch];
-        const activeRun = batch.reduce(statusAfterEvent, existing.activeRun);
-        return { ...current, [agent.id]: { ...existing, status: 'connected', events, activeRun } };
+        const activeRun = batch.reduce(statusAfterEvent, existing.runs[runId]);
+        return { ...current, [agent.id]: { ...existing, status: 'connected', events, runs: { ...existing.runs, [runId]: activeRun } } };
       });
     };
     const source = client.subscribeRunEvents(runId, {
@@ -127,14 +145,14 @@ export function EkhoProvider({
         const identity = eventTransportIdentity(event);
         if (identity && seen.has(identity)) return;
         if (identity) seen.add(identity);
-        pending.push(event);
+        pending.push({ ...event, runId });
         if (!timer) timer = setTimeout(flush, 50);
         if (['run.completed', 'run.failed', 'run.cancelled', 'run.interrupted'].includes(event.event)) {
           if (timer) clearTimeout(timer);
           flush();
           void client.runStatus(runId).then(async (status) => {
             if (closed) return;
-            updateRuntime(agent.id, { activeRun: status });
+            updateRun(agent.id, status);
             if (!isRunActive(status.status)) {
               const [sessions, history] = await Promise.all([
                 client.sessions(),
@@ -143,7 +161,7 @@ export function EkhoProvider({
               if (closed) return;
               updateRuntime(agent.id, { sessions });
               if (history && status.sessionId) setMessages((current) => ({ ...current, [`${agent.id}:${status.sessionId}`]: reconcileHistory(current[`${agent.id}:${status.sessionId}`] ?? [], history) }));
-              closeSubscription(agent.id);
+              closeSubscription(agent.id, runId);
             }
           }).catch(() => undefined);
         }
@@ -164,14 +182,15 @@ export function EkhoProvider({
             const history = status.sessionId ? await client.sessionMessages(status.sessionId) : undefined;
             if (closed) return;
             pollDelay = 3_000;
-            updateRuntime(agent.id, { status: 'connected', activeRun: status, error: undefined });
+            updateRuntime(agent.id, { status: 'connected', error: undefined });
+            updateRun(agent.id, status);
             if (history && status.sessionId) setMessages((current) => ({ ...current, [`${agent.id}:${status.sessionId}`]: reconcileHistory(current[`${agent.id}:${status.sessionId}`] ?? [], history) }));
-            if (!isRunActive(status.status)) closeSubscription(agent.id);
+            if (!isRunActive(status.status)) closeSubscription(agent.id, runId);
           } catch (error) {
             if (!closed) {
               const revoked = error instanceof HermesRequestError && error.status === 401;
               updateRuntime(agent.id, { status: revoked ? 'revoked' : 'offline', error: errorText(error) });
-              if (revoked) closeSubscription(agent.id);
+              if (revoked) closeSubscription(agent.id, runId);
               else pollDelay = Math.min(pollDelay * 2, 30_000);
             }
           } finally {
@@ -182,13 +201,13 @@ export function EkhoProvider({
         if (!pollTimer && !polling) void reconcile();
       },
     });
-    subscriptions.current.set(agent.id, { runId, close: () => {
+    subscriptions.current.set(key, { runId, close: () => {
       closed = true;
       if (timer) clearTimeout(timer);
       if (pollTimer) clearTimeout(pollTimer);
       source.close();
     } });
-  }, [closeSubscription, updateRuntime]);
+  }, [closeSubscription, updateRuntime, updateRun, setRuntime]);
 
   const refreshAgent = useCallback(async (agentId: string): Promise<void> => {
     const agent = catalog.get(agentId);
@@ -204,27 +223,28 @@ export function EkhoProvider({
       const client = new HermesClient({ endpoint: agent.endpoint.url, token });
       clients.current.set(agentId, client);
       const [capabilities, sessions] = await Promise.all([client.capabilities(), client.sessions()]);
-      let activeRun: HermesRunStatus | undefined;
-      if (agent.activeRunId) {
-        try { activeRun = await client.runStatus(agent.activeRunId); }
+      const beforeRefresh = runtimeRef.current[agentId]?.runs;
+      const restored = await Promise.all((agent.activeRunIds ?? []).map(async (runId) => {
+        try { return await client.runStatus(runId); }
         catch (error) {
-          // An expired run should not make a reachable agent look offline.
           if (!(error instanceof HermesRequestError) || error.status !== 404) throw error;
+          return undefined;
         }
-      }
-      const updated = await catalog.update(agentId, {
-        lastConnectedAt: Date.now(),
-        capabilities,
-        activeRunId: activeRun?.runId,
-      });
+      }));
+      const runs = restored.filter((run): run is HermesRunStatus => run !== undefined);
+      const updated = await catalog.update(agentId, { lastConnectedAt: Date.now(), capabilities });
       setAgents(catalog.list());
-      if (activeRun?.sessionId) {
-        const history = await client.sessionMessages(activeRun.sessionId);
-        setMessages((current) => ({ ...current, [`${agentId}:${activeRun.sessionId}`]: reconcileHistory(current[`${agentId}:${activeRun.sessionId}`] ?? [], history) }));
+      updateRuntime(agentId, { status: 'connected', capabilities, sessions, error: undefined });
+      for (const run of runs) {
+        if (runtimeRef.current[agentId]?.runs[run.runId] !== beforeRefresh?.[run.runId]) continue;
+        updateRun(agentId, run);
+        if (run.sessionId) {
+          const history = await client.sessionMessages(run.sessionId);
+          setMessages((current) => ({ ...current, [`${agentId}:${run.sessionId}`]: reconcileHistory(current[`${agentId}:${run.sessionId}`] ?? [], history) }));
+        }
+        if (isRunActive(run.status)) subscribe(updated, client, run.runId);
+        else closeSubscription(agentId, run.runId);
       }
-      setRuntime((current) => ({ ...current, [agentId]: { ...current[agentId], status: 'connected', capabilities, sessions, activeRun, events: current[agentId]?.activeRun?.runId === activeRun?.runId ? current[agentId]?.events ?? [] : [], error: undefined } }));
-      if (activeRun && isRunActive(activeRun.status)) subscribe(updated, client, activeRun.runId);
-      else closeSubscription(agentId);
     } catch (connectionError) {
       clients.current.delete(agentId);
       closeSubscription(agentId);
@@ -233,7 +253,7 @@ export function EkhoProvider({
         error: errorText(connectionError),
       });
     }
-  }, [catalog, closeSubscription, subscribe, updateRuntime]);
+  }, [catalog, closeSubscription, subscribe, updateRuntime, updateRun]);
 
   useEffect(() => {
     let cancelled = false;
@@ -287,10 +307,11 @@ export function EkhoProvider({
   }, [catalog, pairingClient, refreshAgent, updateRuntime]);
 
   const startRun = useCallback(async (agentId: string, input: string, options?: StartRunOptions): Promise<HermesRunStatus> => {
-    if (startingRuns.current.has(agentId) || isRunActive(runtime[agentId]?.activeRun?.status)) {
-      throw new Error('Finish or stop the current run before starting another thread.');
+    const key = JSON.stringify([agentId, options?.sessionId]);
+    if (startingRuns.current.has(key) || (options?.sessionId && Object.values(runtimeRef.current[agentId]?.runs ?? {}).some((run) => run.sessionId === options.sessionId && isRunActive(run.status)))) {
+      throw new Error('Finish or stop the current run in this thread before sending another message.');
     }
-    startingRuns.current.add(agentId);
+    startingRuns.current.add(key);
     try {
       const agent = catalog.get(agentId);
       if (!agent) throw new Error(`Unknown agent: ${agentId}`);
@@ -302,7 +323,9 @@ export function EkhoProvider({
       if (!client) throw new Error('Agent is offline');
       const result = await client.startRun(input, options);
       const status = { ...result, sessionId: result.sessionId ?? options?.sessionId };
-      updateRuntime(agentId, { status: 'connected', activeRun: status, events: [] });
+      const previousRuns = runtimeRef.current[agentId]?.runs ?? {};
+      updateRun(agentId, status);
+      updateRuntime(agentId, { status: 'connected' });
       if (status.sessionId) {
         const key = `${agentId}:${status.sessionId}`;
         setMessages((current) => ({ ...current, [key]: [...(current[key] ?? []), { id: `run-user-${status.runId}`, role: 'user', content: attachmentMessage(input, options?.attachments), timestamp: status.createdAt }] }));
@@ -317,11 +340,14 @@ export function EkhoProvider({
           });
         }).catch(() => undefined);
       }
-      await catalog.update(agentId, { activeRunId: status.runId });
+      await catalog.update(agentId, { activeRunIds: [...new Set([
+        ...(catalog.get(agentId)?.activeRunIds ?? []).filter((id) => !status.sessionId || previousRuns[id]?.sessionId !== status.sessionId),
+        status.runId,
+      ])] });
       setAgents(catalog.list());
       return status;
-    } finally { startingRuns.current.delete(agentId); }
-  }, [catalog, refreshAgent, runtime, subscribe, updateRuntime]);
+    } finally { startingRuns.current.delete(key); }
+  }, [catalog, refreshAgent, subscribe, updateRuntime, updateRun, setRuntime]);
 
   const uploadAttachment = useCallback(async (agentId: string, file: { name: string; mimeType: string; data: string }) => {
     const client = clients.current.get(agentId);
@@ -334,14 +360,13 @@ export function EkhoProvider({
   }, []);
   const attachmentSource = useCallback((agentId: string, id: string) => clients.current.get(agentId)?.attachmentSource(id), []);
 
-  const stopRun = useCallback(async (agentId: string, runId?: string): Promise<HermesRunStatus> => {
+  const stopRun = useCallback(async (agentId: string, runId: string): Promise<HermesRunStatus> => {
     const client = clients.current.get(agentId);
-    const activeRunId = runId ?? runtime[agentId]?.activeRun?.runId ?? catalog.get(agentId)?.activeRunId;
-    if (!client || !activeRunId) throw new Error('No active run');
-    const status = await client.stopRun(activeRunId);
-    updateRuntime(agentId, { activeRun: status });
+    if (!client) throw new Error('Agent is offline');
+    const status = await client.stopRun(runId);
+    updateRun(agentId, status);
     return status;
-  }, [catalog, runtime, updateRuntime]);
+  }, [updateRun]);
 
   const createSession = useCallback(async (agentId: string, title?: string): Promise<string> => {
     let client = clients.current.get(agentId);
@@ -352,9 +377,23 @@ export function EkhoProvider({
     if (!client) throw new Error('Agent is offline');
     const session = await client.createSession(title ? { title } : {});
     newSessions.current.add(`${agentId}:${session.id}`);
-    updateRuntime(agentId, { sessions: [session, ...(runtime[agentId]?.sessions ?? [])] });
+    setRuntime((current) => {
+      const existing = current[agentId] ?? emptyRuntime();
+      return { ...current, [agentId]: { ...existing, sessions: [session, ...existing.sessions.filter((item) => item.id !== session.id)] } };
+    });
     return session.id;
-  }, [refreshAgent, runtime, updateRuntime]);
+  }, [refreshAgent, setRuntime]);
+
+  const saveInbox = useCallback(async (agentId: string, settled: InboxSettledState, importOnly = false): Promise<void> => {
+    const client = clients.current.get(agentId);
+    if (!client) throw new Error('Connect to the agent to update finished threads.');
+    const saved = await client.inbox(settled, importOnly);
+    setRuntime((current) => {
+      const state = current[agentId];
+      if (!state) return current;
+      return { ...current, [agentId]: { ...state, sessions: state.sessions.map((session) => ({ ...session, settledAt: saved[session.id] })) } };
+    });
+  }, [setRuntime]);
 
   const sessionMessages = useCallback(async (agentId: string, sessionId: string): Promise<readonly HermesMessage[]> => {
     let client = clients.current.get(agentId);
@@ -380,11 +419,11 @@ export function EkhoProvider({
     const status = await client.runStatus(runId);
     setRuntime((current) => {
       const existing = current[agentId];
-      if (!existing || existing.activeRun?.runId !== runId) return current;
-      return { ...current, [agentId]: { ...existing, activeRun: status, events: [...existing.events, { event: 'approval.responded', runId }] } };
+      if (!existing || !existing.runs[runId]) return current;
+      return { ...current, [agentId]: { ...existing, runs: { ...existing.runs, [runId]: status }, events: [...existing.events, { event: 'approval.responded', runId }] } };
     });
     return result;
-  }, []);
+  }, [setRuntime]);
 
   const retryAgent = useCallback((agentId: string) => refreshAgent(agentId), [refreshAgent]);
 
@@ -403,7 +442,7 @@ export function EkhoProvider({
       for (const key of Object.keys(next)) if (key.startsWith(`${agentId}:`)) delete next[key];
       return next;
     });
-  }, [catalog, closeSubscription]);
+  }, [catalog, closeSubscription, setRuntime]);
 
   const value = useMemo<EkhoContextValue>(() => ({
     agents,
@@ -417,12 +456,13 @@ export function EkhoProvider({
     startRun,
     createSession,
     sessionMessages,
+    saveInbox,
     uploadAttachment,
     attachmentSource,
     stopRun,
     approveRun,
     removeAgent,
-  }), [agents, attachmentSource, uploadAttachment, approveRun, createSession, error, loading, messages, pair, refreshAgent, removeAgent, retryAgent, runtime, sessionMessages, startRun, stopRun]);
+  }), [saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, error, loading, messages, pair, refreshAgent, removeAgent, retryAgent, runtime, sessionMessages, startRun, stopRun]);
 
   return <EkhoContext.Provider value={value}>{children}</EkhoContext.Provider>;
 }

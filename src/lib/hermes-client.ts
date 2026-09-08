@@ -19,6 +19,7 @@ import type {
   HermesRunState,
   HermesRunStatus,
   HermesSession,
+  InboxSettledState,
   StartRunOptions,
 } from './types';
 
@@ -204,9 +205,35 @@ export class HermesClient {
   }
 
   async sessions(): Promise<readonly HermesSession[]> {
-    const body = await this.request('/api/sessions?limit=200');
+    const [body, settled] = await Promise.all([this.request('/api/sessions?limit=200'), this.inbox()]);
     if (!isJsonObject(body) || !Array.isArray(body.data)) throw new Error('Hermes sessions response was invalid');
-    return body.data.map(parseSession);
+    return body.data.map((value) => {
+      const session = parseSession(value);
+      return { ...session, settledAt: settled[session.id] };
+    });
+  }
+
+  async inbox(settled?: InboxSettledState, importOnly = false): Promise<InboxSettledState> {
+    let body: unknown;
+    try {
+      body = await this.request('/v1/inbox', settled ? {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settled, importOnly }),
+      } : {});
+    } catch (error) {
+      if (error instanceof HermesRequestError && error.status === 404) {
+        if (!settled) return {};
+        throw new Error('Update the Ekho connector to sync finished threads.');
+      }
+      throw error;
+    }
+    if (!isJsonObject(body) || !isJsonObject(body.settled)) throw new Error('Invalid inbox response');
+    const result: Record<string, number | null> = {};
+    for (const [id, timestamp] of Object.entries(body.settled)) {
+      if (timestamp !== null && (typeof timestamp !== 'number' || !Number.isFinite(timestamp) || timestamp < 0)) throw new Error('Invalid inbox timestamp');
+      result[id] = timestamp;
+    }
+    return result;
   }
 
   async sessionMessages(sessionId: string): Promise<readonly HermesMessage[]> {

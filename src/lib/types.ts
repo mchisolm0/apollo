@@ -15,7 +15,7 @@ export interface AgentRecord {
   endpoint: AgentEndpoint;
   createdAt: number;
   lastConnectedAt?: number;
-  activeRunId?: string;
+  activeRunIds?: readonly string[];
   capabilities?: HermesCapabilities;
 }
 
@@ -49,7 +49,10 @@ export interface HermesCapabilities {
   endpoints?: Record<string, { method?: string; path?: string }>;
 }
 
+export type InboxSettledState = Readonly<Record<string, number | null>>;
+
 export interface HermesSession {
+  settledAt?: number | null;
   id: string;
   source?: string;
   model?: string;
@@ -154,6 +157,6 @@ export interface AgentRuntimeState {
   error?: string;
   capabilities?: HermesCapabilities;
   sessions: readonly HermesSession[];
-  activeRun?: HermesRunStatus;
+  runs: Readonly<Record<string, HermesRunStatus>>;
   events: readonly HermesRunEvent[];
 }

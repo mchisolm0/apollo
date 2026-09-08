@@ -6,7 +6,7 @@ Use relay-ui.tsx for colors, type/spacing tokens, RelayHeader, IconButton, Relay
 
 Session navigation uses the native stack in `(sessions)/_layout.tsx`. The index is the full-width thread inbox; threads push onto it and Back to threads dismisses to that inbox. Pairing and settings remain on the root stack. The inbox uses already-loaded sessions, with no navigation-time fetch. Needs you includes approvals and unread results, Open includes idle conversations, and Finished uses the existing explicit settle ledger. Finishing a thread does not stop a run.
 
-Runtime sessions live in memory. AsyncStorage persists drafts and the read/settle ledgers. Ordinary transcript changes preserve inbox row identities. Add another persistence engine only after a measured storage bottleneck.
+Runtime sessions live in memory. AsyncStorage persists drafts and the read ledger. The connector persists settle timestamps shared by paired devices through `/v1/inbox`; they refresh on connection and foreground. Existing local settle entries import only when the server has no entry, including no reopen tombstone. New activity after the saved timestamp reopens a thread. Update the connector before using server-backed settle actions. Ordinary transcript changes preserve inbox row identities. Add another persistence engine only after a measured storage bottleneck.
 
 Native action sheets expose secondary session actions; swipe and accessibility actions provide alternate access. Settings must scroll and wrap values at larger text sizes. Assistant content uses Enriched Markdown. A compatible native build is required; Metro cannot install native views. Rebuild the development client after adding or changing native dependencies.
 
