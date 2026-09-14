@@ -1,10 +1,10 @@
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import { Alert, Linking, Platform } from 'react-native';
 import { EnrichedMarkdownText, type MarkdownStyle } from 'react-native-enriched-markdown';
 
 import { perlBlocks } from './perl-blocks';
 import { PerlCode } from './perl-code';
-import { relayColors as colors } from './relay-ui';
+import { relayColors as colors, useTextScale } from './relay-ui';
 
 function openLink({ url }: { url: string }) {
   // Content may contain commands or app deep links. Only open normal web links.
@@ -15,21 +15,21 @@ function openLink({ url }: { url: string }) {
   void Linking.openURL(url).catch(() => Alert.alert('Could not open link', 'Try again or copy the link from the message.'));
 }
 
-const markdownStyle: MarkdownStyle = (() => {
-    const paragraph = { color: colors.primary, fontSize: 16, lineHeight: 24, marginTop: 0, marginBottom: 10 };
+function markdownStyleFor(factor: number): MarkdownStyle {
+    const paragraph = { color: colors.primary, fontSize: 16 * factor, lineHeight: 24 * factor, marginTop: 0, marginBottom: 10 };
     return {
       paragraph,
-      h1: { ...paragraph, fontSize: 24, lineHeight: 30, fontWeight: '600', marginTop: 12 },
-      h2: { ...paragraph, fontSize: 21, lineHeight: 27, fontWeight: '600', marginTop: 12 },
-      h3: { ...paragraph, fontSize: 18, fontWeight: '600' },
+      h1: { ...paragraph, fontSize: 24 * factor, lineHeight: 30 * factor, fontWeight: '600', marginTop: 12 },
+      h2: { ...paragraph, fontSize: 21 * factor, lineHeight: 27 * factor, fontWeight: '600', marginTop: 12 },
+      h3: { ...paragraph, fontSize: 18 * factor, fontWeight: '600' },
       h4: paragraph, h5: paragraph, h6: paragraph,
       list: { ...paragraph, bulletColor: colors.secondary, gapWidth: 8, itemSpacing: 6 },
       link: { color: colors.cyan, underline: true },
-      code: { fontSize: 14, color: '#e8e8ed', backgroundColor: '#19191b', borderColor: '#19191b', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+      code: { fontSize: 14 * factor, color: '#e8e8ed', backgroundColor: '#19191b', borderColor: '#19191b', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
       codeBlock: {
         color: '#e8e8ed', backgroundColor: '#151517',
         fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-        fontSize: 13, lineHeight: 21, padding: 14, borderRadius: 8,
+        fontSize: 13 * factor, lineHeight: 21 * factor, padding: 14, borderRadius: 8,
         borderColor: '#151517', borderWidth: 0, marginBottom: 24,
         // Keep punctuation and identifiers neutral; color conveys token roles.
         syntaxColors: {
@@ -44,9 +44,11 @@ const markdownStyle: MarkdownStyle = (() => {
       image: { maxHeight: 320, resizeMode: 'contain', borderRadius: 4 },
       thematicBreak: { color: colors.line },
     };
-})();
+}
 
 export const MessageContent = memo(function MessageContent({ text }: { text: string }) {
+  const { factor } = useTextScale();
+  const markdownStyle = useMemo(() => markdownStyleFor(factor), [factor]);
   return <>{perlBlocks(text).map((part, index) => part.kind === 'perl'
     ? <PerlCode key={index} code={part.text} />
     : <EnrichedMarkdownText key={index} markdown={part.text} markdownStyle={markdownStyle} flavor="github" selectable onLinkPress={openLink} containerStyle={{ backgroundColor: colors.background }} />)}</>;

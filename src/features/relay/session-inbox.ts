@@ -11,11 +11,44 @@ export interface InboxSession extends RelaySession {
   settled: boolean;
   attention: boolean;
   pendingApproval: boolean;
+  failed: boolean;
   settledAt?: number;
   sortAt: number;
 }
 
 export type InboxSettled = Readonly<Record<string, number>>;
+
+/** Local-only snooze ledger: session id -> until timestamp (unix seconds). Expired entries reappear. */
+export type InboxSnoozed = Readonly<Record<string, number>>;
+
+export const SNOOZE_DURATION_SECONDS = 24 * 60 * 60;
+
+function nowSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+export function snoozeSession(ledger: InboxSnoozed, sessionId: string, until: number): InboxSnoozed {
+  return { ...ledger, [sessionId]: until };
+}
+
+export function unsnoozeSession(ledger: InboxSnoozed, sessionId: string): InboxSnoozed {
+  if (!(sessionId in ledger)) return ledger;
+  const next = { ...ledger };
+  delete next[sessionId];
+  return next;
+}
+
+export function isSessionSnoozed(ledger: InboxSnoozed, sessionId: string, atSeconds: number = nowSeconds()): boolean {
+  return (ledger[sessionId] ?? 0) > atSeconds;
+}
+
+export function pruneSnoozedLedger(ledger: InboxSnoozed, atSeconds: number = nowSeconds()): InboxSnoozed {
+  return Object.fromEntries(Object.entries(ledger).filter(([, until]) => until > atSeconds));
+}
+
+export function countSnoozedSessions(sessions: readonly { id: string }[], ledger: InboxSnoozed, atSeconds: number = nowSeconds()): number {
+  return sessions.reduce((count, session) => count + (isSessionSnoozed(ledger, session.id, atSeconds) ? 1 : 0), 0);
+}
 
 export type SessionInboxState = Pick<AgentRuntimeState, 'sessions' | 'runs' | 'events'>;
 
@@ -56,25 +89,25 @@ function statusForSession(
   events: readonly InboxEvent[],
   settledAt: number | undefined,
   readAt: number | undefined,
-): Pick<InboxSession, 'status' | 'settled' | 'attention' | 'pendingApproval'> {
+): Pick<InboxSession, 'status' | 'settled' | 'attention' | 'pendingApproval' | 'failed'> {
   const runBelongs = activeRun?.sessionId === session.id;
   const runEvents = runBelongs ? eventsForRun(events, activeRun) : [];
   const approval = runBelongs ? currentApproval(runEvents as readonly HermesRunEvent[], activeRun) : undefined;
   const latestRequest = runEvents.findLastIndex((event) => event.event === 'approval.request');
   const latestResponse = runEvents.findLastIndex((event) => event.event === 'approval.responded');
   const pendingApproval = Boolean(approval) || Boolean(runBelongs && activeRun?.status === 'waiting_for_approval' && latestResponse < latestRequest && !runEvents.some((event) => TERMINAL_RUNS.has(event.event.replace('run.', '') as HermesRunStatus['status'])));
-  const failed = Boolean(session.endReason?.toLowerCase().includes('fail') || session.endReason?.toLowerCase().includes('error') || (runBelongs && (activeRun?.status === 'failed' || runEvents.some((event) => event.event === 'run.failed'))));
+  const failed = Boolean(session.endReason?.toLowerCase().includes('fail') || session.endReason?.toLowerCase().includes('error') || (runBelongs && (activeRun?.status === 'failed' || Boolean(activeRun?.error) || runEvents.some((event) => event.event === 'run.failed' || event.event === 'run.error' || Boolean(event.error)))));
   const completed = session.endedAt !== undefined || (runBelongs && (activeRun?.status === 'completed' || runEvents.some((event) => event.event === 'run.completed')));
   const revived = settledAt === undefined || Math.max(sessionActivity(session), terminalActivity(session, activeRun, runEvents)) > settledAt;
 
   const unread = readAt === undefined || Math.max(sessionActivity(session), terminalActivity(session, activeRun, runEvents)) > readAt;
   if (pendingApproval || ((failed || completed) && revived && unread)) {
-    return { status: 'attention', settled: false, attention: true, pendingApproval };
+    return { status: 'attention', settled: false, attention: true, pendingApproval, failed };
   }
   if (settledAt !== undefined && !revived) {
-    return { status: 'settled', settled: true, attention: false, pendingApproval: false };
+    return { status: 'settled', settled: true, attention: false, pendingApproval: false, failed };
   }
-  return { status: 'active', settled: false, attention: false, pendingApproval: false };
+  return { status: 'active', settled: false, attention: false, pendingApproval: false, failed };
 }
 
 /** Derive the inbox from server state. Only events from the session’s current run contribute to terminal activity. */
@@ -127,7 +160,7 @@ export function reopenSession(session: InboxSession): InboxSession {
   return { ...session, status: 'attention', settled: false, attention: true, unread: true };
 }
 
-const presentationKeys = ['id', 'agentId', 'title', 'preview', 'updatedAt', 'running', 'unread', 'activityAt', 'sortAt', 'status', 'settled', 'attention', 'pendingApproval'] as const satisfies readonly (keyof InboxSession)[];
+const presentationKeys = ['id', 'agentId', 'title', 'preview', 'updatedAt', 'running', 'unread', 'activityAt', 'sortAt', 'status', 'settled', 'attention', 'pendingApproval', 'failed'] as const satisfies readonly (keyof InboxSession)[];
 
 /** Keep inbox rows stable while the active transcript streams unrelated text/tool events. */
 export function createSessionInboxProjector() {

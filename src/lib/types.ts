@@ -51,6 +51,20 @@ export interface HermesCapabilities {
 
 export type InboxSettledState = Readonly<Record<string, number | null>>;
 
+export interface HermesSkill {
+  name: string;
+  description?: string;
+  category?: string;
+}
+
+/** A model advertised by Hermes via GET /v1/models. Rendered as returned; never hardcoded. */
+export interface HermesModel {
+  id: string;
+  label?: string;
+  provider?: string;
+  default?: boolean;
+}
+
 export interface HermesSession {
   settledAt?: number | null;
   id: string;
@@ -135,6 +149,7 @@ export interface StartRunOptions {
   conversationHistory?: readonly { role: string; content: string }[];
   previousResponseId?: string;
   model?: string;
+  // No reasoning/tier/runtime params: the /v1/runs payload contract has no such fields.
   sessionKey?: string;
   idempotencyKey?: string;
 }

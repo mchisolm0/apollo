@@ -1,6 +1,7 @@
-import type { ComponentProps, ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { SymbolView } from 'expo-symbols';
 import type { AndroidSymbol, SFSymbol } from 'expo-symbols';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import type { ConnectionState, RunEventKind } from './types';
@@ -32,6 +33,47 @@ export const relayTypography = {
   body: { fontSize: 15, lineHeight: 22 },
   caption: { fontSize: 12, lineHeight: 16 },
 } as const;
+
+// Local-only reading text size. Dark mode only, no theme switch. Persisted across
+// relaunch; multiplies base sizes so the system fontScale keeps applying on top.
+export type TextScaleKey = 'small' | 'default' | 'large';
+export const TEXT_SCALE_FACTORS: Record<TextScaleKey, number> = { small: 0.875, default: 1, large: 1.18 };
+export const TEXT_SCALE_STORAGE_KEY = 'ekho:text-scale';
+
+export function parseTextScale(value: unknown): TextScaleKey {
+  return value === 'small' || value === 'large' ? value : 'default';
+}
+
+type TextScaleValue = { scale: TextScaleKey; factor: number; setScale: (next: TextScaleKey) => Promise<void> };
+
+const TextScaleContext = createContext<TextScaleValue>({ scale: 'default', factor: 1, setScale: async () => undefined });
+
+export function TextScaleProvider({ children }: { children: ReactNode }) {
+  const [scale, setScaleState] = useState<TextScaleKey>('default');
+  const userPicked = useRef(false);
+  useEffect(() => {
+    let live = true;
+    void AsyncStorage.getItem(TEXT_SCALE_STORAGE_KEY)
+      .then((saved) => { if (live && !userPicked.current) setScaleState(parseTextScale(saved)); })
+      .catch(() => undefined);
+    return () => { live = false; };
+  }, []);
+  const setScale = useCallback(async (next: TextScaleKey) => {
+    userPicked.current = true;
+    setScaleState(next);
+    try {
+      await AsyncStorage.setItem(TEXT_SCALE_STORAGE_KEY, next);
+    } catch {
+      // Keep the in-memory value; storage stays on best effort.
+    }
+  }, []);
+  const value = useMemo(() => ({ scale, factor: TEXT_SCALE_FACTORS[scale], setScale }), [scale, setScale]);
+  return <TextScaleContext.Provider value={value}>{children}</TextScaleContext.Provider>;
+}
+
+export function useTextScale(): TextScaleValue {
+  return useContext(TextScaleContext);
+}
 
 type ButtonTone = 'default' | 'route' | 'primary' | 'amber' | 'destructive';
 

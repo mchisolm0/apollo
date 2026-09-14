@@ -3,6 +3,8 @@ import { Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Prism from 'prismjs';
 import 'prismjs/components/prism-perl';
 
+import { useTextScale } from './relay-ui';
+
 const colors: Record<string, string> = {
   keyword: '#b8abdc', string: '#a3c9a8', number: '#d5b58b', comment: '#93939d',
   function: '#a5c4df', regex: '#a3c9a8', variable: '#a5c4df', operator: '#b8abdc',
@@ -15,9 +17,10 @@ function tokens(value: string | Prism.Token | (string | Prism.Token)[]): ReactNo
 
 /** The native renderer has no Perl grammar. Only these blocks use Prism. */
 export const PerlCode = memo(function PerlCode({ code }: { code: string }) {
+  const { factor } = useTextScale();
   return <View style={styles.block}>
-    <Text style={styles.label}>Perl</Text>
-    <ScrollView horizontal accessibilityLabel="Perl code"><Text selectable style={styles.code}>{tokens(Prism.tokenize(code, Prism.languages.perl))}</Text></ScrollView>
+    <Text style={[styles.label, { fontSize: 12 * factor }]}>Perl</Text>
+    <ScrollView horizontal accessibilityLabel="Perl code"><Text selectable style={[styles.code, { fontSize: 13 * factor, lineHeight: 21 * factor }]}>{tokens(Prism.tokenize(code, Prism.languages.perl))}</Text></ScrollView>
   </View>;
 });
 const styles = StyleSheet.create({

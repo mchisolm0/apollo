@@ -6,8 +6,12 @@ import { useEkho } from '@/lib';
 import {
   canSettleSession,
   createSessionInboxProjector,
+  isSessionSnoozed,
+  pruneSnoozedLedger,
+  SNOOZE_DURATION_SECONDS,
   type InboxSettled,
   type InboxSession,
+  type InboxSnoozed,
   type SessionInboxState,
 } from './session-inbox';
 
@@ -16,6 +20,7 @@ const STORAGE_PREFIX = 'ekho:session-inbox:';
 type InboxStoreSnapshot = {
   settled: InboxSettled;
   read: InboxSettled;
+  snoozed: InboxSnoozed;
   loaded: boolean;
   error?: string;
 };
@@ -23,6 +28,7 @@ type InboxStoreSnapshot = {
 type InboxStoreEntry = {
   settled: InboxSettled;
   read: InboxSettled;
+  snoozed: InboxSnoozed;
   loaded: boolean;
   error?: string;
   snapshot: InboxStoreSnapshot;
@@ -33,7 +39,7 @@ type InboxStoreEntry = {
 };
 
 const entries = new Map<string, InboxStoreEntry>();
-const SERVER_SNAPSHOT: InboxStoreSnapshot = { settled: {}, read: {}, loaded: false };
+const SERVER_SNAPSHOT: InboxStoreSnapshot = { settled: {}, read: {}, snoozed: {}, loaded: false };
 
 function storageKey(agentId: string): string {
   return `${STORAGE_PREFIX}${agentId}`;
@@ -42,7 +48,7 @@ function storageKey(agentId: string): string {
 function entryFor(agentId: string): InboxStoreEntry {
   let entry = entries.get(agentId);
   if (!entry) {
-    entry = { settled: {}, read: {}, loaded: false, snapshot: { settled: {}, read: {}, loaded: false }, listeners: new Set(), write: Promise.resolve() };
+    entry = { settled: {}, read: {}, snoozed: {}, loaded: false, snapshot: { settled: {}, read: {}, snoozed: {}, loaded: false }, listeners: new Set(), write: Promise.resolve() };
     entries.set(agentId, entry);
     entry.load = AsyncStorage.getItem(storageKey(agentId)).then((value) => {
       if (value) {
@@ -54,6 +60,7 @@ function entryFor(agentId: string): InboxStoreEntry {
               ? Object.fromEntries(Object.entries(value).filter(([, timestamp]) => typeof timestamp === 'number' && Number.isFinite(timestamp))) : {};
             entry!.settled = timestamps('settled' in data ? data.settled : data);
             entry!.read = timestamps(data.read);
+            entry!.snoozed = pruneSnoozedLedger(timestamps(data.snoozed));
           }
         } catch {
           entry!.error = 'Session inbox data could not be read.';
@@ -64,7 +71,7 @@ function entryFor(agentId: string): InboxStoreEntry {
       entry!.loaded = true;
       entry!.error = 'Session inbox data could not be read.';
     }).finally(() => {
-      entry!.snapshot = { settled: entry!.settled, read: entry!.read, loaded: entry!.loaded, error: entry!.error };
+      entry!.snapshot = { settled: entry!.settled, read: entry!.read, snoozed: entry!.snoozed, loaded: entry!.loaded, error: entry!.error };
       entry!.load = undefined;
       entry!.listeners.forEach((listener) => listener());
     });
@@ -82,29 +89,74 @@ function snapshot(agentId: string): InboxStoreSnapshot {
   return entryFor(agentId).snapshot;
 }
 
-function update(agentId: string, settled: InboxSettled, read: InboxSettled = entryFor(agentId).read): Promise<void> {
+function update(agentId: string, settled: InboxSettled, read: InboxSettled = entryFor(agentId).read, snoozed: InboxSnoozed = entryFor(agentId).snoozed): Promise<void> {
   const entry = entryFor(agentId);
   entry.settled = settled;
   entry.read = read;
+  entry.snoozed = snoozed;
   entry.error = undefined;
-  entry.snapshot = { settled, read, loaded: entry.loaded };
+  entry.snapshot = { settled, read, snoozed, loaded: entry.loaded };
   entry.listeners.forEach((listener) => listener());
-  entry.write = entry.write.then(() => AsyncStorage.setItem(storageKey(agentId), JSON.stringify({ settled, read }))).catch(() => {
+  entry.write = entry.write.then(() => AsyncStorage.setItem(storageKey(agentId), JSON.stringify({ settled, read, snoozed }))).catch(() => {
     entry.error = 'Session inbox changes could not be saved.';
-    entry.snapshot = { settled: entry.settled, read: entry.read, loaded: entry.loaded, error: entry.error };
+    entry.snapshot = { settled: entry.settled, read: entry.read, snoozed: entry.snoozed, loaded: entry.loaded, error: entry.error };
     entry.listeners.forEach((listener) => listener());
   });
   return entry.write;
+}
+
+/** Local-only snooze writes shared with the inbox store. Expired entries are pruned on write. */
+async function snoozeInStore(agentId: string, sessionId: string, durationSeconds: number = SNOOZE_DURATION_SECONDS): Promise<boolean> {
+  const entry = entryFor(agentId);
+  if (!entry.loaded) return false;
+  const duration = Number.isFinite(durationSeconds) && durationSeconds > 0 ? durationSeconds : SNOOZE_DURATION_SECONDS;
+  const now = Math.floor(Date.now() / 1000);
+  await update(agentId, entry.settled, entry.read, { ...pruneSnoozedLedger(entry.snoozed, now), [sessionId]: now + duration });
+  return true;
+}
+
+async function unsnoozeInStore(agentId: string, sessionId: string): Promise<boolean> {
+  const entry = entryFor(agentId);
+  if (!entry.loaded || !isSessionSnoozed(entry.snoozed, sessionId)) return false;
+  const next = { ...entry.snoozed };
+  delete next[sessionId];
+  await update(agentId, entry.settled, entry.read, next);
+  return true;
+}
+
+/** Re-render at the next snooze expiry so expired threads leave the Snoozed section on their own. */
+function useSnoozeExpiry(agentId: string, snoozed: InboxSnoozed) {
+  useEffect(() => {
+    const now = Math.floor(Date.now() / 1000);
+    let next: number | undefined;
+    for (const until of Object.values(snoozed)) {
+      if (until > now && (next === undefined || until < next)) next = until;
+    }
+    if (next === undefined) return;
+    const timer = setTimeout(() => {
+      const entry = entryFor(agentId);
+      const pruned = pruneSnoozedLedger(entry.snoozed);
+      if (Object.keys(pruned).length !== Object.keys(entry.snoozed).length) {
+        void update(agentId, entry.settled, entry.read, pruned);
+      } else {
+        entry.listeners.forEach((listener) => listener());
+      }
+    }, Math.max(0, next * 1000 - Date.now() + 50));
+    return () => clearTimeout(timer);
+  }, [agentId, snoozed]);
 }
 
 export type SessionInboxActions = {
   markRead: (sessionId: string) => Promise<void>;
   settle: (sessionId: string) => Promise<boolean>;
   reopen: (sessionId: string) => Promise<boolean>;
+  snooze: (sessionId: string, durationSeconds?: number) => Promise<boolean>;
+  unsnooze: (sessionId: string) => Promise<boolean>;
 };
 
 export type SessionInboxResult = {
   sessions: InboxSession[];
+  snoozed: InboxSnoozed;
   loaded: boolean;
   error?: string;
 } & SessionInboxActions;
@@ -119,6 +171,7 @@ export function useSessionInbox(agentId: string, state: SessionInboxState | unde
   );
   const project = useMemo(() => createSessionInboxProjector(), []);
   const sessions = useMemo(() => project(agentId, state, store.settled, store.read), [project, agentId, state, store.settled, store.read]);
+  useSnoozeExpiry(agentId, store.snoozed);
 
   const reportError = useCallback((cause: unknown) => {
     const entry = entryFor(agentId);
@@ -171,5 +224,35 @@ export function useSessionInbox(agentId: string, state: SessionInboxState | unde
     } catch (cause) { reportError(cause); return false; }
   }, [agentId, sessions, store.loaded, saveInbox, reportError]);
 
-  return { sessions, loaded: store.loaded, error: store.error, markRead, settle, reopen };
+  const snooze = useCallback(async (sessionId: string, durationSeconds?: number): Promise<boolean> => {
+    return snoozeInStore(agentId, sessionId, durationSeconds);
+  }, [agentId]);
+
+  const unsnooze = useCallback(async (sessionId: string): Promise<boolean> => {
+    return unsnoozeInStore(agentId, sessionId);
+  }, [agentId]);
+
+  return { sessions, snoozed: store.snoozed, loaded: store.loaded, error: store.error, markRead, settle, reopen, snooze, unsnooze };
+}
+
+/** Standalone access to the local-only snooze ledger for views that receive sessions as props. */
+export function useSnoozeLedger(agentId: string): {
+  snoozed: InboxSnoozed;
+  loaded: boolean;
+  snooze: (sessionId: string, durationSeconds?: number) => Promise<boolean>;
+  unsnooze: (sessionId: string) => Promise<boolean>;
+} {
+  const store = useSyncExternalStore(
+    useCallback((listener) => subscribe(agentId, listener), [agentId]),
+    useCallback(() => snapshot(agentId), [agentId]),
+    useCallback(() => SERVER_SNAPSHOT, []),
+  );
+  const snooze = useCallback(async (sessionId: string, durationSeconds?: number): Promise<boolean> => {
+    return snoozeInStore(agentId, sessionId, durationSeconds);
+  }, [agentId]);
+  const unsnooze = useCallback(async (sessionId: string): Promise<boolean> => {
+    return unsnoozeInStore(agentId, sessionId);
+  }, [agentId]);
+  useSnoozeExpiry(agentId, store.snoozed);
+  return { snoozed: store.snoozed, loaded: store.loaded, snooze, unsnooze };
 }

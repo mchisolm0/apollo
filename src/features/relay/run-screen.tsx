@@ -1,13 +1,18 @@
 import { splitAttachmentMessage, type AttachmentSource, type DraftAttachment } from '../../lib/attachments';
 import { AttachmentStrip } from './attachment-strip';
-import { memo, useCallback, useRef, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
+import { memo, useCallback, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
+import { MenuView } from '@expo/ui/community/menu';
 import { LegendList, useRecyclingState, type LegendListRef } from '@legendapp/list/react-native';
 
-import { ConnectionAction, ConnectionMark, IconButton, relayColors as colors, styles as uiStyles } from './relay-ui';
+import { ConnectionAction, ConnectionMark, IconButton, relayColors as colors, useTextScale } from './relay-ui';
+import { KeyboardFrame } from './keyboard-frame';
+import { insertSkill, matchingSkills, selectedSkillNames, skillTrigger, type SkillTrigger } from './composer-skills';
 import { showSessionActions } from './session-actions';
 import { MessageContent } from './message-content';
+import { ModelPicker } from './model-picker';
+import type { HermesModel, HermesSkill } from '../../lib/types';
 import type { ApprovalRequest, ConnectionState, RelaySession } from './types';
 import { friendlyToolName, type TranscriptRow, type TranscriptTool } from './transcript';
 
@@ -20,6 +25,7 @@ export type RunScreenProps = {
   attachments?: readonly DraftAttachment[];
   isPicking?: boolean;
   onAddAttachments?: () => void;
+  onPickAttachments?: (kind: 'photos' | 'files') => void;
   onRemoveAttachment?: (id: string) => void;
   attachmentSource?: (id: string) => AttachmentSource | undefined;
   agentName?: string;
@@ -28,6 +34,15 @@ export type RunScreenProps = {
   isActing?: boolean;
   statusLabel?: string;
   error?: string;
+  skills?: readonly HermesSkill[];
+  skillsLoading?: boolean;
+  skillsError?: string;
+  onRefreshSkills?: () => void;
+  models?: readonly HermesModel[];
+  modelsLoading?: boolean;
+  defaultModel?: string;
+  selectedModel?: string;
+  onSelectModel?: (modelId: string) => void;
   onBack?: () => void;
   onSessionActions?: () => void;
   onDraftChange?: (value: string) => void;
@@ -39,20 +54,45 @@ export type RunScreenProps = {
   onDeny?: (approval: ApprovalRequest) => void;
 };
 
-export function RunScreen({ session, events, connection, approval, draft = '', attachments = [], isPicking = false, onAddAttachments, onRemoveAttachment, attachmentSource, agentName, isSending = false, isLoading = false, isActing = false, statusLabel, error, onBack, onSessionActions, onDraftChange, onSend, onStop, onReconnect, onAgentDetails, onApprove, onDeny }: RunScreenProps) {
+export function RunScreen({ session, events, connection, approval, draft = '', attachments = [], isPicking = false, onAddAttachments, onPickAttachments, onRemoveAttachment, attachmentSource, agentName, isSending = false, isLoading = false, isActing = false, statusLabel, error, skills = [], skillsLoading = false, skillsError, onRefreshSkills, models = [], modelsLoading = false, defaultModel, selectedModel, onSelectModel, onBack, onSessionActions, onDraftChange, onSend, onStop, onReconnect, onAgentDetails, onApprove, onDeny }: RunScreenProps) {
   const { fontScale } = useWindowDimensions();
+  const { factor } = useTextScale();
   const list = useRef<LegendListRef>(null);
+  const input = useRef<TextInput>(null);
   const dragging = useRef(false);
   const [following, setFollowing] = useState(true);
+  const [observedSelection, setObservedSelection] = useState<{ start: number; end: number; text: string }>();
+  const [inputSelection, setInputSelection] = useState<{ start: number; end: number }>();
+  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [skillsDismissed, setSkillsDismissed] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
+  const activeModel = selectedModel ?? defaultModel ?? models[0]?.id;
+  const selection = observedSelection?.text === draft
+    ? { start: Math.min(observedSelection.start, draft.length), end: Math.min(observedSelection.end, draft.length) }
+    : { start: draft.length, end: draft.length };
   const suspendFollow = useCallback(() => setFollowing(false), []);
   const renderItem = useCallback(({ item }: { item: TranscriptRow }) => <TranscriptEntry row={item} agentName={agentName ?? 'Hermes'} attachmentSource={attachmentSource} onDisclosure={suspendFollow} />, [suspendFollow, agentName, attachmentSource]);
   const canSend = connection === 'connected' && !isSending && !isActing && !isPicking && Boolean(draft.trim() || attachments.length);
+  const typedSkill = selection.start === selection.end ? skillTrigger(draft, selection.end) : undefined;
+  const skillMenuTrigger: SkillTrigger | undefined = !skillsDismissed ? typedSkill ?? (skillsOpen ? { query: '', start: selection.end, end: selection.end } : undefined) : undefined;
+  const skillMatches = matchingSkills(skillMenuTrigger, skills);
+  const selectedSkills = useMemo(() => selectedSkillNames(draft, skills), [draft, skills]);
+  const chooseSkill = (skill: HermesSkill) => {
+    if (!skillMenuTrigger) return;
+    const result = insertSkill(draft, skillMenuTrigger, skill.name);
+    onDraftChange?.(result.text);
+    setObservedSelection({ start: result.cursor, end: result.cursor, text: result.text });
+    setInputSelection({ start: result.cursor, end: result.cursor });
+    setSkillsOpen(false);
+    setSkillsDismissed(false);
+    requestAnimationFrame(() => input.current?.focus());
+  };
   return (
-    <KeyboardAvoidingView key={fontScale} style={uiStyles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <KeyboardFrame key={fontScale}>
       <View style={styles.navigation}>
         <Pressable accessibilityRole="button" accessibilityLabel="Back to threads" onPress={onBack} style={styles.back}><SymbolView name={{ ios: 'chevron.left', android: 'arrow_back', web: 'arrow_back' }} size={21} tintColor={colors.primary} /></Pressable>
         <View style={styles.heading}>
-          <Text accessibilityRole="header" style={styles.threadTitle} numberOfLines={fontScale > 1.3 ? 2 : 1}># {session.title}</Text>
+          <Text accessibilityRole="header" style={styles.threadTitle} numberOfLines={fontScale > 1.3 ? 2 : 1}>{session.title}</Text>
           <View style={styles.agentLine}><ConnectionMark state={connection} /><Text style={styles.agentName}>{agentName ?? 'Hermes'}{statusLabel ? ` · ${statusLabel}` : ''}</Text></View>
         </View>
         <ConnectionAction state={connection} onReconnect={onReconnect} onDetails={onAgentDetails} />
@@ -68,7 +108,7 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
         estimatedItemSize={100}
         drawDistance={500}
         contentContainerStyle={styles.listContent}
-        ListEmptyComponent={isLoading ? <ActivityIndicator color={colors.cyan} accessibilityLabel="Loading messages" /> : <View style={styles.empty}><Text style={styles.emptyTitle}>What should Hermes do?</Text><Text style={styles.emptyText}>Add links or code for context.</Text></View>}
+        ListEmptyComponent={isLoading ? <ActivityIndicator color={colors.cyan} accessibilityLabel="Loading messages" /> : <NewThreadEmpty agentName={agentName ?? 'Hermes'} connection={connection} />}
         initialScrollAtEnd
         maintainVisibleContentPosition
         // Keep the reading position when the keyboard resizes the viewport.
@@ -104,39 +144,114 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
         </View>
       ) : (
         <View style={styles.composer}>
-          <AttachmentStrip files={attachments.map((file) => ({ ...file, source: { uri: file.uri } }))} onRemove={onRemoveAttachment} disabled={isActing || isPicking} />
+          {skillMenuTrigger ? <SkillMenu skills={skillMatches} loading={skillsLoading} error={skillsError} onRetry={onRefreshSkills} onSelect={chooseSkill} /> : null}
           <View style={styles.composerField}>
-            <Pressable accessibilityRole="button" accessibilityLabel="Add attachments" accessibilityState={{ disabled: isActing || isPicking }} disabled={isActing || isPicking} onPress={onAddAttachments} style={styles.attachButton}><SymbolView name={{ ios: 'plus', android: 'add', web: 'add' }} size={22} tintColor={isActing || isPicking ? colors.muted : colors.secondary} /></Pressable>
-            <View style={styles.inputSlot}>
+            <AttachmentStrip files={attachments.map((file) => ({ ...file, source: { uri: file.uri } }))} onRemove={onRemoveAttachment} disabled={isActing || isPicking} />
             <TextInput
-              style={styles.input}
+              ref={input}
+              style={[styles.input, { fontSize: 17 * factor, lineHeight: 23 * factor }]}
               value={draft}
               editable={!isActing}
-              onChangeText={onDraftChange}
-              multiline={false}
-              returnKeyType="send"
-              submitBehavior="submit"
-              onSubmitEditing={() => { if (canSend) onSend(draft.trim()); }}
+              onChangeText={(value) => { setObservedSelection((previous) => previous ? { start: Math.min(previous.start, value.length), end: Math.min(previous.end, value.length), text: value } : previous); setInputSelection(undefined); setSkillsOpen(false); setSkillsDismissed(false); onDraftChange?.(value); }}
+              multiline
+              scrollEnabled
+              selection={inputSelection}
+              onSelectionChange={(event) => { setObservedSelection({ ...event.nativeEvent.selection, text: draft }); setInputSelection(undefined); setSkillsDismissed(false); }}
               maxLength={8000}
+              placeholder={`Message ${agentName ?? 'Hermes'}`}
               placeholderTextColor={colors.secondary}
               selectionColor={colors.cyan}
               accessibilityLabel="Message Hermes"
               accessibilityHint={connection !== 'connected' ? 'Drafts are saved. Reconnect to send.' : undefined}
             />
-            {!draft ? <View pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={styles.placeholderContainer}>
-              <Text numberOfLines={1} ellipsizeMode="tail" style={styles.placeholder}>Message #{session.title === 'New thread' ? 'new-thread' : session.title}</Text>
-            </View> : null}
+            <View style={styles.toolbar}>
+              {onPickAttachments && Platform.OS !== 'web' ? (
+                <MenuView
+                  actions={[
+                    { id: 'photos', title: 'Photos', image: 'photo', attributes: { disabled: isActing || isPicking } },
+                    { id: 'files', title: 'Files', image: 'doc', attributes: { disabled: isActing || isPicking } },
+                  ]}
+                  onPressAction={(event) => onPickAttachments(event.nativeEvent.event === 'photos' ? 'photos' : 'files')}
+                  style={styles.nativeMenu}
+                >
+                  <ComposerIcon name="plus" label="Add attachments" disabled={isActing || isPicking} />
+                </MenuView>
+              ) : <ComposerIcon name="plus" label="Add attachments" disabled={isActing || isPicking} onPress={onAddAttachments} />}
+              <ComposerIcon
+                name="shippingbox"
+                label={selectedSkills.length ? `Skills, ${selectedSkills.length} selected` : 'Skills'}
+                selected={Boolean(skillMenuTrigger)}
+                disabled={isActing}
+                onPress={() => {
+                  if (skillMenuTrigger) {
+                    setSkillsOpen(false);
+                    setSkillsDismissed(true);
+                  } else {
+                    setSkillsOpen(true);
+                    setSkillsDismissed(false);
+                    requestAnimationFrame(() => input.current?.focus());
+                  }
+                }}
+              />
+              {activeModel ? (
+                <Pressable accessibilityRole="button" accessibilityLabel={`Model, ${activeModel}`} onPress={() => setModelOpen(true)} style={({ pressed }) => [styles.modelButton, { opacity: pressed ? 0.6 : 1 }]}>
+                  <Text numberOfLines={1} style={styles.modelLabel}>{shortModelName(activeModel)}</Text>
+                </Pressable>
+              ) : null}
+              <View style={styles.toolbarSpacer} />
+              {isSending ? <IconButton name="stop.fill" label="Stop run" tone="destructive" disabled={isActing || connection !== 'connected'} onPress={onStop} />
+                : <IconButton name="arrow.up" label={isActing ? 'Sending message' : 'Send message'} tone="primary" disabled={!canSend} onPress={() => onSend(draft.trim())} />}
             </View>
-            {isSending ? <IconButton name="stop.fill" label="Stop run" tone="destructive" disabled={isActing || connection !== 'connected'} onPress={onStop} />
-              : <IconButton name="arrow.up" label={isActing ? 'Sending message' : 'Send message'} tone="primary" disabled={!canSend} onPress={() => onSend(draft.trim())} />}
           </View>
         </View>
       )}
-    </KeyboardAvoidingView>
+      <Modal visible={modelOpen} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setModelOpen(false)}>
+        <View style={styles.modelSheet}>
+          <View style={styles.modelSheetHeader}>
+            <Text style={styles.modelSheetTitle}>Model</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel="Close model picker" onPress={() => setModelOpen(false)} style={styles.modelSheetClose}><Text style={styles.modelSheetCloseText}>Close</Text></Pressable>
+          </View>
+          <ModelPicker models={models} defaultModel={defaultModel} selected={selectedModel} loading={modelsLoading} onSelect={(id) => { onSelectModel?.(id); setModelOpen(false); }} />
+        </View>
+      </Modal>
+    </KeyboardFrame>
   );
 }
 
+/** Short display name for a Hermes model id. The full id stays visible inside the picker. */
+function shortModelName(modelId: string): string {
+  const tail = modelId.split('/').pop() ?? modelId;
+  return tail.split(':')[0] || modelId;
+}
+
+function ComposerIcon({ name, label, disabled = false, selected = false, onPress }: { name: 'plus' | 'shippingbox'; label: string; disabled?: boolean; selected?: boolean; onPress?: () => void }) {
+  return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled, selected }} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.composerIcon, selected && styles.composerIconSelected, { opacity: disabled ? 0.4 : pressed ? 0.6 : 1 }]}>
+    <SymbolView name={{ ios: name, android: name === 'plus' ? 'add' : 'deployed_code', web: name === 'plus' ? 'add' : 'deployed_code' }} size={20} tintColor={selected ? colors.primary : colors.secondary} />
+  </Pressable>;
+}
+
+function NewThreadEmpty({ agentName, connection }: { agentName: string; connection: ConnectionState }) {
+  return <View style={styles.empty}>
+    <Text style={styles.emptyTitle}>What should we build in {agentName}?</Text>
+    <View style={styles.emptyAgent}><ConnectionMark state={connection} /><Text style={styles.emptyAgentName}>{agentName}</Text></View>
+  </View>;
+}
+
+function SkillMenu({ skills, loading, error, onRetry, onSelect }: { skills: readonly HermesSkill[]; loading: boolean; error?: string; onRetry?: () => void; onSelect: (skill: HermesSkill) => void }) {
+  return <View style={styles.skillMenu}>
+    {loading ? <View style={styles.skillLoading}><ActivityIndicator size="small" color={colors.secondary} accessibilityLabel="Loading skills" /></View> : null}
+    {error ? <Pressable accessibilityRole="button" onPress={onRetry} style={styles.skillStatus}><Text style={styles.skillError}>{error}</Text><Text style={styles.skillRetry}>Retry</Text></Pressable>
+      : skills.length ? <ScrollView style={styles.skillList} keyboardShouldPersistTaps="always" showsVerticalScrollIndicator={false}>
+        {skills.map((skill) => <Pressable key={skill.name} accessibilityRole="button" accessibilityLabel={`Use skill ${skill.name}`} onPress={() => onSelect(skill)} style={({ pressed }) => [styles.skillRow, { opacity: pressed ? 0.6 : 1 }]}>
+          <Text style={styles.skillName}>${skill.name}</Text>
+          {skill.description ? <Text numberOfLines={1} style={styles.skillDescription}>{skill.description}</Text> : null}
+        </Pressable>)}
+      </ScrollView> : !loading ? <View style={styles.skillStatus}><Text style={styles.skillDescription}>No skills available.</Text>{onRetry ? <Pressable accessibilityRole="button" onPress={onRetry}><Text style={styles.skillRetry}>Refresh</Text></Pressable> : null}</View> : null}
+  </View>;
+}
+
 const TranscriptEntry = memo(function TranscriptEntry({ row, agentName, attachmentSource, onDisclosure }: { row: TranscriptRow; agentName: string; attachmentSource?: (id: string) => AttachmentSource | undefined; onDisclosure: () => void }) {
+  const { factor } = useTextScale();
   const [expanded, setExpanded] = useRecyclingState(false);
   if (row.kind === 'work') {
     const running = row.items.filter((tool) => tool.status === 'running');
@@ -158,8 +273,8 @@ const TranscriptEntry = memo(function TranscriptEntry({ row, agentName, attachme
   return <View style={styles.message}>
     <View accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[styles.avatar, user && styles.userAvatar]}><Text style={styles.avatarText}>{user ? 'Y' : agentName.charAt(0).toUpperCase()}</Text></View>
     <View style={styles.messageBody}>
-      <Text style={styles.author}>{user ? 'You' : agentName}</Text>
-      {message ? <>{message.text ? <Text selectable style={styles.userText}>{message.text}</Text> : null}<AttachmentStrip files={message.attachments.map((file) => ({ ...file, source: attachmentSource?.(file.id) }))} /></> : <MessageContent text={row.text} />}
+      <Text style={[styles.author, { fontSize: 14 * factor }]}>{user ? 'You' : agentName}</Text>
+      {message ? <>{message.text ? <Text selectable style={[styles.userText, { fontSize: 16 * factor, lineHeight: 24 * factor }]}>{message.text}</Text> : null}<AttachmentStrip files={message.attachments.map((file) => ({ ...file, source: attachmentSource?.(file.id) }))} /></> : <MessageContent text={row.text} />}
     </View>
   </View>;
 });
@@ -222,14 +337,32 @@ const styles = StyleSheet.create({
   darkText: { color: colors.background, fontSize: 15, fontWeight: '600' },
   buttonText: { color: colors.primary, fontSize: 15, fontWeight: '600' },
   disabled: { opacity: 0.4 },
-  composer: { paddingHorizontal: 12, paddingVertical: 8 },
-  composerField: { backgroundColor: '#1c1d22', borderRadius: 22, paddingLeft: 4, paddingRight: 4, paddingVertical: 4, flexDirection: 'row', alignItems: 'center', gap: 4 },
-  attachButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  inputSlot: { flex: 1, minWidth: 0 },
-  input: { color: colors.primary, fontSize: 16, lineHeight: 22, minHeight: 44, paddingVertical: 11, paddingHorizontal: 0 },
-  placeholderContainer: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, justifyContent: 'center' },
-  placeholder: { color: colors.secondary, fontSize: 16, lineHeight: 22 },
-  empty: { paddingTop: 36, gap: 10 },
-  emptyTitle: { color: colors.primary, fontSize: 24, fontWeight: '600' },
-  emptyText: { color: colors.secondary, fontSize: 15, lineHeight: 22, maxWidth: 300 },
+  composer: { paddingHorizontal: 12, paddingVertical: 8, gap: 8 },
+  composerField: { backgroundColor: '#1c1d22', borderRadius: 20, paddingHorizontal: 6, paddingTop: 10, paddingBottom: 4 },
+  input: { color: colors.primary, fontSize: 17, lineHeight: 23, minHeight: 44, maxHeight: 144, paddingVertical: 6, paddingHorizontal: 8, textAlignVertical: 'top' },
+  toolbar: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 2 },
+  toolbarSpacer: { flex: 1 },
+  modelButton: { minHeight: 44, maxWidth: 140, paddingHorizontal: 10, justifyContent: 'center' },
+  modelLabel: { color: colors.secondary, fontSize: 13 },
+  modelSheet: { flex: 1, backgroundColor: colors.background, paddingTop: 16 },
+  modelSheetHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, minHeight: 44 },
+  modelSheetTitle: { color: colors.primary, fontSize: 17, fontWeight: '600' },
+  modelSheetClose: { minHeight: 44, minWidth: 44, alignItems: 'flex-end', justifyContent: 'center' },
+  modelSheetCloseText: { color: colors.cyan, fontSize: 15, fontWeight: '600' },
+  nativeMenu: { width: 44, height: 44 },
+  composerIcon: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
+  composerIconSelected: { backgroundColor: colors.lineStrong },
+  skillMenu: { maxHeight: 216, overflow: 'hidden', backgroundColor: colors.elevated, borderRadius: 14, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.lineStrong },
+  skillLoading: { minHeight: 44, alignItems: 'center', justifyContent: 'center' },
+  skillList: { maxHeight: 180 },
+  skillRow: { minHeight: 44, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 10, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
+  skillName: { color: colors.primary, fontSize: 14, fontWeight: '600', maxWidth: '48%' },
+  skillDescription: { color: colors.secondary, fontSize: 12, flex: 1 },
+  skillStatus: { minHeight: 48, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 12, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
+  skillError: { color: colors.red, fontSize: 12, flex: 1 },
+  skillRetry: { color: colors.cyan, fontSize: 13, fontWeight: '600' },
+  empty: { paddingTop: 72, paddingHorizontal: 24, alignItems: 'center', gap: 12 },
+  emptyTitle: { color: colors.primary, fontSize: 28, fontWeight: '700', textAlign: 'center' },
+  emptyAgent: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  emptyAgentName: { color: colors.secondary, fontSize: 13 },
 });

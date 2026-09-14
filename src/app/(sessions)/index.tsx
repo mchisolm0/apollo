@@ -30,7 +30,7 @@ export default function SessionsRoute() {
       <ConnectionAction state={connection} onReconnect={() => void retryAgent(agent.id)} onDetails={() => router.push({ pathname: '/settings/[agentId]', params: { agentId: agent.id } })} />
     </View>
     {inbox.error ? <Text style={styles.error} accessibilityRole="alert">{inbox.error}</Text> : null}
-    <SessionList connection={connection} sessions={inbox.sessions} onSessionPress={(session) => open(session.id)} onSettle={(id) => { void inbox.settle(id); }} onReopen={(id) => { void inbox.reopen(id); }} onNewSession={() => open('new')} />
+    <SessionList connection={connection} sessions={inbox.sessions} onSessionPress={(session) => open(session.id)} onSettle={(id) => { void inbox.settle(id); }} onReopen={(id) => { void inbox.reopen(id); }} onNewSession={() => open('new')} onForked={(id) => open(id)} />
   </SafeAreaView>;
 }
 
