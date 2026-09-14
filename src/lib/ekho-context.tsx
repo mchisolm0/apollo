@@ -24,8 +24,10 @@ import type {
   ApprovalOptions,
   HermesApprovalResponse,
   HermesMessage,
+  HermesModel,
   HermesRunEvent,
   HermesRunStatus,
+  HermesSkill,
   StartRunOptions,
 } from './types';
 
@@ -41,9 +43,15 @@ export interface EkhoContextValue {
   retryAgent(agentId: string): Promise<void>;
   startRun(agentId: string, input: string, options?: StartRunOptions): Promise<HermesRunStatus>;
   createSession(agentId: string, title?: string): Promise<string>;
+  deleteSession(agentId: string, sessionId: string): Promise<void>;
+  setPinned(agentId: string, sessionId: string, pinned: boolean): Promise<void>;
+  forkSession(agentId: string, sessionId: string): Promise<string>;
+  regenerateTitle(agentId: string, sessionId: string, input: string): Promise<string | undefined>;
+  models(agentId: string): Promise<readonly HermesModel[]>;
   uploadAttachment(agentId: string, file: { name: string; mimeType: string; data: string }): Promise<Attachment>;
   attachmentSource(agentId: string, id: string): AttachmentSource | undefined;
   sessionMessages(agentId: string, sessionId: string): Promise<readonly HermesMessage[]>;
+  skills(agentId: string): Promise<readonly HermesSkill[]>;
   stopRun(agentId: string, runId: string): Promise<HermesRunStatus>;
   approveRun(
     agentId: string,
@@ -360,6 +368,71 @@ export function EkhoProvider({
   }, []);
   const attachmentSource = useCallback((agentId: string, id: string) => clients.current.get(agentId)?.attachmentSource(id), []);
 
+  const skills = useCallback(async (agentId: string) => {
+    const client = clients.current.get(agentId);
+    if (!client) throw new Error('Reconnect to load skills.');
+    return client.skills();
+  }, []);
+
+  const models = useCallback(async (agentId: string): Promise<readonly HermesModel[]> => {
+    const client = clients.current.get(agentId);
+    if (!client) throw new Error('Reconnect to load models.');
+    return client.models();
+  }, []);
+
+  const deleteSession = useCallback(async (agentId: string, sessionId: string): Promise<void> => {
+    const client = clients.current.get(agentId);
+    if (!client) throw new Error('Connect to the agent to update threads.');
+    await client.deleteSession(sessionId);
+    setRuntime((current) => {
+      const state = current[agentId];
+      if (!state) return current;
+      return { ...current, [agentId]: { ...state, sessions: state.sessions.filter((session) => session.id !== sessionId) } };
+    });
+    setMessages((current) => {
+      const next = { ...current };
+      delete next[`${agentId}:${sessionId}`];
+      return next;
+    });
+  }, [setRuntime]);
+
+  const setPinned = useCallback(async (agentId: string, sessionId: string, pinned: boolean): Promise<void> => {
+    const client = clients.current.get(agentId);
+    if (!client) throw new Error('Connect to the agent to update threads.');
+    await client.setPinned(sessionId, pinned);
+    setRuntime((current) => {
+      const state = current[agentId];
+      if (!state) return current;
+      return { ...current, [agentId]: { ...state, sessions: state.sessions.map((session) => session.id === sessionId ? { ...session, pinned } : session) } };
+    });
+  }, [setRuntime]);
+
+  const forkSession = useCallback(async (agentId: string, sessionId: string): Promise<string> => {
+    let client = clients.current.get(agentId);
+    if (!client) {
+      await refreshAgent(agentId);
+      client = clients.current.get(agentId);
+    }
+    if (!client) throw new Error('Agent is offline');
+    const session = await client.forkSession(sessionId);
+    setRuntime((current) => {
+      const existing = current[agentId] ?? emptyRuntime();
+      return { ...current, [agentId]: { ...existing, sessions: [session, ...existing.sessions.filter((item) => item.id !== session.id)] } };
+    });
+    return session.id;
+  }, [refreshAgent, setRuntime]);
+
+  const regenerateTitle = useCallback(async (agentId: string, sessionId: string, input: string): Promise<string | undefined> => {
+    const client = clients.current.get(agentId);
+    if (!client) throw new Error('Connect to the agent to update threads.');
+    const title = await client.generateSessionTitle(sessionId, input);
+    if (title) setRuntime((current) => {
+      const state = current[agentId];
+      return state ? { ...current, [agentId]: { ...state, sessions: state.sessions.map((session) => session.id === sessionId ? { ...session, title } : session) } } : current;
+    });
+    return title;
+  }, [setRuntime]);
+
   const stopRun = useCallback(async (agentId: string, runId: string): Promise<HermesRunStatus> => {
     const client = clients.current.get(agentId);
     if (!client) throw new Error('Agent is offline');
@@ -455,14 +528,20 @@ export function EkhoProvider({
     retryAgent,
     startRun,
     createSession,
+    deleteSession,
+    setPinned,
+    forkSession,
+    regenerateTitle,
+    models,
     sessionMessages,
+    skills,
     saveInbox,
     uploadAttachment,
     attachmentSource,
     stopRun,
     approveRun,
     removeAgent,
-  }), [saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, error, loading, messages, pair, refreshAgent, removeAgent, retryAgent, runtime, sessionMessages, startRun, stopRun]);
+  }), [saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, deleteSession, setPinned, forkSession, regenerateTitle, models, error, loading, messages, pair, refreshAgent, removeAgent, retryAgent, runtime, sessionMessages, skills, startRun, stopRun]);
 
   return <EkhoContext.Provider value={value}>{children}</EkhoContext.Provider>;
 }

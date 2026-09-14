@@ -1,5 +1,6 @@
 import { attachmentMessage, isAttachment, type Attachment, type AttachmentSource } from './attachments';
 import { normalizeEndpoint } from './endpoint';
+import { parseSkills } from './skills';
 import EventSource, { type EventSourceListener } from 'react-native-sse';
 
 import {
@@ -15,6 +16,7 @@ import type {
   HermesApprovalResponse,
   HermesCapabilities,
   HermesMessage,
+  HermesModel,
   HermesRunEvent,
   HermesRunState,
   HermesRunStatus,
@@ -96,6 +98,35 @@ function parseSession(value: unknown): HermesSession {
     hidden: booleanValue(value.hidden),
     preview: stringValue(value.preview),
   };
+}
+
+/** Tolerant model list parser (parseSkills style): unknown shapes yield [], malformed entries are skipped, never throws. */
+export function parseModels(value: unknown): readonly HermesModel[] {
+  const list = Array.isArray(value)
+    ? value
+    : isJsonObject(value) && Array.isArray(value.data)
+      ? value.data
+      : isJsonObject(value) && Array.isArray(value.models)
+        ? value.models
+        : undefined;
+  if (!list) return [];
+  const models = new Map<string, HermesModel>();
+  for (const entry of list) {
+    if (!isJsonObject(entry)) continue;
+    const id = typeof entry.id === 'string' && entry.id.trim()
+      ? entry.id
+      : typeof entry.name === 'string' && entry.name.trim()
+        ? entry.name
+        : undefined;
+    if (!id) continue;
+    models.set(id, {
+      id,
+      label: stringValue(entry.label) ?? stringValue(entry.display_name),
+      provider: stringValue(entry.provider) ?? stringValue(entry.owned_by),
+      default: booleanValue(entry.default) ?? booleanValue(entry.is_default),
+    });
+  }
+  return [...models.values()];
 }
 
 function parseMessage(value: unknown): HermesMessage {
@@ -204,6 +235,10 @@ export class HermesClient {
     return parseCapabilities(await this.request('/v1/capabilities'));
   }
 
+  async skills() {
+    return parseSkills(await this.request('/v1/skills'));
+  }
+
   async sessions(): Promise<readonly HermesSession[]> {
     const [body, settled] = await Promise.all([this.request('/api/sessions?limit=200'), this.inbox()]);
     if (!isJsonObject(body) || !Array.isArray(body.data)) throw new Error('Hermes sessions response was invalid');
@@ -267,6 +302,29 @@ export class HermesClient {
     });
     if (!isJsonObject(body)) throw new Error('Hermes create session response was invalid');
     return parseSession(body.session);
+  }
+
+  async deleteSession(sessionId: string): Promise<void> {
+    await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+  }
+
+  async setPinned(sessionId: string, pinned: boolean): Promise<void> {
+    await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pinned }),
+    });
+  }
+
+  async models(): Promise<readonly HermesModel[]> {
+    return parseModels(await this.request('/v1/models'));
+  }
+
+  /** POST /api/sessions/:id/fork is proxied by the connector (index.mjs); surfaces the branched session. */
+  async forkSession(sessionId: string): Promise<HermesSession> {
+    const body = await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/fork`, { method: 'POST' });
+    if (!isJsonObject(body)) throw new Error('Hermes fork session response was invalid');
+    return parseSession(isJsonObject(body.session) ? body.session : body);
   }
 
   async startRun(input: string, options: StartRunOptions = {}): Promise<HermesRunStatus> {

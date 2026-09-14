@@ -2,7 +2,7 @@ import { createSessionInboxProjector, type SessionInboxState } from './session-i
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { deriveSessionInbox, reopenSession, settleSession } from './session-inbox.ts';
+import { countSnoozedSessions, deriveSessionInbox, isSessionSnoozed, pruneSnoozedLedger, reopenSession, settleSession, snoozeSession, unsnoozeSession } from './session-inbox.ts';
 
 const baseState = {
   status: 'connected' as const,
@@ -180,4 +180,37 @@ test('concurrent threads show their own running and approval state', () => {
   assert.equal(sessions.find((session) => session.id === 'first')?.running, true);
   assert.equal(sessions.find((session) => session.id === 'first')?.pendingApproval, false);
   assert.equal(sessions.find((session) => session.id === 'second')?.pendingApproval, true);
+});
+
+test('failed runs stay explicit on the row', () => {
+  const [session] = deriveSessionInbox('agent', {
+    sessions: [{ id: 'session', title: 'Session', startedAt: 10, lastActive: 20, endReason: 'run failed' }],
+    events: [],
+    runs: {},
+  });
+  assert.equal(session.failed, true);
+});
+
+test('snoozed threads stay hidden until the snooze expires', () => {
+  const ledger = snoozeSession({}, 's', 100);
+  assert.equal(isSessionSnoozed(ledger, 's', 99), true);
+  assert.equal(isSessionSnoozed(ledger, 's', 100), false);
+  assert.equal(isSessionSnoozed(ledger, 's', 101), false);
+  assert.equal(isSessionSnoozed(ledger, 'other', 99), false);
+});
+
+test('expiry prunes the ledger and counts drop back to zero', () => {
+  const ledger = snoozeSession(snoozeSession({}, 'a', 50), 'b', 150);
+  const sessions = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+  assert.equal(countSnoozedSessions(sessions, ledger, 40), 2);
+  assert.equal(countSnoozedSessions(sessions, ledger, 100), 1);
+  const pruned = pruneSnoozedLedger(ledger, 100);
+  assert.deepEqual(pruned, { b: 150 });
+  assert.equal(countSnoozedSessions(sessions, pruned, 200), 0);
+});
+
+test('unsnooze returns the thread immediately', () => {
+  const ledger = snoozeSession({}, 's', 150);
+  assert.equal(isSessionSnoozed(unsnoozeSession(ledger, 's'), 's', 100), false);
+  assert.equal(unsnoozeSession(ledger, 'missing'), ledger);
 });

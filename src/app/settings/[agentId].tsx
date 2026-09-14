@@ -41,9 +41,10 @@ export default function SettingsRoute() {
   );
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
+    <SafeAreaView style={styles.safeArea} edges={['bottom']}>
       <AgentSettingsScreen
         agent={relayAgent}
+        environmentCount={agents.length}
         pairedAt={new Date(agent.createdAt).toLocaleDateString()}
         onBack={() => router.back()}
         onTestConnection={() => void refreshAgent(agent.id)}

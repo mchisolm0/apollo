@@ -6,7 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { scheduleOnRN } from 'react-native-worklets';
 
 import type { AgentRecord, AgentRuntimeState } from '@/lib/types';
-import { ConnectionMark, connectionLabels, relayColors as colors } from './relay-ui';
+import { ConnectionMark, connectionLabels, relayColors as colors, useTextScale } from './relay-ui';
 
 type Props = {
   agents: readonly AgentRecord[];
@@ -28,6 +28,7 @@ export function AgentPicker({ agents, selected, runtime, onSelect, onDetails, on
   const closing = useRef(false);
   const [anchor, setAnchor] = useState<Anchor>();
   const { width, height, fontScale } = useWindowDimensions();
+  const { factor } = useTextScale();
   const insets = useSafeAreaInsets();
   const progress = useSharedValue(0);
   const [reducedMotion, setReducedMotion] = useState(true);
@@ -95,7 +96,7 @@ export function AgentPicker({ agents, selected, runtime, onSelect, onDetails, on
       style={({ pressed }) => [styles.trigger, pressed && styles.pressed]}
     >
       <View accessible={false} importantForAccessibility="no-hide-descendants"><ConnectionMark state={connection} /></View>
-      <Text style={styles.name} numberOfLines={1}>{selected.label}</Text>
+      <Text style={[styles.name, { fontSize: 15 * factor }]} numberOfLines={1}>{selected.label}</Text>
       <Animated.View style={caretAnimation}><SymbolView name={{ ios: 'chevron.down', android: 'expand_more', web: 'expand_more' }} size={12} tintColor={colors.primary} /></Animated.View>
     </Pressable>
     <Modal
@@ -130,8 +131,8 @@ export function AgentPicker({ agents, selected, runtime, onSelect, onDetails, on
               >
                 <View accessible={false} importantForAccessibility="no-hide-descendants"><ConnectionMark state={state} /></View>
                 <View style={styles.optionCopy}>
-                  <Text style={styles.optionName}>{agent.label}</Text>
-                  {state !== 'connected' ? <Text style={styles.optionStatus}>{connectionLabels[state]}</Text> : null}
+                  <Text style={[styles.optionName, { fontSize: 15 * factor }]}>{agent.label}</Text>
+                  {state !== 'connected' ? <Text style={[styles.optionStatus, { fontSize: 12 * factor }]}>{connectionLabels[state]}</Text> : null}
                 </View>
                 {isSelected ? <SymbolView name={{ ios: 'checkmark', android: 'check', web: 'check' }} size={16} tintColor={colors.primary} /> : null}
               </Pressable>
@@ -142,7 +143,7 @@ export function AgentPicker({ agents, selected, runtime, onSelect, onDetails, on
           })}
           <Pressable accessibilityRole="button" accessibilityLabel="Pair agent" onPress={() => close(onPair)} style={({ pressed }) => [styles.pair, pressed && styles.pressed]}>
             <SymbolView name={{ ios: 'plus', android: 'add', web: 'add' }} size={17} tintColor={colors.primary} />
-            <Text style={styles.optionName}>Pair agent</Text>
+            <Text style={[styles.optionName, { fontSize: 15 * factor }]}>Pair agent</Text>
           </Pressable>
         </ScrollView>
       </Animated.View>
