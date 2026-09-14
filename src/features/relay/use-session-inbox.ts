@@ -124,6 +124,28 @@ async function unsnoozeInStore(agentId: string, sessionId: string): Promise<bool
   return true;
 }
 
+/** Re-render at the next snooze expiry so expired threads leave the Snoozed section on their own. */
+function useSnoozeExpiry(agentId: string, snoozed: InboxSnoozed) {
+  useEffect(() => {
+    const now = Math.floor(Date.now() / 1000);
+    let next: number | undefined;
+    for (const until of Object.values(snoozed)) {
+      if (until > now && (next === undefined || until < next)) next = until;
+    }
+    if (next === undefined) return;
+    const timer = setTimeout(() => {
+      const entry = entryFor(agentId);
+      const pruned = pruneSnoozedLedger(entry.snoozed);
+      if (Object.keys(pruned).length !== Object.keys(entry.snoozed).length) {
+        void update(agentId, entry.settled, entry.read, pruned);
+      } else {
+        entry.listeners.forEach((listener) => listener());
+      }
+    }, Math.max(0, next * 1000 - Date.now() + 50));
+    return () => clearTimeout(timer);
+  }, [agentId, snoozed]);
+}
+
 export type SessionInboxActions = {
   markRead: (sessionId: string) => Promise<void>;
   settle: (sessionId: string) => Promise<boolean>;
@@ -149,6 +171,7 @@ export function useSessionInbox(agentId: string, state: SessionInboxState | unde
   );
   const project = useMemo(() => createSessionInboxProjector(), []);
   const sessions = useMemo(() => project(agentId, state, store.settled, store.read), [project, agentId, state, store.settled, store.read]);
+  useSnoozeExpiry(agentId, store.snoozed);
 
   const reportError = useCallback((cause: unknown) => {
     const entry = entryFor(agentId);
@@ -230,5 +253,6 @@ export function useSnoozeLedger(agentId: string): {
   const unsnooze = useCallback(async (sessionId: string): Promise<boolean> => {
     return unsnoozeInStore(agentId, sessionId);
   }, [agentId]);
+  useSnoozeExpiry(agentId, store.snoozed);
   return { snoozed: store.snoozed, loaded: store.loaded, snooze, unsnooze };
 }

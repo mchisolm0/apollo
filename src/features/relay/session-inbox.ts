@@ -96,7 +96,7 @@ function statusForSession(
   const latestRequest = runEvents.findLastIndex((event) => event.event === 'approval.request');
   const latestResponse = runEvents.findLastIndex((event) => event.event === 'approval.responded');
   const pendingApproval = Boolean(approval) || Boolean(runBelongs && activeRun?.status === 'waiting_for_approval' && latestResponse < latestRequest && !runEvents.some((event) => TERMINAL_RUNS.has(event.event.replace('run.', '') as HermesRunStatus['status'])));
-  const failed = Boolean(session.endReason?.toLowerCase().includes('fail') || session.endReason?.toLowerCase().includes('error') || (runBelongs && (activeRun?.status === 'failed' || runEvents.some((event) => event.event === 'run.failed'))));
+  const failed = Boolean(session.endReason?.toLowerCase().includes('fail') || session.endReason?.toLowerCase().includes('error') || (runBelongs && (activeRun?.status === 'failed' || Boolean(activeRun?.error) || runEvents.some((event) => event.event === 'run.failed' || event.event === 'run.error' || Boolean(event.error)))));
   const completed = session.endedAt !== undefined || (runBelongs && (activeRun?.status === 'completed' || runEvents.some((event) => event.event === 'run.completed')));
   const revived = settledAt === undefined || Math.max(sessionActivity(session), terminalActivity(session, activeRun, runEvents)) > settledAt;
 

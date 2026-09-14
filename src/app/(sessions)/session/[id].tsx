@@ -52,6 +52,7 @@ function Session({ id, agentId, isSheet }: { id: string; agentId: string; isShee
   const [modelsLoading, setModelsLoading] = useState(false);
   const [model, setModel] = useState<string>();
   const skillRequest = useRef(0);
+  const skillsReady = useRef(false);
   const refreshSkills = useCallback(() => {
     const request = ++skillRequest.current;
     setSkillsLoading(true);
@@ -60,7 +61,7 @@ function Session({ id, agentId, isSheet }: { id: string; agentId: string; isShee
       if (request === skillRequest.current) setSkills(value);
     }).catch((error: unknown) => {
       if (request === skillRequest.current) setSkillsError(error instanceof Error ? error.message : 'Could not load skills.');
-    }).finally(() => { if (request === skillRequest.current) setSkillsLoading(false); });
+    }).finally(() => { if (request === skillRequest.current) { setSkillsLoading(false); skillsReady.current = true; } });
   }, [agentId, loadSkills]);
   useFocusEffect(useCallback(() => {
     if (state?.status === 'connected') refreshSkills();
@@ -139,7 +140,18 @@ function Session({ id, agentId, isSheet }: { id: string; agentId: string; isShee
 
   const send = (text: string) => void act(async () => {
     // Skill instructions need a live catalog lookup. Offline, send the raw text.
-    const requestedSkills = state?.status === 'connected' ? selectedSkillNames(text, skills) : [];
+    // A send racing the initial catalog load refetches once so $skill refs still resolve.
+    let catalog = skills;
+    if (state?.status === 'connected' && (skillsLoading || !skillsReady.current)) {
+      try {
+        catalog = await loadSkills(agentId);
+        setSkills(catalog);
+        skillsReady.current = true;
+      } catch {
+        catalog = skills;
+      }
+    }
+    const requestedSkills = state?.status === 'connected' ? selectedSkillNames(text, catalog) : [];
     const instructions = requestedSkills.length
       ? `The user explicitly selected these installed skills: ${JSON.stringify(requestedSkills)}. Before responding, call skill_view for each exact name and follow its instructions. The $name references in the message identify these selections. If a skill cannot be loaded, tell the user.`
       : undefined;

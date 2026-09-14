@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ComponentProps, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { SymbolView } from 'expo-symbols';
 import type { AndroidSymbol, SFSymbol } from 'expo-symbols';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -50,12 +50,16 @@ const TextScaleContext = createContext<TextScaleValue>({ scale: 'default', facto
 
 export function TextScaleProvider({ children }: { children: ReactNode }) {
   const [scale, setScaleState] = useState<TextScaleKey>('default');
+  const userPicked = useRef(false);
   useEffect(() => {
+    let live = true;
     void AsyncStorage.getItem(TEXT_SCALE_STORAGE_KEY)
-      .then((saved) => setScaleState(parseTextScale(saved)))
+      .then((saved) => { if (live && !userPicked.current) setScaleState(parseTextScale(saved)); })
       .catch(() => undefined);
+    return () => { live = false; };
   }, []);
   const setScale = useCallback(async (next: TextScaleKey) => {
+    userPicked.current = true;
     setScaleState(next);
     try {
       await AsyncStorage.setItem(TEXT_SCALE_STORAGE_KEY, next);

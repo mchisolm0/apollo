@@ -1,5 +1,5 @@
 import { memo, useCallback, useMemo, useRef, useState } from 'react';
-import { Keyboard, Pressable, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
+import { Alert, Keyboard, Pressable, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
 import { LegendList } from '@legendapp/list/react-native';
 import Swipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
@@ -119,15 +119,18 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
   const open = () => { Keyboard.dismiss(); if (snoozed) onUnsnooze(session.id); onPress(session); };
   const menu = () => {
     const pinned = runtime[session.agentId]?.sessions.find((candidate) => candidate.id === session.id)?.pinned ?? false;
+    const reportFailure = (action: string) => (error: unknown) => {
+      Alert.alert(`Could not ${action}`, error instanceof Error ? error.message : 'Try again.');
+    };
     showThreadMenu({ title: session.title, pinned, settled: session.settled, snoozed }, {
       onOpen: open,
       ...(action?.label === 'Settle' ? { onSettle: perform } : {}),
       ...(action?.label === 'Reopen' ? { onReopen: perform } : {}),
       ...(snoozed ? { onUnsnooze: () => onUnsnooze(session.id) } : { onSnooze: () => onSnooze(session.id) }),
-      onRegenerateTitle: () => { void regenerateTitle(session.agentId, session.id, session.preview ?? session.title); },
-      onPin: (next) => { void setPinned(session.agentId, session.id, next); },
-      onFork: () => { void forkSession(session.agentId, session.id).then((id) => onForked?.(id)); },
-      onDelete: () => { void deleteSession(session.agentId, session.id); },
+      onRegenerateTitle: () => { void regenerateTitle(session.agentId, session.id, session.preview ?? session.title).catch(reportFailure('regenerate the title')); },
+      onPin: (next) => { void setPinned(session.agentId, session.id, next).catch(reportFailure(next ? 'pin the thread' : 'unpin the thread')); },
+      onFork: () => { void forkSession(session.agentId, session.id).then((id) => onForked?.(id)).catch(reportFailure('fork the thread')); },
+      onDelete: () => { void deleteSession(session.agentId, session.id).catch(reportFailure('delete the thread')); },
     });
   };
   const status = session.settled ? { text: session.updatedAt, style: styles.date }

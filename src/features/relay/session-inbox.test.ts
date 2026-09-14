@@ -191,6 +191,22 @@ test('failed runs stay explicit on the row', () => {
   assert.equal(session.failed, true);
 });
 
+test('run.error events and error flags mark the row failed', () => {
+  const [viaEvent] = deriveSessionInbox('agent', {
+    sessions: [{ id: 'session', title: 'Session', startedAt: 10, lastActive: 20 }],
+    events: [{ event: 'run.error', runId: 'run', error: true }],
+    runs: { run: { runId: 'run', sessionId: 'session', status: 'running' } },
+  });
+  assert.equal(viaEvent.failed, true);
+
+  const [viaStatus] = deriveSessionInbox('agent', {
+    sessions: [{ id: 'session', title: 'Session', startedAt: 10, lastActive: 20 }],
+    events: [],
+    runs: { run: { runId: 'run', sessionId: 'session', status: 'running', error: 'boom' } },
+  });
+  assert.equal(viaStatus.failed, true);
+});
+
 test('snoozed threads stay hidden until the snooze expires', () => {
   const ledger = snoozeSession({}, 's', 100);
   assert.equal(isSessionSnoozed(ledger, 's', 99), true);
