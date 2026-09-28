@@ -1,11 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
 
-import { useEkho } from '@/lib';
+import { useEkho, type InboxConfig, type InboxSettledState } from '@/lib';
 
 import {
   canSettleSession,
   createSessionInboxProjector,
+  isAutoSettleDue,
   isSessionSnoozed,
   pruneSnoozedLedger,
   SNOOZE_DURATION_SECONDS,
@@ -17,10 +18,14 @@ import {
 
 const STORAGE_PREFIX = 'ekho:session-inbox:';
 
+/** Session id -> auto-settle opted out. Absent means on (the default). Shared via the connector. */
+type InboxAutoSettle = Readonly<Record<string, boolean>>;
+
 type InboxStoreSnapshot = {
   settled: InboxSettled;
   read: InboxSettled;
   snoozed: InboxSnoozed;
+  autoSettleDisabled: InboxAutoSettle;
   loaded: boolean;
   error?: string;
 };
@@ -29,6 +34,7 @@ type InboxStoreEntry = {
   settled: InboxSettled;
   read: InboxSettled;
   snoozed: InboxSnoozed;
+  autoSettleDisabled: InboxAutoSettle;
   loaded: boolean;
   error?: string;
   snapshot: InboxStoreSnapshot;
@@ -39,7 +45,7 @@ type InboxStoreEntry = {
 };
 
 const entries = new Map<string, InboxStoreEntry>();
-const SERVER_SNAPSHOT: InboxStoreSnapshot = { settled: {}, read: {}, snoozed: {}, loaded: false };
+const SERVER_SNAPSHOT: InboxStoreSnapshot = { settled: {}, read: {}, snoozed: {}, autoSettleDisabled: {}, loaded: false };
 
 function storageKey(agentId: string): string {
   return `${STORAGE_PREFIX}${agentId}`;
@@ -48,7 +54,7 @@ function storageKey(agentId: string): string {
 function entryFor(agentId: string): InboxStoreEntry {
   let entry = entries.get(agentId);
   if (!entry) {
-    entry = { settled: {}, read: {}, snoozed: {}, loaded: false, snapshot: { settled: {}, read: {}, snoozed: {}, loaded: false }, listeners: new Set(), write: Promise.resolve() };
+    entry = { settled: {}, read: {}, snoozed: {}, autoSettleDisabled: {}, loaded: false, snapshot: { settled: {}, read: {}, snoozed: {}, autoSettleDisabled: {}, loaded: false }, listeners: new Set(), write: Promise.resolve() };
     entries.set(agentId, entry);
     entry.load = AsyncStorage.getItem(storageKey(agentId)).then((value) => {
       if (value) {
@@ -58,9 +64,12 @@ function entryFor(agentId: string): InboxStoreEntry {
             const data = candidate as Record<string, unknown>;
             const timestamps = (value: unknown): InboxSettled => value && typeof value === 'object'
               ? Object.fromEntries(Object.entries(value).filter(([, timestamp]) => typeof timestamp === 'number' && Number.isFinite(timestamp))) : {};
+            const flags = (value: unknown): InboxAutoSettle => value && typeof value === 'object'
+              ? Object.fromEntries(Object.entries(value).filter((flag): flag is [string, true] => flag[1] === true)) : {};
             entry!.settled = timestamps('settled' in data ? data.settled : data);
             entry!.read = timestamps(data.read);
             entry!.snoozed = pruneSnoozedLedger(timestamps(data.snoozed));
+            entry!.autoSettleDisabled = flags(data.autoSettleDisabled);
           }
         } catch {
           entry!.error = 'Session inbox data could not be read.';
@@ -71,7 +80,7 @@ function entryFor(agentId: string): InboxStoreEntry {
       entry!.loaded = true;
       entry!.error = 'Session inbox data could not be read.';
     }).finally(() => {
-      entry!.snapshot = { settled: entry!.settled, read: entry!.read, snoozed: entry!.snoozed, loaded: entry!.loaded, error: entry!.error };
+      entry!.snapshot = { settled: entry!.settled, read: entry!.read, snoozed: entry!.snoozed, autoSettleDisabled: entry!.autoSettleDisabled, loaded: entry!.loaded, error: entry!.error };
       entry!.load = undefined;
       entry!.listeners.forEach((listener) => listener());
     });
@@ -89,17 +98,18 @@ function snapshot(agentId: string): InboxStoreSnapshot {
   return entryFor(agentId).snapshot;
 }
 
-function update(agentId: string, settled: InboxSettled, read: InboxSettled = entryFor(agentId).read, snoozed: InboxSnoozed = entryFor(agentId).snoozed): Promise<void> {
+function update(agentId: string, settled: InboxSettled, read: InboxSettled = entryFor(agentId).read, snoozed: InboxSnoozed = entryFor(agentId).snoozed, autoSettleDisabled: InboxAutoSettle = entryFor(agentId).autoSettleDisabled): Promise<void> {
   const entry = entryFor(agentId);
   entry.settled = settled;
   entry.read = read;
   entry.snoozed = snoozed;
+  entry.autoSettleDisabled = autoSettleDisabled;
   entry.error = undefined;
-  entry.snapshot = { settled, read, snoozed, loaded: entry.loaded };
+  entry.snapshot = { settled, read, snoozed, autoSettleDisabled, loaded: entry.loaded };
   entry.listeners.forEach((listener) => listener());
-  entry.write = entry.write.then(() => AsyncStorage.setItem(storageKey(agentId), JSON.stringify({ settled, read, snoozed }))).catch(() => {
+  entry.write = entry.write.then(() => AsyncStorage.setItem(storageKey(agentId), JSON.stringify({ settled, read, snoozed, autoSettleDisabled }))).catch(() => {
     entry.error = 'Session inbox changes could not be saved.';
-    entry.snapshot = { settled: entry.settled, read: entry.read, snoozed: entry.snoozed, loaded: entry.loaded, error: entry.error };
+    entry.snapshot = { settled: entry.settled, read: entry.read, snoozed: entry.snoozed, autoSettleDisabled: entry.autoSettleDisabled, loaded: entry.loaded, error: entry.error };
     entry.listeners.forEach((listener) => listener());
   });
   return entry.write;
@@ -152,6 +162,7 @@ export type SessionInboxActions = {
   reopen: (sessionId: string) => Promise<boolean>;
   snooze: (sessionId: string, durationSeconds?: number) => Promise<boolean>;
   unsnooze: (sessionId: string) => Promise<boolean>;
+  setAutoSettle: (sessionId: string, enabled: boolean) => Promise<boolean>;
 };
 
 export type SessionInboxResult = {
@@ -170,7 +181,7 @@ export function useSessionInbox(agentId: string, state: SessionInboxState | unde
     useCallback(() => SERVER_SNAPSHOT, []),
   );
   const project = useMemo(() => createSessionInboxProjector(), []);
-  const sessions = useMemo(() => project(agentId, state, store.settled, store.read), [project, agentId, state, store.settled, store.read]);
+  const sessions = useMemo(() => project(agentId, state, store.settled, store.read, store.autoSettleDisabled), [project, agentId, state, store.settled, store.read, store.autoSettleDisabled]);
   useSnoozeExpiry(agentId, store.snoozed);
 
   const reportError = useCallback((cause: unknown) => {
@@ -232,7 +243,27 @@ export function useSessionInbox(agentId: string, state: SessionInboxState | unde
     return unsnoozeInStore(agentId, sessionId);
   }, [agentId]);
 
-  return { sessions, snoozed: store.snoozed, loaded: store.loaded, error: store.error, markRead, settle, reopen, snooze, unsnooze };
+  /** Auto-settle opt-out: local immediately, then synced to the connector so paired devices agree. */
+  const setAutoSettle = useCallback((sessionId: string, enabled: boolean) => {
+    return toggleAutoSettle(agentId, sessionId, enabled, saveInbox);
+  }, [agentId, saveInbox]);
+
+  // Auto-settle: every minute, settle non-settled threads idle past the delay. Pinned/running/
+  // pending-approval/disabled threads are skipped by isAutoSettleDue; settle re-checks eligibility.
+  useEffect(() => {
+    if (!store.loaded) return;
+    const tick = () => {
+      const now = Math.floor(Date.now() / 1000);
+      for (const session of sessions) {
+        if (isAutoSettleDue(session, session.autoSettleDisabled, now)) void settle(session.id);
+      }
+    };
+    tick();
+    const timer = setInterval(tick, 60_000);
+    return () => clearInterval(timer);
+  }, [store.loaded, sessions, settle]);
+
+  return { sessions, snoozed: store.snoozed, loaded: store.loaded, error: store.error, markRead, settle, reopen, snooze, unsnooze, setAutoSettle };
 }
 
 /** Standalone access to the local-only snooze ledger for views that receive sessions as props. */
@@ -255,4 +286,46 @@ export function useSnoozeLedger(agentId: string): {
   }, [agentId]);
   useSnoozeExpiry(agentId, store.snoozed);
   return { snoozed: store.snoozed, loaded: store.loaded, snooze, unsnooze };
+}
+
+/** Toggle an auto-settle opt-out: local store first for instant UI, then the shared connector ledger. */
+async function toggleAutoSettle(
+  agentId: string,
+  sessionId: string,
+  enabled: boolean,
+  saveInbox: (agentId: string, settled: InboxSettledState, importOnly?: boolean, config?: InboxConfig) => Promise<void>,
+): Promise<boolean> {
+  const entry = entryFor(agentId);
+  if (!entry.loaded) return false;
+  const next = { ...entry.autoSettleDisabled };
+  if (enabled) delete next[sessionId];
+  else next[sessionId] = true;
+  await update(agentId, entry.settled, entry.read, entry.snoozed, next);
+  try {
+    await saveInbox(agentId, {}, false, { [sessionId]: { auto_settle: enabled } });
+    return true;
+  } catch (cause) {
+    const failed = entryFor(agentId);
+    failed.error = cause instanceof Error ? cause.message : 'Auto-settle could not be saved.';
+    failed.snapshot = { ...failed.snapshot, error: failed.error };
+    failed.listeners.forEach((listener) => listener());
+    return false;
+  }
+}
+
+/** Standalone access to the auto-settle opt-out ledger for views that receive sessions as props. */
+export function useAutoSettleLedger(agentId: string): {
+  loaded: boolean;
+  setAutoSettle: (sessionId: string, enabled: boolean) => Promise<boolean>;
+} {
+  const { saveInbox } = useEkho();
+  const store = useSyncExternalStore(
+    useCallback((listener) => subscribe(agentId, listener), [agentId]),
+    useCallback(() => snapshot(agentId), [agentId]),
+    useCallback(() => SERVER_SNAPSHOT, []),
+  );
+  const setAutoSettle = useCallback((sessionId: string, enabled: boolean) => {
+    return toggleAutoSettle(agentId, sessionId, enabled, saveInbox);
+  }, [agentId, saveInbox]);
+  return { loaded: store.loaded, setAutoSettle };
 }

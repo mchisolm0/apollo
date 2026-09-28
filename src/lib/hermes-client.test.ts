@@ -21,6 +21,8 @@ function loadClient() {
       deleteSession(id: string): Promise<void>;
       setPinned(id: string, pinned: boolean): Promise<void>;
       forkSession(id: string): Promise<{ id: string }>;
+      inbox(settled?: Record<string, number | null>, importOnly?: boolean, config?: Record<string, { auto_settle?: boolean }>): Promise<{ settled: Record<string, number | null>; config: Record<string, { auto_settle?: boolean }> }>;
+      sessions(): Promise<readonly { id: string; settledAt?: number | null; autoSettleDisabled?: boolean }[]>;
     };
     parseModels?: (value: unknown) => readonly HermesModel[];
   } = {};
@@ -88,4 +90,31 @@ test('forkSession posts to the fork route and reads the branched session', async
   assert.equal(seen[0]?.url, 'https://agent.example.ts.net/api/sessions/abc/fork');
   assert.equal(seen[0]?.init?.method, 'POST');
   assert.equal(forked.id, 'branched');
+});
+
+test('inbox reads settled and config state and PATCHes config opt-outs', async () => {
+  const seen: { url?: string; init?: RequestInit }[] = [];
+  const client = clientWith({ settled: { a: 10 }, config: { a: { auto_settle: false }, broken: 'x' } }, seen);
+  assert.deepEqual(plain(await client.inbox()), { settled: { a: 10 }, config: { a: { auto_settle: false } } });
+  assert.equal(seen[0]?.init?.method, undefined);
+  await client.inbox({ a: 10 }, false, { b: { auto_settle: true } });
+  assert.equal(seen[1]?.init?.method, 'PATCH');
+  assert.deepEqual(JSON.parse((seen[1]?.init as RequestInit & { body: string })?.body), { settled: { a: 10 }, importOnly: false, config: { b: { auto_settle: true } } });
+  // An old connector without /v1/inbox still yields empty state on GET.
+  const legacy = new HermesClient({ endpoint: 'https://agent.example.ts.net', token: 'token', fetchImpl: (async () => ({ ok: false, status: 404, json: async () => undefined })) as unknown as typeof fetch });
+  assert.deepEqual(plain(await legacy.inbox()), { settled: {}, config: {} });
+});
+
+test('sessions merge settled timestamps and auto-settle config onto the rows', async () => {
+  const fetchImpl = (async (url: string) => ({
+    ok: true,
+    json: async () => String(url).endsWith('/v1/inbox')
+      ? { settled: { a: 10 }, config: { a: { auto_settle: false } } }
+      : { data: [{ id: 'a', title: 'A', pinned: true }, { id: 'b', title: 'B' }] },
+  })) as unknown as typeof fetch;
+  const merged = await new HermesClient({ endpoint: 'https://agent.example.ts.net', token: 'token', fetchImpl }).sessions();
+  assert.deepEqual(plain(merged), [
+    { id: 'a', title: 'A', pinned: true, settledAt: 10, autoSettleDisabled: true },
+    { id: 'b', title: 'B' },
+  ]);
 });

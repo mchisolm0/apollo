@@ -150,3 +150,33 @@ test("settled threads survive a new device and restart; migration cannot undo re
   assert.equal((await patch(first, { broken: -1 })).response.status, 400);
   assert.equal((await patch(first, { broken: "20" })).response.status, 400);
 });
+
+test("inbox config stores per-session auto-settle opt-outs and rejects malformed config", async (t) => {
+  const f = await fixture(); t.after(async () => { await f.connector.close(); await f.hermes.close(); });
+  async function device() {
+    const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
+    const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
+    return { authorization: `Bearer ${exchange.body.access_token}`, "content-type": "application/json" };
+  }
+  const first = await device();
+  const patch = (headers, body) => req(f.base, "/v1/inbox", { method: "PATCH", headers, body: JSON.stringify(body) });
+  assert.equal((await patch(first, { settled: {}, config: { thread: { auto_settle: false } } })).response.status, 200);
+  const second = await device();
+  assert.deepEqual((await req(f.base, "/v1/inbox", { headers: second })).body.config, { thread: { auto_settle: false } });
+  await patch(second, { settled: {}, config: { thread: { auto_settle: true } } });
+  assert.deepEqual((await req(f.base, "/v1/inbox", { headers: first })).body.config, { thread: { auto_settle: true } });
+  const reloaded = new StateStore(f.statePath, "Test");
+  await reloaded.load();
+  assert.deepEqual((await reloaded.load()).inbox_config, { thread: { auto_settle: true } });
+  for (const config of [
+    { thread: false },
+    { thread: { auto_settle: "off" } },
+    { thread: { other: true } },
+    { thread: { auto_settle: false, extra: 1 } },
+    { "bad/id": { auto_settle: false } },
+    { constructor: { auto_settle: false } },
+    "not-an-object",
+  ]) {
+    assert.equal((await patch(first, { settled: {}, config })).response.status, 400);
+  }
+});

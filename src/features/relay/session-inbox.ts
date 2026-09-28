@@ -13,6 +13,8 @@ export interface InboxSession extends RelaySession {
   pendingApproval: boolean;
   failed: boolean;
   settledAt?: number;
+  pinned: boolean;
+  autoSettleDisabled: boolean;
   sortAt: number;
 }
 
@@ -22,6 +24,8 @@ export type InboxSettled = Readonly<Record<string, number>>;
 export type InboxSnoozed = Readonly<Record<string, number>>;
 
 export const SNOOZE_DURATION_SECONDS = 24 * 60 * 60;
+
+export const AUTO_SETTLE_DELAY_SECONDS = 3 * 60 * 60;
 
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
@@ -116,6 +120,7 @@ export function deriveSessionInbox(
   state: SessionInboxState | undefined,
   settled: InboxSettled = {},
   read: InboxSettled = {},
+  autoSettleDisabled: Readonly<Record<string, boolean>> = {},
 ): InboxSession[] {
   if (!state) return [];
   return sortSessionInbox(state.sessions.map((session) => {
@@ -134,6 +139,9 @@ export function deriveSessionInbox(
       running,
       unread: presentation.attention,
       activityAt,
+      pinned: session.pinned ?? false,
+      // Server config wins when present (like settledAt); the local overlay covers offline toggles.
+      autoSettleDisabled: session.autoSettleDisabled ?? autoSettleDisabled[session.id] === true,
       sortAt: session.startedAt ?? activityAt,
       ...presentation,
     };
@@ -150,6 +158,21 @@ export function canSettleSession(session: Pick<InboxSession, 'status' | 'pending
   return !session.settled && !session.running && !session.pendingApproval && (session.status === 'attention' || session.status === 'active');
 }
 
+/**
+ * True once 3h pass with no activity on a settled-eligible thread. Only the time
+ * check uses nowSeconds, so callers can probe eligibility by passing a future time.
+ */
+export function isAutoSettleDue(
+  session: Pick<InboxSession, 'settled' | 'running' | 'pendingApproval' | 'pinned' | 'activityAt'>,
+  autoSettleDisabled: boolean | undefined,
+  nowSeconds: number,
+): boolean {
+  return !session.settled && !session.running && !session.pendingApproval
+    && !session.pinned
+    && autoSettleDisabled !== true
+    && session.activityAt + AUTO_SETTLE_DELAY_SECONDS < nowSeconds;
+}
+
 export function settleSession(session: InboxSession, settledAt = Math.floor(Date.now() / 1000)): InboxSession {
   if (!canSettleSession(session)) return session;
   return { ...session, status: 'settled', settled: true, attention: false, unread: false, settledAt };
@@ -160,14 +183,14 @@ export function reopenSession(session: InboxSession): InboxSession {
   return { ...session, status: 'attention', settled: false, attention: true, unread: true };
 }
 
-const presentationKeys = ['id', 'agentId', 'title', 'preview', 'updatedAt', 'running', 'unread', 'activityAt', 'sortAt', 'status', 'settled', 'attention', 'pendingApproval', 'failed'] as const satisfies readonly (keyof InboxSession)[];
+const presentationKeys = ['id', 'agentId', 'title', 'preview', 'updatedAt', 'running', 'unread', 'activityAt', 'sortAt', 'status', 'settled', 'attention', 'pendingApproval', 'failed', 'pinned', 'autoSettleDisabled'] as const satisfies readonly (keyof InboxSession)[];
 
 /** Keep inbox rows stable while the active transcript streams unrelated text/tool events. */
 export function createSessionInboxProjector() {
   let previous: InboxSession[] = [];
-  return (agentId: string, state: SessionInboxState | undefined, settled: InboxSettled, read: InboxSettled = {}): InboxSession[] => {
+  return (agentId: string, state: SessionInboxState | undefined, settled: InboxSettled, read: InboxSettled = {}, autoSettleDisabled: Readonly<Record<string, boolean>> = {}): InboxSession[] => {
     const byId = new Map(previous.map((session) => [session.id, session]));
-    const next = deriveSessionInbox(agentId, state, settled, read).map((session) => {
+    const next = deriveSessionInbox(agentId, state, settled, read, autoSettleDisabled).map((session) => {
       const old = byId.get(session.id);
       return old && presentationKeys.every((key) => old[key] === session[key]) ? old : session;
     });

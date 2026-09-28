@@ -32,6 +32,7 @@ export interface ThreadMenuSession {
   pinned?: boolean;
   settled?: boolean;
   snoozed?: boolean;
+  autoSettle?: boolean;
 }
 
 export interface ThreadMenuHandlers {
@@ -44,6 +45,7 @@ export interface ThreadMenuHandlers {
   onPin?(pinned: boolean): void;
   onDelete?(): void;
   onFork?(): void;
+  onAutoSettle?(enabled: boolean): void;
 }
 
 /** Thread menu (t3code parity). Snooze is a local-only ledger entry; the rest are backend-backed. */
@@ -59,6 +61,10 @@ export function threadMenuActions(session: ThreadMenuSession, handlers: ThreadMe
       actions.push(session.snoozed
         ? { label: 'Unsnooze', onPress: () => handlers.onUnsnooze?.() }
         : { label: 'Snooze', onPress: () => handlers.onSnooze?.() });
+    }
+    if (handlers.onAutoSettle) {
+      const autoSettle = session.autoSettle ?? true;
+      actions.push({ label: `Auto-settle ${autoSettle ? 'On' : 'Off'}`, onPress: () => handlers.onAutoSettle?.(!autoSettle) });
     }
   }
   if (handlers.onRegenerateTitle) actions.push({ label: 'Regenerate title', onPress: handlers.onRegenerateTitle });
