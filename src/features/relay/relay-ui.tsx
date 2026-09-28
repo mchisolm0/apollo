@@ -2,9 +2,25 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { SymbolView } from 'expo-symbols';
 import type { AndroidSymbol, SFSymbol } from 'expo-symbols';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, PanResponder, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import type { ConnectionState, RunEventKind } from './types';
+import {
+  CODE_CUSTOM_STORAGE_KEY,
+  CODE_SIZE_DEFAULT,
+  CODE_SIZE_MAX,
+  CODE_SIZE_MIN,
+  CODE_SIZE_STORAGE_KEY,
+  TEXT_SIZE_DEFAULT,
+  TEXT_SIZE_MAX,
+  TEXT_SIZE_MIN,
+  TEXT_SIZE_STORAGE_KEY,
+  clampSize,
+  parseCodeSize,
+  parseEnabled,
+  parseTextSize,
+} from './text-size';
+import { applyTheme, parseTheme, THEME_STORAGE_KEY, type ThemeId } from './theme';
 
 export const relayColors = {
   background: '#000000',
@@ -34,45 +50,193 @@ export const relayTypography = {
   caption: { fontSize: 12, lineHeight: 16 },
 } as const;
 
-// Local-only reading text size. Dark mode only, no theme switch. Persisted across
-// relaunch; multiplies base sizes so the system fontScale keeps applying on top.
-export type TextScaleKey = 'small' | 'default' | 'large';
-export const TEXT_SCALE_FACTORS: Record<TextScaleKey, number> = { small: 0.875, default: 1, large: 1.18 };
-export const TEXT_SCALE_STORAGE_KEY = 'ekho:text-scale';
+// Local-only reading text size in points (14–22, default 17). Terminal/code
+// blocks can follow their own size when custom code size is enabled. Persisted
+// across relaunch; multiplies base sizes so the system fontScale keeps applying
+// on top.
+export {
+  TEXT_SIZE_MIN,
+  TEXT_SIZE_MAX,
+  TEXT_SIZE_DEFAULT,
+  CODE_SIZE_MIN,
+  CODE_SIZE_MAX,
+  CODE_SIZE_DEFAULT,
+  TEXT_SIZE_STORAGE_KEY,
+  CODE_SIZE_STORAGE_KEY,
+  CODE_CUSTOM_STORAGE_KEY,
+  parseTextSize,
+  parseCodeSize,
+  parseEnabled,
+  clampSize,
+} from './text-size';
 
-export function parseTextScale(value: unknown): TextScaleKey {
-  return value === 'small' || value === 'large' ? value : 'default';
-}
+type TextScaleValue = {
+  pt: number;
+  /** Ratio against the 17pt default; multiplies base font sizes. */
+  factor: number;
+  setSize: (next: number) => Promise<void>;
+  codeSize: number;
+  codeCustom: boolean;
+  /** Resolved code/terminal pt: custom size when enabled, otherwise scaled default. */
+  codePt: number;
+  setCodeCustom: (next: boolean) => Promise<void>;
+  setCodeSize: (next: number) => Promise<void>;
+};
 
-type TextScaleValue = { scale: TextScaleKey; factor: number; setScale: (next: TextScaleKey) => Promise<void> };
-
-const TextScaleContext = createContext<TextScaleValue>({ scale: 'default', factor: 1, setScale: async () => undefined });
+const TextScaleContext = createContext<TextScaleValue>({
+  pt: TEXT_SIZE_DEFAULT,
+  factor: 1,
+  setSize: async () => undefined,
+  codeSize: CODE_SIZE_DEFAULT,
+  codeCustom: false,
+  codePt: CODE_SIZE_DEFAULT,
+  setCodeCustom: async () => undefined,
+  setCodeSize: async () => undefined,
+});
 
 export function TextScaleProvider({ children }: { children: ReactNode }) {
-  const [scale, setScaleState] = useState<TextScaleKey>('default');
+  const [pt, setPt] = useState(TEXT_SIZE_DEFAULT);
+  const [codeSize, setCodeSizeState] = useState(CODE_SIZE_DEFAULT);
+  const [codeCustom, setCodeCustomState] = useState(false);
   const userPicked = useRef(false);
   useEffect(() => {
     let live = true;
-    void AsyncStorage.getItem(TEXT_SCALE_STORAGE_KEY)
-      .then((saved) => { if (live && !userPicked.current) setScaleState(parseTextScale(saved)); })
-      .catch(() => undefined);
+    void Promise.all([
+      AsyncStorage.getItem(TEXT_SIZE_STORAGE_KEY),
+      AsyncStorage.getItem(CODE_SIZE_STORAGE_KEY),
+      AsyncStorage.getItem(CODE_CUSTOM_STORAGE_KEY),
+    ]).then(([savedSize, savedCodeSize, savedCustom]) => {
+      if (!live || userPicked.current) return;
+      setPt(parseTextSize(savedSize));
+      setCodeSizeState(parseCodeSize(savedCodeSize));
+      setCodeCustomState(parseEnabled(savedCustom));
+    }).catch(() => undefined);
     return () => { live = false; };
   }, []);
-  const setScale = useCallback(async (next: TextScaleKey) => {
+  const setSize = useCallback(async (next: number) => {
     userPicked.current = true;
-    setScaleState(next);
+    const clamped = clampSize(next, TEXT_SIZE_MIN, TEXT_SIZE_MAX);
+    setPt(clamped);
     try {
-      await AsyncStorage.setItem(TEXT_SCALE_STORAGE_KEY, next);
+      await AsyncStorage.setItem(TEXT_SIZE_STORAGE_KEY, String(clamped));
     } catch {
       // Keep the in-memory value; storage stays on best effort.
     }
   }, []);
-  const value = useMemo(() => ({ scale, factor: TEXT_SCALE_FACTORS[scale], setScale }), [scale, setScale]);
-  return <TextScaleContext.Provider value={value}>{children}</TextScaleContext.Provider>;
+  const setCodeCustom = useCallback(async (next: boolean) => {
+    userPicked.current = true;
+    setCodeCustomState(next);
+    try {
+      await AsyncStorage.setItem(CODE_CUSTOM_STORAGE_KEY, next ? '1' : '0');
+    } catch {
+      // Keep the in-memory value; storage stays on best effort.
+    }
+  }, []);
+  const setCodeSize = useCallback(async (next: number) => {
+    userPicked.current = true;
+    const clamped = clampSize(next, CODE_SIZE_MIN, CODE_SIZE_MAX);
+    setCodeSizeState(clamped);
+    try {
+      await AsyncStorage.setItem(CODE_SIZE_STORAGE_KEY, String(clamped));
+    } catch {
+      // Keep the in-memory value; storage stays on best effort.
+    }
+  }, []);
+  const codePt = codeCustom ? codeSize : Math.round(CODE_SIZE_DEFAULT * (pt / TEXT_SIZE_DEFAULT));
+  const value = useMemo(
+    () => ({ pt, factor: pt / TEXT_SIZE_DEFAULT, setSize, codeSize, codeCustom, codePt, setCodeCustom, setCodeSize }),
+    [pt, setSize, codeSize, codeCustom, codePt, setCodeCustom, setCodeSize],
+  );
+  // Theme state piggybacks here because _layout.tsx only mounts this provider.
+  return <TextScaleContext.Provider value={value}><RelayThemeProvider>{children}</RelayThemeProvider></TextScaleContext.Provider>;
 }
 
 export function useTextScale(): TextScaleValue {
   return useContext(TextScaleContext);
+}
+
+type ThemeValue = {
+  id: ThemeId;
+  colors: typeof relayColors;
+  setTheme: (next: ThemeId) => Promise<void>;
+};
+
+const ThemeStateContext = createContext<ThemeValue>({ id: 'code', colors: relayColors, setTheme: async () => undefined });
+
+export function RelayThemeProvider({ children }: { children: ReactNode }) {
+  const [id, setId] = useState<ThemeId>('code');
+  const userPicked = useRef(false);
+  useEffect(() => {
+    let live = true;
+    void AsyncStorage.getItem(THEME_STORAGE_KEY).then((saved) => {
+      if (live && !userPicked.current) setId(parseTheme(saved));
+    }).catch(() => undefined);
+    return () => { live = false; };
+  }, []);
+  const setTheme = useCallback(async (next: ThemeId) => {
+    userPicked.current = true;
+    setId(next);
+    try {
+      await AsyncStorage.setItem(THEME_STORAGE_KEY, next);
+    } catch {
+      // Keep the in-memory value; storage stays on best effort.
+    }
+  }, []);
+  const colors = useMemo(() => applyTheme(relayColors, id), [id]);
+  const value = useMemo(() => ({ id, colors, setTheme }), [id, colors, setTheme]);
+  return <ThemeStateContext.Provider value={value}>{children}</ThemeStateContext.Provider>;
+}
+
+export function useRelayTheme(): ThemeValue {
+  return useContext(ThemeStateContext);
+}
+
+/** Resolved color set for the active accent theme; same keys as relayColors. */
+export function useColors(): typeof relayColors {
+  return useContext(ThemeStateContext).colors;
+}
+
+/**
+ * Minimal draggable slider (core Slider left react-native). Rounded bar with an
+ * accent fill and a 28pt knob; steps are whole points between min and max.
+ */
+export function RelaySlider({ value, min, max, label, onChange }: { value: number; min: number; max: number; label: string; onChange: (next: number) => void }) {
+  const [trackWidth, setTrackWidth] = useState(0);
+  const cyan = useColors().cyan;
+  const ratio = (value - min) / (max - min);
+  const percent: `${number}%` = `${Math.round(ratio * 100)}%`;
+  const moveTo = (x: number) => {
+    if (!trackWidth) return;
+    const clamped = Math.min(1, Math.max(0, x / trackWidth));
+    onChange(Math.round(min + clamped * (max - min)));
+  };
+  // Created fresh each render so handlers see current props.
+  const responder = PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onMoveShouldSetPanResponder: () => true,
+    onPanResponderGrant: (event) => moveTo(event.nativeEvent.locationX),
+    onPanResponderMove: (event) => moveTo(event.nativeEvent.locationX),
+  });
+  return (
+    <View
+      accessibilityRole="adjustable"
+      accessibilityLabel={label}
+      accessibilityValue={{ min, max, now: value, text: `${value} pt` }}
+      accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
+      onAccessibilityAction={(event) => {
+        const next = event.nativeEvent.actionName === 'increment' ? value + 1 : value - 1;
+        if (next >= min && next <= max) void onChange(next);
+      }}
+      onLayout={(layout) => setTrackWidth(layout.nativeEvent.layout.width)}
+      {...responder.panHandlers}
+      style={styles.slider}
+    >
+      <View pointerEvents="none" style={styles.sliderTrack}>
+        <View style={[styles.sliderFill, { width: percent, backgroundColor: cyan }]} />
+      </View>
+      <View pointerEvents="none" style={[styles.sliderKnob, { left: percent }]} />
+    </View>
+  );
 }
 
 type ButtonTone = 'default' | 'route' | 'primary' | 'amber' | 'destructive';
@@ -83,16 +247,17 @@ export function RelayButton({
   compact = false,
   ...props
 }: ComponentProps<typeof Pressable> & { children: ReactNode; tone?: ButtonTone; compact?: boolean }) {
-  const color = props.disabled ? relayColors.muted : tone === 'route' || tone === 'primary' ? relayColors.background : tone === 'amber' ? relayColors.amber : tone === 'destructive' ? relayColors.red : relayColors.primary;
+  const colors = useColors();
+  const color = props.disabled ? colors.muted : tone === 'route' || tone === 'primary' ? colors.background : tone === 'amber' ? colors.amber : tone === 'destructive' ? colors.red : colors.primary;
   const backgroundColor = props.disabled
-    ? relayColors.elevated
+    ? colors.elevated
     : tone === 'route' || tone === 'primary'
-      ? relayColors.primary
+      ? colors.primary
       : tone === 'amber'
         ? '#2c2412'
         : tone === 'destructive'
           ? '#2c1619'
-          : relayColors.surface;
+          : colors.surface;
   return (
     <Pressable
       {...props}
@@ -149,7 +314,8 @@ export type IconButtonProps = {
 export function IconButton({ name, label, onPress, disabled = false, selected = false, size = 44, tone = 'default' }: IconButtonProps) {
   const iconSize = Math.min(22, Math.max(16, size * 0.5));
   const materialName = androidSymbols[name];
-  const tintColor = tone === 'destructive' ? relayColors.red : tone === 'primary' ? relayColors.background : relayColors.primary;
+  const colors = useColors();
+  const tintColor = tone === 'destructive' ? colors.red : tone === 'primary' ? colors.background : colors.primary;
   return (
     <Pressable
       accessibilityRole="button"
@@ -185,7 +351,8 @@ export function RelayHeader({ title, detail, onBack, action, backLabel = 'Go bac
 }
 
 export function ConnectionMark({ state, label }: { state: ConnectionState; label?: boolean }) {
-  const color = state === 'connected' ? relayColors.green : state === 'connecting' ? relayColors.amber : state === 'revoked' ? relayColors.red : relayColors.muted;
+  const colors = useColors();
+  const color = state === 'connected' ? colors.green : state === 'connecting' ? colors.amber : state === 'revoked' ? colors.red : colors.muted;
   const copy = connectionLabels[state];
   return (
     <View style={styles.connectionMark} accessible accessibilityRole="text" accessibilityLabel={`Connection: ${copy}`}>
@@ -204,6 +371,7 @@ export const connectionLabels = {
 
 /** Connection trouble occupies the existing header instead of inserting a banner. */
 export function ConnectionAction({ state, onReconnect, onDetails }: { state: ConnectionState; onReconnect?: () => void; onDetails?: () => void }) {
+  const colors = useColors();
   if (state === 'connected') return null;
   const label = state === 'offline' ? 'Offline · Retry' : connectionLabels[state];
   const showDetails = () => Alert.alert(
@@ -220,7 +388,7 @@ export function ConnectionAction({ state, onReconnect, onDetails }: { state: Con
     onPress={state === 'offline' && onReconnect ? onReconnect : showDetails}
     style={({ pressed }) => [styles.connectionAction, { opacity: pressed ? 0.6 : 1 }]}
   >
-    <Text numberOfLines={1} style={[styles.connectionText, { color: state === 'revoked' ? relayColors.red : relayColors.amber }]}>{label}</Text>
+    <Text numberOfLines={1} style={[styles.connectionText, { color: state === 'revoked' ? colors.red : colors.amber }]}>{label}</Text>
   </Pressable>;
 }
 
@@ -238,16 +406,18 @@ export function SectionLabel({ children, detail }: { children: string; detail?: 
 }
 
 export function RelayInput(props: ComponentProps<typeof TextInput>) {
-  return <TextInput {...props} placeholderTextColor={relayColors.muted} selectionColor={relayColors.cyan} style={[styles.input, props.style]} />;
+  const colors = useColors();
+  return <TextInput {...props} placeholderTextColor={colors.muted} selectionColor={colors.cyan} style={[styles.input, props.style]} />;
 }
 
 export function StatusGlyph({ kind }: { kind: RunEventKind }) {
+  const colors = useColors();
   const config: Record<RunEventKind, { glyph: string; color: string }> = {
-    user: { glyph: '→', color: relayColors.cyan },
-    assistant: { glyph: '◆', color: relayColors.primary },
-    tool: { glyph: '↳', color: relayColors.amber },
-    system: { glyph: '·', color: relayColors.muted },
-    error: { glyph: '×', color: relayColors.red },
+    user: { glyph: '→', color: colors.cyan },
+    assistant: { glyph: '◆', color: colors.primary },
+    tool: { glyph: '↳', color: colors.amber },
+    system: { glyph: '·', color: colors.muted },
+    error: { glyph: '×', color: colors.red },
   };
   const item = config[kind];
   return <Text style={[styles.statusGlyph, { color: item.color }]} accessibilityLabel={`${kind} event`}>{item.glyph}</Text>;
@@ -278,4 +448,8 @@ export const styles = StyleSheet.create({
   sectionLabelDetail: { color: relayColors.muted, fontSize: 11 },
   input: { minHeight: 48, borderRadius: 12, color: relayColors.primary, backgroundColor: relayColors.surface, paddingHorizontal: 13, paddingVertical: 10, fontSize: 16 },
   statusGlyph: { width: 24, fontSize: 17, lineHeight: 22, fontWeight: '600', textAlign: 'center' },
+  slider: { height: 44, justifyContent: 'center' },
+  sliderTrack: { alignSelf: 'stretch', height: 4, borderRadius: 2, backgroundColor: relayColors.lineStrong },
+  sliderFill: { height: 4, borderRadius: 2, backgroundColor: relayColors.cyan },
+  sliderKnob: { position: 'absolute', top: (44 - 4) / 2 - 14 + 2, width: 28, height: 28, borderRadius: 14, backgroundColor: relayColors.primary, transform: [{ translateX: -14 }] },
 });

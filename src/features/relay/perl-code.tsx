@@ -17,10 +17,10 @@ function tokens(value: string | Prism.Token | (string | Prism.Token)[]): ReactNo
 
 /** The native renderer has no Perl grammar. Only these blocks use Prism. */
 export const PerlCode = memo(function PerlCode({ code }: { code: string }) {
-  const { factor } = useTextScale();
+  const { factor, codePt } = useTextScale();
   return <View style={styles.block}>
     <Text style={[styles.label, { fontSize: 12 * factor }]}>Perl</Text>
-    <ScrollView horizontal accessibilityLabel="Perl code"><Text selectable style={[styles.code, { fontSize: 13 * factor, lineHeight: 21 * factor }]}>{tokens(Prism.tokenize(code, Prism.languages.perl))}</Text></ScrollView>
+    <ScrollView horizontal accessibilityLabel="Perl code"><Text selectable style={[styles.code, { fontSize: codePt, lineHeight: Math.round(codePt * 21 / 13) }]}>{tokens(Prism.tokenize(code, Prism.languages.perl))}</Text></ScrollView>
   </View>;
 });
 const styles = StyleSheet.create({
