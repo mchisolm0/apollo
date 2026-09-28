@@ -21,13 +21,13 @@ const noMessages: readonly HermesMessage[] = [];
 const noEvents: readonly HermesRunEvent[] = [];
 
 export default function SessionRoute() {
-  const { id, agentId, presentation } = useLocalSearchParams<{ id: string; agentId: string; presentation?: string }>();
-  // Keep a draft's presentation stable when its first send assigns a session id.
-  const isSheet = id === 'new' || presentation === 'sheet';
-  return <Session key={`${agentId}:${isSheet ? 'draft' : id}`} id={id} agentId={agentId} isSheet={isSheet} />;
+  const { id, agentId, draft } = useLocalSearchParams<{ id: string; agentId: string; draft?: string }>();
+  // A new thread keeps its screen and composer when its first send assigns a session id.
+  const isDraft = id === 'new' || draft === '1';
+  return <Session key={`${agentId}:${isDraft ? 'draft' : id}`} id={id} agentId={agentId} />;
 }
 
-function Session({ id, agentId, isSheet }: { id: string; agentId: string; isSheet: boolean }) {
+function Session({ id, agentId }: { id: string; agentId: string }) {
   const { agents, runtime, messages, createSession, sessionMessages, skills: loadSkills, models: loadModels, startRun, stopRun, approveRun, retryAgent, uploadAttachment, attachmentSource, deleteSession, regenerateTitle } = useEkho();
   const [resolvedId, setResolvedId] = useState(id === 'new' ? undefined : id);
   const router = useRouter();
@@ -188,7 +188,7 @@ function Session({ id, agentId, isSheet }: { id: string; agentId: string; isShee
       if (id === 'new') {
         await moveDraft(sessionId, sent ? '' : text, sent ? [] : files);
         // Promote the current route without replacing the screen or its composer.
-        router.setParams({ id: sessionId, ...(isSheet ? { presentation: 'sheet' } : {}) });
+        router.setParams({ id: sessionId, draft: '1' });
       }
     }
   });
@@ -197,7 +197,7 @@ function Session({ id, agentId, isSheet }: { id: string; agentId: string; isShee
   const connection = state?.status === 'connected' ? 'connected' : state?.status === 'connecting' ? 'connecting' : state?.status === 'revoked' ? 'revoked' : 'offline';
   const statusLabel = uploading ? 'Uploading attachments' : approval ? 'Needs approval' : running ? 'Working' : run?.status === 'failed' ? 'Failed' : run?.status === 'completed' ? 'Complete' : undefined;
   return (
-    <SafeAreaView style={styles.safeArea} edges={isSheet ? ['bottom'] : ['top', 'bottom']}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
       <RunScreen
         session={{ id: resolvedId ?? 'new', agentId, title: session?.title?.trim() || 'New thread', updatedAt: '' }}
         agentName={agent.label}

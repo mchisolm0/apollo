@@ -29,9 +29,9 @@ export function AgentSettingsScreen({ agent, deviceName = 'This device', environ
   return (
     <View style={uiStyles.screen}>
       <View style={styles.header}>
-        <View style={styles.headerSlot} />
+        <View style={styles.headerSlot}>{onBack ? <IconButton name="chevron.left" label="Back" onPress={onBack} /> : null}</View>
         <Text style={styles.headerTitle}>Settings</Text>
-        <View style={[styles.headerSlot, styles.headerAction]}>{onBack ? <IconButton name="xmark" label="Close settings" onPress={onBack} /> : null}</View>
+        <View style={styles.headerSlot} />
       </View>
       <ScrollView contentContainerStyle={uiStyles.content}>
         <View style={styles.identity}>
@@ -159,7 +159,6 @@ function SettingRow({ label, value, onPress }: { label: string; value: string; o
 const styles = StyleSheet.create({
   header: { minHeight: 62, paddingHorizontal: 12, paddingTop: 6, paddingBottom: 6, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   headerSlot: { width: 44, alignItems: 'flex-start' },
-  headerAction: { alignItems: 'flex-end' },
   headerTitle: { color: relayColors.primary, fontSize: 17, lineHeight: 22, fontWeight: '600', letterSpacing: -0.25 },
   identity: { paddingTop: 24, paddingBottom: 18, gap: 7 },
   agentName: { color: relayColors.primary, fontSize: 30, lineHeight: 36, fontWeight: '600', paddingTop: 6 },
