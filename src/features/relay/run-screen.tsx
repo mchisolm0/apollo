@@ -262,13 +262,15 @@ const TranscriptEntry = memo(function TranscriptEntry({ row, agentName, attachme
       <Pressable style={styles.workToggle} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ expanded }} onPress={() => { onDisclosure(); setExpanded(!expanded); }}>
         {running.length ? <ActivityIndicator size="small" color={colors.secondary} /> : <SymbolView name={{ ios: 'terminal', android: 'terminal', web: 'terminal' }} size={14} tintColor={failed.length ? colors.red : colors.secondary} />}
         <Text style={[styles.workText, failed.length > 0 && styles.failedTool]}>{label}</Text>
-        <Text style={styles.workText}>{expanded ? '⌃' : '⌄'}</Text>
+        <SymbolView name={{ ios: expanded ? 'chevron.up' : 'chevron.down', android: expanded ? 'expand_less' : 'expand_more', web: expanded ? 'expand_less' : 'expand_more' }} size={10} tintColor={colors.secondary} />
       </Pressable>
       {expanded ? row.items.map((tool) => <ToolEntry key={tool.id} tool={tool} onDisclosure={onDisclosure} />) : null}
     </View>;
   }
   if (row.kind === 'error') return <View style={styles.error} accessibilityRole="alert"><Text selectable style={styles.errorText}>{row.text}</Text></View>;
   const user = row.kind === 'user';
+  // An agent row without content has nothing to show and only eats vertical space.
+  if (!user && !row.text.trim()) return null;
   const message = user ? splitAttachmentMessage(row.text) : undefined;
   return <View style={styles.message}>
     <View accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[styles.avatar, user && styles.userAvatar]}><Text style={styles.avatarText}>{user ? 'Y' : agentName.charAt(0).toUpperCase()}</Text></View>

@@ -242,3 +242,34 @@ test('a polled final response replaces stale progress after the event stream dis
   const final = rows.at(-1);
   assert.equal(final?.kind === 'assistant' && final.text, 'The counts are ready.');
 });
+
+test('terminal output supplies the answer when deltas were missed', () => {
+  const events = [
+    event({ event: 'tool.started', tool: 'vision_analyze', call_id: 'call-1' }),
+    event({ event: 'tool.completed', tool: 'vision_analyze', call_id: 'call-1' }),
+    event({ event: 'run.completed', output: 'It looks like an old engine block, heavily corroded.' }),
+  ];
+  const projector = createTranscriptProjector();
+  const live = projector({ history: [], events, runId: 'run-1', running: false });
+  assert.deepEqual(live.map((row) => row.kind), ['work', 'assistant']);
+  const answer = live.at(-1);
+  assert.equal(answer?.kind === 'assistant' && answer.text, 'It looks like an old engine block, heavily corroded.');
+});
+
+test('terminal output extends a partial stream instead of duplicating it', () => {
+  const events = [
+    event({ event: 'message.delta', delta: 'It looks like an old' }),
+    event({ event: 'run.completed', output: 'It looks like an old engine block, heavily corroded.' }),
+  ];
+  const rows = createTranscriptProjector()({ history: [], events, runId: 'run-1', running: false });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind === 'assistant' && rows[0].text, 'It looks like an old engine block, heavily corroded.');
+});
+
+test('terminal output dedupes against equal fresh history', () => {
+  const events = [event({ event: 'run.completed', output: 'Here is the summary.' })];
+  const history = [message({ role: 'user', content: 'Tell me', timestamp: 10 }), message({ role: 'assistant', content: 'Here is the summary.', timestamp: 15 })];
+  const projector = createTranscriptProjector();
+  const live = projector({ history, events, runId: 'run-1', running: false });
+  assert.deepEqual(live.map((row) => row.kind), ['user', 'assistant']);
+});
