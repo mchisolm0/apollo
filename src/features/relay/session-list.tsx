@@ -77,13 +77,14 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
       contentContainerStyle={styles.content}
       refreshing={refreshing}
       onRefresh={onRefresh}
-      renderItem={({ item }) => item.kind === 'section' ? (
-        <Pressable accessibilityRole="button" accessibilityLabel={`${item.title}, ${item.count} threads`} accessibilityState={{ expanded: Boolean(query.trim()) || !collapsed[item.id] }} style={({ pressed }) => [styles.section, pressed && styles.pressed]} onPress={() => toggle(item.id)}>
+      renderItem={({ item }) => item.kind === 'section' ? (() => {
+        const expanded = Boolean(query.trim()) || !collapsed[item.id];
+        return <Pressable accessibilityRole="button" accessibilityLabel={`${item.title}, ${item.count} threads`} accessibilityState={{ expanded }} style={({ pressed }) => [styles.section, pressed && styles.pressed]} onPress={() => toggle(item.id)}>
           <Text style={styles.sectionText}>{item.title} ({item.count})</Text>
           <View style={styles.sectionRule} />
-          <SymbolView name={{ ios: Boolean(query.trim()) || !collapsed[item.id] ? 'chevron.up' : 'chevron.down', android: 'expand_more', web: 'expand_more' }} size={12} tintColor={colors.secondary} />
-        </Pressable>
-      ) : <SessionRow session={item.session} snoozed={isSessionSnoozed(snoozed, item.session.id)} onPress={onSessionPress} onSettle={onSettle} onReopen={onReopen} onAutoSettle={autoSettleLoaded ? handleAutoSettle : undefined} onSnooze={handleSnooze} onUnsnooze={handleUnsnooze} onForked={onForked} />}
+          <SymbolView name={{ ios: expanded ? 'chevron.up' : 'chevron.down', android: expanded ? 'expand_less' : 'expand_more', web: expanded ? 'expand_less' : 'expand_more' }} size={12} tintColor={colors.secondary} />
+        </Pressable>;
+      })() : <SessionRow session={item.session} snoozed={isSessionSnoozed(snoozed, item.session.id)} onPress={onSessionPress} onSettle={onSettle} onReopen={onReopen} onAutoSettle={autoSettleLoaded ? handleAutoSettle : undefined} onSnooze={handleSnooze} onUnsnooze={handleUnsnooze} onForked={onForked} />}
       ListEmptyComponent={<View style={styles.empty}><Text style={styles.emptyTitle}>{connection !== 'connected' && !sessions.length ? 'Threads are unavailable' : query ? 'No matching threads' : attentionOnly ? 'All caught up' : 'Start a thread'}</Text><Text style={styles.emptyText}>{connection !== 'connected' && !sessions.length ? 'Reconnect to load your threads.' : query ? 'Try a different search.' : attentionOnly ? 'No threads need your attention.' : 'Choose New thread to get started.'}</Text></View>}
     />
     </View>
