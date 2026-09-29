@@ -1,4 +1,5 @@
 export { AgentSettingsScreen } from './agent-settings-screen';
+export { AppSettingsScreen } from './app-settings-screen';
 export type { AgentSettingsScreenProps } from './agent-settings-screen';
 export { PairingScreen } from './pairing-screen';
 export type { PairingScreenProps } from './pairing-screen';

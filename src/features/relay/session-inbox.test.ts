@@ -2,7 +2,7 @@ import { createSessionInboxProjector, type SessionInboxState } from './session-i
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { AUTO_SETTLE_DELAY_SECONDS, countSnoozedSessions, deriveSessionInbox, isAutoSettleDue, isSessionSnoozed, pruneSnoozedLedger, reopenSession, settleSession, snoozeSession, unsnoozeSession } from './session-inbox.ts';
+import { AUTO_SETTLE_DELAY_SECONDS, countSnoozedSessions, dateLabel, deriveSessionInbox, isAutoSettleDue, isSessionSnoozed, pruneSnoozedLedger, reopenSession, settleSession, snoozeSession, unsnoozeSession } from './session-inbox.ts';
 
 const baseState = {
   status: 'connected' as const,
@@ -246,4 +246,15 @@ test('auto-settle fires only 3h after activity on settle-eligible threads', () =
   assert.equal(exempt({}, false), true);
   assert.equal(exempt({}, undefined), true);
   assert.equal(isAutoSettleDue({ ...due, activityAt: 0 }, undefined, 1000 + AUTO_SETTLE_DELAY_SECONDS + 1), false);
+});
+
+test('inbox ages are compact for the last week', () => {
+  const now = 1_790_000_000_000;
+  const ago = (seconds: number) => now / 1000 - seconds;
+  assert.equal(dateLabel(ago(30), now), 'now');
+  assert.equal(dateLabel(ago(14 * 60), now), '14m');
+  assert.equal(dateLabel(ago(8 * 3600), now), '8h');
+  assert.equal(dateLabel(ago(3 * 86400), now), '3d');
+  assert.doesNotMatch(dateLabel(ago(10 * 86400), now), /^\d+[mhd]$/u);
+  assert.equal(dateLabel(0, now), '');
 });

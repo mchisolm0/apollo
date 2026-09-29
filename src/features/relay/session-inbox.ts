@@ -77,8 +77,14 @@ function runIsActive(run: HermesRunStatus | undefined, session: HermesSession): 
   return run?.sessionId === session.id && !TERMINAL_RUNS.has(run.status);
 }
 
-function dateLabel(timestamp: number): string {
+/** Compact age like T3's inbox: now, 14m, 8h, 3d, then a short date. */
+export function dateLabel(timestamp: number, nowMs = Date.now()): string {
   if (!timestamp) return '';
+  const minutes = Math.floor((nowMs / 1000 - timestamp) / 60);
+  if (minutes < 1) return 'now';
+  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 24 * 60) return `${Math.floor(minutes / 60)}h`;
+  if (minutes < 7 * 24 * 60) return `${Math.floor(minutes / (24 * 60))}d`;
   return new Date(timestamp * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 

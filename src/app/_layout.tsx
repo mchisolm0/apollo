@@ -22,9 +22,7 @@ function InnerStack() {
   return (
     <ThemeProvider value={theme}>
       <StatusBar style="light" />
-      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }}>
-        <Stack.Screen name="settings/[agentId]" options={{ presentation: 'formSheet', sheetAllowedDetents: [0.7, 0.92], sheetGrabberVisible: true, sheetCornerRadius: 32 }} />
-      </Stack>
+      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }} />
     </ThemeProvider>
   );
 }

@@ -6,7 +6,7 @@ import Swipeable, { type SwipeableMethods } from 'react-native-gesture-handler/R
 
 import { relayColors as colors, useTextScale } from './relay-ui';
 import { KeyboardFrame } from './keyboard-frame';
-import { canSettleSession, isSessionSnoozed, type InboxSession, type InboxStatus } from './session-inbox';
+import { canSettleSession, isSessionSnoozed, type InboxSession } from './session-inbox';
 import { useAutoSettleLedger, useSnoozeLedger } from './use-session-inbox';
 import type { ConnectionState } from './types';
 import { showThreadMenu } from './session-actions';
@@ -23,21 +23,21 @@ type Props = {
   refreshing?: boolean;
   onRefresh?: () => void;
 };
-type SectionId = InboxStatus | 'snoozed';
+// Open threads (attention first) render without a header; Snoozed and Settled collapse below them.
+type SectionId = 'open' | 'snoozed' | 'settled';
 type ListRow = { kind: 'section'; id: SectionId; title: string; count: number } | { kind: 'session'; id: string; session: InboxSession };
 const sections = [
-  { id: 'attention', title: 'Needs you', collapsed: false },
-  { id: 'active', title: 'Open', collapsed: false },
-  { id: 'snoozed', title: 'Snoozed', collapsed: true },
-  { id: 'settled', title: 'Settled', collapsed: true },
-] as const satisfies readonly { id: SectionId; title: string; collapsed: boolean }[];
+  { id: 'open', title: 'Open' },
+  { id: 'snoozed', title: 'Snoozed' },
+  { id: 'settled', title: 'Settled' },
+] as const satisfies readonly { id: SectionId; title: string }[];
 
 
 /** A searchable thread inbox with persistent finish/reopen actions. */
 export function SessionList({ sessions, connection = 'connected', onSessionPress, onSettle, onReopen, onNewSession, onForked, refreshing, onRefresh }: Props) {
   const { fontScale } = useWindowDimensions();
   const [query, setQuery] = useState('');
-  const [collapsed, setCollapsed] = useState<Record<SectionId, boolean>>({ attention: false, active: false, snoozed: true, settled: true });
+  const [collapsed, setCollapsed] = useState<Record<SectionId, boolean>>({ open: false, snoozed: true, settled: true });
   const [attentionOnly, setAttentionOnly] = useState(false);
   // Sessions carry their agent; the inbox route only ever shows one agent at a time.
   const { snoozed, snooze, unsnooze } = useSnoozeLedger(sessions[0]?.agentId ?? '');
@@ -51,13 +51,13 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
     const search = query.trim().toLocaleLowerCase();
     const searching = Boolean(search);
     for (const section of sections) {
-      if (attentionOnly && section.id !== 'attention') continue;
+      if (attentionOnly && section.id !== 'open') continue;
       const matching = sessions.filter((session) => {
-        const bucket: SectionId = session.settled ? 'settled' : isSessionSnoozed(snoozed, session.id) ? 'snoozed' : session.status;
-        return bucket === section.id && `${session.title} ${session.preview ?? ''}`.toLocaleLowerCase().includes(search);
+        const bucket: SectionId = session.settled ? 'settled' : isSessionSnoozed(snoozed, session.id) ? 'snoozed' : 'open';
+        return bucket === section.id && (!attentionOnly || session.status === 'attention') && `${session.title} ${session.preview ?? ''}`.toLocaleLowerCase().includes(search);
       });
       if (!matching.length) continue;
-      result.push({ kind: 'section', ...section, count: matching.length });
+      if (section.id !== 'open') result.push({ kind: 'section', ...section, count: matching.length });
       if (searching || !collapsed[section.id]) result.push(...matching.map((session): ListRow => ({ kind: 'session', id: session.id, session })));
     }
     return result;
@@ -77,12 +77,14 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
       contentContainerStyle={styles.content}
       refreshing={refreshing}
       onRefresh={onRefresh}
-      renderItem={({ item }) => item.kind === 'section' ? (
-        <Pressable accessibilityRole="button" accessibilityLabel={`${item.title}, ${item.count} threads`} accessibilityState={{ expanded: Boolean(query.trim()) || !collapsed[item.id] }} style={styles.section} onPress={() => toggle(item.id)}>
-          <Text style={item.id === 'settled' ? styles.finishedSectionText : styles.sectionText}>{item.title}</Text>
-          <Text style={item.id === 'settled' ? styles.finishedSectionText : styles.sectionCount}>{item.count} {Boolean(query.trim()) || !collapsed[item.id] ? '⌃' : '⌄'}</Text>
-        </Pressable>
-      ) : <SessionRow session={item.session} snoozed={isSessionSnoozed(snoozed, item.session.id)} onPress={onSessionPress} onSettle={onSettle} onReopen={onReopen} onAutoSettle={autoSettleLoaded ? handleAutoSettle : undefined} onSnooze={handleSnooze} onUnsnooze={handleUnsnooze} onForked={onForked} />}
+      renderItem={({ item }) => item.kind === 'section' ? (() => {
+        const expanded = Boolean(query.trim()) || !collapsed[item.id];
+        return <Pressable accessibilityRole="button" accessibilityLabel={`${item.title}, ${item.count} threads`} accessibilityState={{ expanded }} style={({ pressed }) => [styles.section, pressed && styles.pressed]} onPress={() => toggle(item.id)}>
+          <Text style={styles.sectionText}>{item.title} ({item.count})</Text>
+          <View style={styles.sectionRule} />
+          <SymbolView name={{ ios: expanded ? 'chevron.up' : 'chevron.down', android: expanded ? 'expand_less' : 'expand_more', web: expanded ? 'expand_less' : 'expand_more' }} size={12} tintColor={colors.secondary} />
+        </Pressable>;
+      })() : <SessionRow session={item.session} snoozed={isSessionSnoozed(snoozed, item.session.id)} onPress={onSessionPress} onSettle={onSettle} onReopen={onReopen} onAutoSettle={autoSettleLoaded ? handleAutoSettle : undefined} onSnooze={handleSnooze} onUnsnooze={handleUnsnooze} onForked={onForked} />}
       ListEmptyComponent={<View style={styles.empty}><Text style={styles.emptyTitle}>{connection !== 'connected' && !sessions.length ? 'Threads are unavailable' : query ? 'No matching threads' : attentionOnly ? 'All caught up' : 'Start a thread'}</Text><Text style={styles.emptyText}>{connection !== 'connected' && !sessions.length ? 'Reconnect to load your threads.' : query ? 'Try a different search.' : attentionOnly ? 'No threads need your attention.' : 'Choose New thread to get started.'}</Text></View>}
     />
     </View>
@@ -125,7 +127,6 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
       Alert.alert(`Could not ${action}`, error instanceof Error ? error.message : 'Try again.');
     };
     showThreadMenu({ title: session.title, pinned, settled: session.settled, snoozed, autoSettle: !session.autoSettleDisabled }, {
-      onOpen: open,
       ...(action?.label === 'Settle' ? { onSettle: perform } : {}),
       ...(action?.label === 'Reopen' ? { onReopen: perform } : {}),
       ...(snoozed ? { onUnsnooze: () => onUnsnooze(session.id) } : { onSnooze: () => onSnooze(session.id) }),
@@ -136,15 +137,16 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
       onDelete: () => { void deleteSession(session.agentId, session.id).catch(reportFailure('delete the thread')); },
     });
   };
-  const status = session.settled ? { text: session.updatedAt, style: styles.date }
+  const status = session.settled || snoozed ? { text: session.updatedAt, style: styles.date }
     : session.pendingApproval ? { text: 'Needs approval', style: styles.approval }
     : session.running ? { text: 'Working', style: styles.activity }
     : session.failed ? { text: 'Failed', style: styles.failed }
     : session.attention ? { text: 'New result', style: styles.activity }
     : { text: session.updatedAt, style: styles.date };
-  const statusScaled = status.style === styles.date
-    ? { fontSize: 12 * factor, lineHeight: 20 * factor }
-    : { fontSize: 13 * factor };
+  const quiet = session.settled || snoozed;
+  // Hermes previews are the first user message; skip them when the title already says the same thing.
+  const preview = session.preview?.trim();
+  const showPreview = !quiet && preview && !session.title.startsWith(preview.replace(/…$|\.\.\.$/u, '').slice(0, 40));
   return <Swipeable key={session.id} ref={swipe} overshootRight={false} renderRightActions={action ? () => <Pressable accessibilityRole="button" accessibilityLabel={`${action.label} thread ${session.title}`} onPress={perform} style={styles.swipeAction}><Text style={styles.swipeText}>{action.label}</Text></Pressable> : undefined}>
     <View style={styles.rowContainer}>
     <Pressable
@@ -156,9 +158,12 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
       onAccessibilityAction={(event) => event.nativeEvent.actionName === 'showActions' ? menu() : perform()}
       style={({ pressed }) => [styles.row, pressed && styles.pressed]}
     >
-      <View style={styles.titleLine}><Text style={[styles.hash, { fontSize: 23 * factor, lineHeight: 25 * factor }]}>#</Text><Text numberOfLines={largeText ? undefined : 1} style={[styles.title, session.settled && styles.settledTitle, { fontSize: (session.settled ? 14 : 17) * factor, lineHeight: (session.settled ? 20 : 23) * factor }]}>{session.title}</Text><Text numberOfLines={1} style={[status.style, statusScaled]}>{status.text}</Text></View>
+      <View style={styles.titleLine}>
+        <Text numberOfLines={largeText ? undefined : quiet ? 1 : 2} style={[styles.title, quiet && styles.quietTitle, { fontSize: 17 * factor, lineHeight: 23 * factor }]}>{session.title}</Text>
+        <Text numberOfLines={1} style={[status.style, { fontSize: 15 * factor, lineHeight: 23 * factor }]}>{status.text}</Text>
+      </View>
+      {showPreview ? <Text numberOfLines={1} style={[styles.preview, { fontSize: 15 * factor, lineHeight: 20 * factor }]}>{preview}</Text> : null}
     </Pressable>
-    {action?.label === 'Settle' ? <Pressable accessibilityRole="button" accessibilityLabel={`Settle thread ${session.title}`} onPress={perform} style={({ pressed }) => [styles.settleButton, pressed && styles.pressed]}><Text style={styles.settleText}>Settle</Text></Pressable> : null}
     </View>
   </Swipeable>;
 });
@@ -167,21 +172,19 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background }, list: { flex: 1 }, content: { paddingBottom: 20 },
   search: { flex: 1, minWidth: 0, height: 44, borderRadius: 8, backgroundColor: '#17171c', paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 10 },
   searchInput: { color: colors.primary, fontSize: 16, flex: 1, height: 44, paddingVertical: 8 },
-  section: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 6, minHeight: 44, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  sectionText: { color: colors.primary, fontSize: 14, fontWeight: '600' }, sectionCount: { color: colors.secondary, fontSize: 13 },
-  rowContainer: { marginHorizontal: 12, flexDirection: 'row', alignItems: 'center', backgroundColor: colors.background, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#303036' },
-  settleButton: { minHeight: 44, minWidth: 44, paddingHorizontal: 8, justifyContent: 'center', borderRadius: 6 },
-  settleText: { color: colors.secondary, fontSize: 13 },
-  row: { flex: 1, paddingHorizontal: 8, paddingVertical: 8, minHeight: 44, borderRadius: 6, gap: 6, backgroundColor: colors.background, justifyContent: 'center' },
+  section: { marginHorizontal: 12, paddingHorizontal: 8, minHeight: 48, borderRadius: 6, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  sectionText: { color: colors.secondary, fontSize: 15 },
+  sectionRule: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: '#303036' },
+  rowContainer: { marginHorizontal: 12, backgroundColor: colors.background, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#303036' },
+  row: { paddingHorizontal: 8, paddingVertical: 12, minHeight: 44, borderRadius: 6, gap: 4, backgroundColor: colors.background, justifyContent: 'center' },
   pressed: { backgroundColor: '#25262c' },
-  approval: { color: colors.amber, fontSize: 13 }, activity: { color: colors.cyan, fontSize: 13 }, failed: { color: colors.red, fontSize: 13 },
-  titleLine: { flexDirection: 'row', alignItems: 'baseline', gap: 8 }, title: { color: colors.primary, fontSize: 17, lineHeight: 23, fontWeight: '500', flex: 1, minWidth: 0 },
-  date: { color: colors.secondary, fontSize: 12, lineHeight: 20 },
-  settledTitle: { color: '#808080', fontSize: 14, lineHeight: 20, fontWeight: '400' },
-  finishedSectionText: { color: '#929292', fontSize: 14 },
+  approval: { color: colors.amber }, activity: { color: colors.cyan }, failed: { color: colors.red },
+  titleLine: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 }, title: { color: colors.primary, fontSize: 17, lineHeight: 23, fontWeight: '500', flex: 1, minWidth: 0 },
+  date: { color: colors.secondary, fontSize: 15 },
+  quietTitle: { color: '#808080', fontWeight: '400' },
+  preview: { color: colors.secondary },
   swipeAction: { backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center', minWidth: 84, paddingHorizontal: 16 }, swipeText: { color: colors.background, fontWeight: '600', fontSize: 15 },
 
-  hash: { color: '#94959e', fontSize: 23, lineHeight: 25 },
   dock: { paddingHorizontal: 12, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 10 },
   dockCircle: { width: 44, height: 44, borderRadius: 8, backgroundColor: '#17171c' },
   dockButton: { flex: 1, alignItems: 'center', justifyContent: 'center' },
