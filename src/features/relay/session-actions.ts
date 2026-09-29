@@ -36,7 +36,6 @@ export interface ThreadMenuSession {
 }
 
 export interface ThreadMenuHandlers {
-  onOpen(): void;
   onSettle?(): void;
   onReopen?(): void;
   onSnooze?(): void;
@@ -50,7 +49,8 @@ export interface ThreadMenuHandlers {
 
 /** Thread menu (t3code parity). Snooze is a local-only ledger entry; the rest are backend-backed. */
 export function threadMenuActions(session: ThreadMenuSession, handlers: ThreadMenuHandlers): Action[] {
-  const actions: Action[] = [{ label: 'Open thread', onPress: handlers.onOpen }];
+  // Tapping a row opens it, so the menu leads with Settle/Reopen.
+  const actions: Action[] = [];
   if (session.settled ? handlers.onReopen : handlers.onSettle) {
     actions.push(session.settled
       ? { label: 'Reopen', onPress: () => handlers.onReopen?.() }
