@@ -108,7 +108,7 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
         estimatedItemSize={100}
         drawDistance={500}
         contentContainerStyle={styles.listContent}
-        ListEmptyComponent={isLoading ? <ActivityIndicator color={colors.cyan} accessibilityLabel="Loading messages" /> : <NewThreadEmpty agentName={agentName ?? 'Hermes'} connection={connection} />}
+        ListEmptyComponent={isLoading ? <ActivityIndicator color={colors.cyan} accessibilityLabel="Loading messages" /> : <NewThreadEmpty />}
         initialScrollAtEnd
         maintainVisibleContentPosition
         // Keep the reading position when the keyboard resizes the viewport.
@@ -149,7 +149,8 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
             <AttachmentStrip files={attachments.map((file) => ({ ...file, source: { uri: file.uri } }))} onRemove={onRemoveAttachment} disabled={isActing || isPicking} />
             <TextInput
               ref={input}
-              style={[styles.input, { fontSize: 17 * factor, lineHeight: 23 * factor }]}
+              // Grows from one line to five before scrolling.
+              style={[styles.input, { fontSize: 17 * factor, lineHeight: 23 * factor, maxHeight: 23 * factor * 5 + 12 }]}
               value={draft}
               editable={!isActing}
               onChangeText={(value) => { setObservedSelection((previous) => previous ? { start: Math.min(previous.start, value.length), end: Math.min(previous.end, value.length), text: value } : previous); setInputSelection(undefined); setSkillsOpen(false); setSkillsDismissed(false); onDraftChange?.(value); }}
@@ -158,7 +159,7 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
               selection={inputSelection}
               onSelectionChange={(event) => { setObservedSelection({ ...event.nativeEvent.selection, text: draft }); setInputSelection(undefined); setSkillsDismissed(false); }}
               maxLength={8000}
-              placeholder={`Message ${agentName ?? 'Hermes'}`}
+              placeholder="Message"
               placeholderTextColor={colors.secondary}
               selectionColor={colors.cyan}
               accessibilityLabel="Message Hermes"
@@ -230,11 +231,8 @@ function ComposerIcon({ name, label, disabled = false, selected = false, onPress
   </Pressable>;
 }
 
-function NewThreadEmpty({ agentName, connection }: { agentName: string; connection: ConnectionState }) {
-  return <View style={styles.empty}>
-    <Text style={styles.emptyTitle}>What should we build in {agentName}?</Text>
-    <View style={styles.emptyAgent}><ConnectionMark state={connection} /><Text style={styles.emptyAgentName}>{agentName}</Text></View>
-  </View>;
+function NewThreadEmpty() {
+  return <View style={styles.empty}><Text style={styles.emptyTitle}>How can I help?</Text></View>;
 }
 
 function SkillMenu({ skills, loading, error, onRetry, onSelect }: { skills: readonly HermesSkill[]; loading: boolean; error?: string; onRetry?: () => void; onSelect: (skill: HermesSkill) => void }) {
@@ -341,7 +339,7 @@ const styles = StyleSheet.create({
   disabled: { opacity: 0.4 },
   composer: { paddingHorizontal: 12, paddingVertical: 8, gap: 8 },
   composerField: { backgroundColor: '#1c1d22', borderRadius: 20, paddingHorizontal: 6, paddingTop: 10, paddingBottom: 4 },
-  input: { color: colors.primary, fontSize: 17, lineHeight: 23, minHeight: 44, maxHeight: 144, paddingVertical: 6, paddingHorizontal: 8, textAlignVertical: 'top' },
+  input: { color: colors.primary, fontSize: 17, lineHeight: 23, minHeight: 44, paddingVertical: 6, paddingHorizontal: 8, textAlignVertical: 'top' },
   toolbar: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 2 },
   toolbarSpacer: { flex: 1 },
   modelButton: { minHeight: 44, maxWidth: 140, paddingHorizontal: 10, justifyContent: 'center' },
@@ -365,6 +363,4 @@ const styles = StyleSheet.create({
   skillRetry: { color: colors.cyan, fontSize: 13, fontWeight: '600' },
   empty: { paddingTop: 72, paddingHorizontal: 24, alignItems: 'center', gap: 12 },
   emptyTitle: { color: colors.primary, fontSize: 28, fontWeight: '700', textAlign: 'center' },
-  emptyAgent: { flexDirection: 'row', alignItems: 'center', gap: 7 },
-  emptyAgentName: { color: colors.secondary, fontSize: 13 },
 });
