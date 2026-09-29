@@ -170,6 +170,8 @@ export function isAutoSettleDue(
   return !session.settled && !session.running && !session.pendingApproval
     && !session.pinned
     && autoSettleDisabled !== true
+    // activityAt 0 means the backend sent no timestamps; idle time is unknown.
+    && session.activityAt > 0
     && session.activityAt + AUTO_SETTLE_DELAY_SECONDS < nowSeconds;
 }
 

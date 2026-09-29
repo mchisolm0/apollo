@@ -435,7 +435,7 @@ function processLiveEvent(atoms: LiveAtom[], event: HermesRunEvent, state: { ass
     const output = field(event, 'output', 'final_response');
     if (output) {
       // The final response also rides the terminal event for clients whose
-      // stream missed deltas; fill gaps and finish partial streams with it.
+      // stream missed deltas; it replaces whatever partial text the stream delivered.
       const lastToolIndex = atoms.findLastIndex((atom) => atom.kind === 'tool');
       const base = lastToolIndex < 0 ? -1 : lastToolIndex;
       const answerIndex = atoms.findLastIndex((atom, index) => index > base && atom.kind === 'assistant');
@@ -443,7 +443,7 @@ function processLiveEvent(atoms: LiveAtom[], event: HermesRunEvent, state: { ass
         atoms.push({ kind: 'assistant', key: `live-${runKey}-assistant-${state.assistantOrdinal++}`, text: output, status: 'complete' });
       } else {
         const answer = atoms[answerIndex];
-        if (answer.kind === 'assistant' && answer.text !== output && output.startsWith(answer.text) && answer.status !== 'running') {
+        if (answer.kind === 'assistant' && answer.text !== output && answer.status !== 'running') {
           atoms[answerIndex] = { ...answer, text: output };
         }
       }

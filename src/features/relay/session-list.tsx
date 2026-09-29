@@ -41,7 +41,7 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
   const [attentionOnly, setAttentionOnly] = useState(false);
   // Sessions carry their agent; the inbox route only ever shows one agent at a time.
   const { snoozed, snooze, unsnooze } = useSnoozeLedger(sessions[0]?.agentId ?? '');
-  const { setAutoSettle } = useAutoSettleLedger(sessions[0]?.agentId ?? '');
+  const { loaded: autoSettleLoaded, setAutoSettle } = useAutoSettleLedger(sessions[0]?.agentId ?? '');
   const toggle = useCallback((id: SectionId) => setCollapsed((previous) => ({ ...previous, [id]: !previous[id] })), []);
   const handleSnooze = useCallback((sessionId: string) => { void snooze(sessionId); }, [snooze]);
   const handleUnsnooze = useCallback((sessionId: string) => { void unsnooze(sessionId); }, [unsnooze]);
@@ -82,7 +82,7 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
           <Text style={item.id === 'settled' ? styles.finishedSectionText : styles.sectionText}>{item.title}</Text>
           <Text style={item.id === 'settled' ? styles.finishedSectionText : styles.sectionCount}>{item.count} {Boolean(query.trim()) || !collapsed[item.id] ? '⌃' : '⌄'}</Text>
         </Pressable>
-      ) : <SessionRow session={item.session} snoozed={isSessionSnoozed(snoozed, item.session.id)} onPress={onSessionPress} onSettle={onSettle} onReopen={onReopen} onAutoSettle={handleAutoSettle} onSnooze={handleSnooze} onUnsnooze={handleUnsnooze} onForked={onForked} />}
+      ) : <SessionRow session={item.session} snoozed={isSessionSnoozed(snoozed, item.session.id)} onPress={onSessionPress} onSettle={onSettle} onReopen={onReopen} onAutoSettle={autoSettleLoaded ? handleAutoSettle : undefined} onSnooze={handleSnooze} onUnsnooze={handleUnsnooze} onForked={onForked} />}
       ListEmptyComponent={<View style={styles.empty}><Text style={styles.emptyTitle}>{connection !== 'connected' && !sessions.length ? 'Threads are unavailable' : query ? 'No matching threads' : attentionOnly ? 'All caught up' : 'Start a thread'}</Text><Text style={styles.emptyText}>{connection !== 'connected' && !sessions.length ? 'Reconnect to load your threads.' : query ? 'Try a different search.' : attentionOnly ? 'No threads need your attention.' : 'Choose New thread to get started.'}</Text></View>}
     />
     </View>
@@ -106,7 +106,7 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
 }
 
 const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettle, onReopen, onAutoSettle, onSnooze, onUnsnooze, onForked }: {
-  session: InboxSession; snoozed: boolean; onPress: Props['onSessionPress']; onSettle: Props['onSettle']; onReopen: Props['onReopen']; onAutoSettle: (sessionId: string, enabled: boolean) => void; onSnooze: (sessionId: string) => void; onUnsnooze: (sessionId: string) => void; onForked?: Props['onForked'];
+  session: InboxSession; snoozed: boolean; onPress: Props['onSessionPress']; onSettle: Props['onSettle']; onReopen: Props['onReopen']; onAutoSettle?: (sessionId: string, enabled: boolean) => void; onSnooze: (sessionId: string) => void; onUnsnooze: (sessionId: string) => void; onForked?: Props['onForked'];
 }) {
   const { fontScale } = useWindowDimensions();
   const { factor } = useTextScale();

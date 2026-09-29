@@ -98,7 +98,8 @@ export function TextScaleProvider({ children }: { children: ReactNode }) {
   const [pt, setPt] = useState(TEXT_SIZE_DEFAULT);
   const [codeSize, setCodeSizeState] = useState(CODE_SIZE_DEFAULT);
   const [codeCustom, setCodeCustomState] = useState(false);
-  const userPicked = useRef(false);
+  // Preferences changed before storage loaded; hydration must not overwrite them.
+  const userPicked = useRef(new Set<'size' | 'codeSize' | 'codeCustom'>());
   useEffect(() => {
     let live = true;
     void Promise.all([
@@ -106,15 +107,15 @@ export function TextScaleProvider({ children }: { children: ReactNode }) {
       AsyncStorage.getItem(CODE_SIZE_STORAGE_KEY),
       AsyncStorage.getItem(CODE_CUSTOM_STORAGE_KEY),
     ]).then(([savedSize, savedCodeSize, savedCustom]) => {
-      if (!live || userPicked.current) return;
-      setPt(parseTextSize(savedSize));
-      setCodeSizeState(parseCodeSize(savedCodeSize));
-      setCodeCustomState(parseEnabled(savedCustom));
+      if (!live) return;
+      if (!userPicked.current.has('size')) setPt(parseTextSize(savedSize));
+      if (!userPicked.current.has('codeSize')) setCodeSizeState(parseCodeSize(savedCodeSize));
+      if (!userPicked.current.has('codeCustom')) setCodeCustomState(parseEnabled(savedCustom));
     }).catch(() => undefined);
     return () => { live = false; };
   }, []);
   const setSize = useCallback(async (next: number) => {
-    userPicked.current = true;
+    userPicked.current.add('size');
     const clamped = clampSize(next, TEXT_SIZE_MIN, TEXT_SIZE_MAX);
     setPt(clamped);
     try {
@@ -124,7 +125,7 @@ export function TextScaleProvider({ children }: { children: ReactNode }) {
     }
   }, []);
   const setCodeCustom = useCallback(async (next: boolean) => {
-    userPicked.current = true;
+    userPicked.current.add('codeCustom');
     setCodeCustomState(next);
     try {
       await AsyncStorage.setItem(CODE_CUSTOM_STORAGE_KEY, next ? '1' : '0');
@@ -133,7 +134,7 @@ export function TextScaleProvider({ children }: { children: ReactNode }) {
     }
   }, []);
   const setCodeSize = useCallback(async (next: number) => {
-    userPicked.current = true;
+    userPicked.current.add('codeSize');
     const clamped = clampSize(next, CODE_SIZE_MIN, CODE_SIZE_MAX);
     setCodeSizeState(clamped);
     try {

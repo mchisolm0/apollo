@@ -245,4 +245,5 @@ test('auto-settle fires only 3h after activity on settle-eligible threads', () =
   assert.equal(exempt({}, true), false);
   assert.equal(exempt({}, false), true);
   assert.equal(exempt({}, undefined), true);
+  assert.equal(isAutoSettleDue({ ...due, activityAt: 0 }, undefined, 1000 + AUTO_SETTLE_DELAY_SECONDS + 1), false);
 });

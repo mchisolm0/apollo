@@ -266,6 +266,16 @@ test('terminal output extends a partial stream instead of duplicating it', () =>
   assert.equal(rows[0].kind === 'assistant' && rows[0].text, 'It looks like an old engine block, heavily corroded.');
 });
 
+test('terminal output replaces a stream that missed its opening deltas', () => {
+  const events = [
+    event({ event: 'message.delta', delta: 'engine block, heavily corroded.' }),
+    event({ event: 'run.completed', output: 'It looks like an old engine block, heavily corroded.' }),
+  ];
+  const rows = createTranscriptProjector()({ history: [], events, runId: 'run-1', running: false });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind === 'assistant' && rows[0].text, 'It looks like an old engine block, heavily corroded.');
+});
+
 test('terminal output dedupes against equal fresh history', () => {
   const events = [event({ event: 'run.completed', output: 'Here is the summary.' })];
   const history = [message({ role: 'user', content: 'Tell me', timestamp: 10 }), message({ role: 'assistant', content: 'Here is the summary.', timestamp: 15 })];

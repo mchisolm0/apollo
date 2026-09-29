@@ -175,8 +175,8 @@ export function EkhoProvider({
               // incomplete history gets one retry before the next refresh picks it up.
               if (history?.at(-1)?.role === 'tool') {
                 setTimeout(() => {
+                  // The subscription is already closed here, so `closed` is always true.
                   void client.sessionMessages(status.sessionId!).then((retry) => {
-                    if (closed) return;
                     setMessages((current) => ({ ...current, [`${agent.id}:${status.sessionId}`]: reconcileHistory(current[`${agent.id}:${status.sessionId}`] ?? [], retry) }));
                   }).catch(() => undefined);
                 }, 2_000);
@@ -475,7 +475,10 @@ export function EkhoProvider({
     setRuntime((current) => {
       const state = current[agentId];
       if (!state) return current;
-      return { ...current, [agentId]: { ...state, sessions: state.sessions.map((session) => ({ ...session, settledAt: saved.settled[session.id] })) } };
+      return { ...current, [agentId]: { ...state, sessions: state.sessions.map((session) => {
+        const config = saved.config[session.id];
+        return { ...session, settledAt: saved.settled[session.id], ...(config ? { autoSettleDisabled: config.auto_settle === false } : {}) };
+      }) } };
     });
   }, [setRuntime]);
 
