@@ -2,7 +2,7 @@ import { Redirect, useLocalSearchParams, useRouter } from 'expo-router';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { ConnectionAction, relayColors as colors } from '@/features/relay/relay-ui';
+import { ConnectionAction, IconButton, relayColors as colors } from '@/features/relay/relay-ui';
 import { AgentPicker } from '@/features/relay/agent-picker';
 import { SessionList } from '@/features/relay/session-list';
 import { useSessionInbox } from '@/features/relay/use-session-inbox';
@@ -28,6 +28,7 @@ export default function SessionsRoute() {
           onPair={() => router.push('/connect')} />
       </View>
       <ConnectionAction state={connection} onReconnect={() => void retryAgent(agent.id)} onDetails={() => router.push({ pathname: '/settings/[agentId]', params: { agentId: agent.id } })} />
+      <IconButton name="gearshape" label="Settings" onPress={() => router.push('/settings')} />
     </View>
     {inbox.error ? <Text style={styles.error} accessibilityRole="alert">{inbox.error}</Text> : null}
     <SessionList connection={connection} sessions={inbox.sessions} onSessionPress={(session) => open(session.id)} onSettle={(id) => { void inbox.settle(id); }} onReopen={(id) => { void inbox.reopen(id); }} onNewSession={() => open('new')} onForked={(id) => open(id)} />
@@ -37,7 +38,7 @@ export default function SessionsRoute() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
-  header: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 52, paddingHorizontal: 12 },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 52, paddingHorizontal: 12 },
   identity: { flex: 1, minWidth: 0 },
   error: { color: colors.red, fontSize: 14, padding: 20 },
 });

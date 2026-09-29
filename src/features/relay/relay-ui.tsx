@@ -284,6 +284,7 @@ const androidSymbols: Record<string, AndroidSymbol> = {
   'square.and.pencil': 'edit_square',
   xmark: 'close',
   'chevron.down': 'expand_more',
+  gearshape: 'settings',
 };
 
 const fallbackGlyphs: Record<string, string> = {
@@ -299,6 +300,7 @@ const fallbackGlyphs: Record<string, string> = {
   'square.and.pencil': '✎',
   xmark: '×',
   'chevron.down': '⌄',
+  gearshape: '⚙',
 };
 
 export type IconButtonProps = {
