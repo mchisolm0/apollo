@@ -66,6 +66,7 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [skillsDismissed, setSkillsDismissed] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
+  const [focused, setFocused] = useState(false);
   const activeModel = selectedModel ?? defaultModel ?? models[0]?.id;
   const selection = observedSelection?.text === draft
     ? { start: Math.min(observedSelection.start, draft.length), end: Math.min(observedSelection.end, draft.length) }
@@ -77,6 +78,13 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
   const skillMenuTrigger: SkillTrigger | undefined = !skillsDismissed ? typedSkill ?? (skillsOpen ? { query: '', start: selection.end, end: selection.end } : undefined) : undefined;
   const skillMatches = matchingSkills(skillMenuTrigger, skills);
   const selectedSkills = useMemo(() => selectedSkillNames(draft, skills), [draft, skills]);
+  // Like T3: a one-line pill until the user is composing, then the full editor and toolbar.
+  // Collapsed, the single line sits centered beside the action button.
+  const pillHeight = Math.max(COLLAPSED_ACTION, 23 * factor + 8);
+  const expanded = focused || modelOpen || attachments.length > 0 || Boolean(skillMenuTrigger);
+  const action = isSending
+    ? <ComposerAction kind="stop" size={expanded ? EXPANDED_ACTION : COLLAPSED_ACTION} disabled={isActing || connection !== 'connected'} onPress={() => onStop?.()} />
+    : <ComposerAction kind="send" size={expanded ? EXPANDED_ACTION : COLLAPSED_ACTION} label={isActing ? 'Sending message' : 'Send message'} disabled={!canSend} onPress={() => onSend(draft.trim())} />;
   const chooseSkill = (skill: HermesSkill) => {
     if (!skillMenuTrigger) return;
     const result = insertSkill(draft, skillMenuTrigger, skill.name);
@@ -145,17 +153,19 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
       ) : (
         <View style={styles.composer}>
           {skillMenuTrigger ? <SkillMenu skills={skillMatches} loading={skillsLoading} error={skillsError} onRetry={onRefreshSkills} onSelect={chooseSkill} /> : null}
-          <View style={styles.composerField}>
-            <AttachmentStrip files={attachments.map((file) => ({ ...file, source: { uri: file.uri } }))} onRemove={onRemoveAttachment} disabled={isActing || isPicking} />
+          <View style={expanded ? styles.composerField : styles.composerPill}>
+            {expanded ? <AttachmentStrip files={attachments.map((file) => ({ ...file, source: { uri: file.uri } }))} onRemove={onRemoveAttachment} disabled={isActing || isPicking} /> : null}
             <TextInput
               ref={input}
-              // Grows from one line to five before scrolling.
-              style={[styles.input, { fontSize: 17 * factor, lineHeight: 23 * factor, maxHeight: 23 * factor * 5 + 12 }]}
+              // Grows from one line to five before scrolling while expanded.
+              style={[expanded ? styles.input : styles.pillInput, { fontSize: 17 * factor, lineHeight: 23 * factor }, expanded ? { maxHeight: 23 * factor * 5 + 12 } : { height: pillHeight, paddingVertical: (pillHeight - 23 * factor) / 2 }]}
+              onFocus={() => setFocused(true)}
+              onBlur={() => setFocused(false)}
               value={draft}
               editable={!isActing}
               onChangeText={(value) => { setObservedSelection((previous) => previous ? { start: Math.min(previous.start, value.length), end: Math.min(previous.end, value.length), text: value } : previous); setInputSelection(undefined); setSkillsOpen(false); setSkillsDismissed(false); onDraftChange?.(value); }}
               multiline
-              scrollEnabled
+              scrollEnabled={expanded}
               selection={inputSelection}
               onSelectionChange={(event) => { setObservedSelection({ ...event.nativeEvent.selection, text: draft }); setInputSelection(undefined); setSkillsDismissed(false); }}
               maxLength={8000}
@@ -165,7 +175,7 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
               accessibilityLabel="Message Hermes"
               accessibilityHint={connection !== 'connected' ? 'Drafts are saved. Reconnect to send.' : undefined}
             />
-            <View style={styles.toolbar}>
+            {expanded ? <View style={styles.toolbar}>
               {onPickAttachments && Platform.OS !== 'web' ? (
                 <MenuView
                   actions={[
@@ -200,9 +210,8 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
                 </Pressable>
               ) : null}
               <View style={styles.toolbarSpacer} />
-              {isSending ? <IconButton name="stop.fill" label="Stop run" tone="destructive" disabled={isActing || connection !== 'connected'} onPress={onStop} />
-                : <IconButton name="arrow.up" label={isActing ? 'Sending message' : 'Send message'} tone="primary" disabled={!canSend} onPress={() => onSend(draft.trim())} />}
-            </View>
+              {action}
+            </View> : action}
           </View>
         </View>
       )}
@@ -228,6 +237,29 @@ function shortModelName(modelId: string): string {
 function ComposerIcon({ name, label, disabled = false, selected = false, onPress }: { name: 'plus' | 'shippingbox'; label: string; disabled?: boolean; selected?: boolean; onPress?: () => void }) {
   return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled, selected }} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.composerIcon, selected && styles.composerIconSelected, { opacity: disabled ? 0.4 : pressed ? 0.6 : 1 }]}>
     <SymbolView name={{ ios: name, android: name === 'plus' ? 'add' : 'deployed_code', web: name === 'plus' ? 'add' : 'deployed_code' }} size={20} tintColor={selected ? colors.primary : colors.secondary} />
+  </Pressable>;
+}
+
+// The composer's corner radius; action buttons sit inset by their padding so their curves stay concentric.
+const COMPOSER_RADIUS = 22;
+const PILL_INSET = 5;
+const FIELD_INSET = 6;
+const COLLAPSED_ACTION = (COMPOSER_RADIUS - PILL_INSET) * 2;
+const EXPANDED_ACTION = (COMPOSER_RADIUS - FIELD_INSET) * 2;
+
+function ComposerAction({ kind, size, label, disabled, onPress }: { kind: 'send' | 'stop'; size: number; label?: string; disabled: boolean; onPress: () => void }) {
+  const stop = kind === 'stop';
+  const slop = Math.max(0, (44 - size) / 2);
+  return <Pressable
+    accessibilityRole="button"
+    accessibilityLabel={stop ? 'Stop run' : label}
+    accessibilityState={{ disabled }}
+    disabled={disabled}
+    onPress={onPress}
+    hitSlop={slop}
+    style={({ pressed }) => [styles.composerAction, { width: size, height: size, borderRadius: size / 2, backgroundColor: stop ? colors.red : disabled ? colors.lineStrong : colors.primary, opacity: pressed ? 0.7 : stop && disabled ? 0.5 : 1 }]}
+  >
+    <SymbolView name={{ ios: stop ? 'stop.fill' : 'arrow.up', android: stop ? 'stop' : 'arrow_upward', web: stop ? 'stop' : 'arrow_upward' }} size={stop ? 12 : 16} weight="semibold" tintColor={stop ? colors.primary : disabled ? colors.secondary : colors.background} />
   </Pressable>;
 }
 
@@ -338,9 +370,12 @@ const styles = StyleSheet.create({
   buttonText: { color: colors.primary, fontSize: 15, fontWeight: '600' },
   disabled: { opacity: 0.4 },
   composer: { paddingHorizontal: 12, paddingVertical: 8, gap: 8 },
-  composerField: { backgroundColor: '#1c1d22', borderRadius: 20, paddingHorizontal: 6, paddingTop: 10, paddingBottom: 4 },
+  composerField: { backgroundColor: '#1c1d22', borderRadius: COMPOSER_RADIUS, paddingHorizontal: FIELD_INSET, paddingTop: 10, paddingBottom: FIELD_INSET },
+  composerPill: { backgroundColor: '#1c1d22', borderRadius: COMPOSER_RADIUS, padding: PILL_INSET, paddingLeft: 14, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  pillInput: { color: colors.primary, flex: 1, paddingHorizontal: 0 },
+  composerAction: { alignItems: 'center', justifyContent: 'center' },
   input: { color: colors.primary, fontSize: 17, lineHeight: 23, minHeight: 44, paddingVertical: 6, paddingHorizontal: 8, textAlignVertical: 'top' },
-  toolbar: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 2 },
+  toolbar: { minHeight: EXPANDED_ACTION, flexDirection: 'row', alignItems: 'center', gap: 2 },
   toolbarSpacer: { flex: 1 },
   modelButton: { minHeight: 44, maxWidth: 140, paddingHorizontal: 10, justifyContent: 'center' },
   modelLabel: { color: colors.secondary, fontSize: 13 },
