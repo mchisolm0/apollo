@@ -7,7 +7,7 @@ import Swipeable, { type SwipeableMethods } from 'react-native-gesture-handler/R
 import { relayColors as colors, useTextScale } from './relay-ui';
 import { KeyboardFrame } from './keyboard-frame';
 import { canSettleSession, isSessionSnoozed, type InboxSession, type InboxStatus } from './session-inbox';
-import { useSnoozeLedger } from './use-session-inbox';
+import { useAutoSettleLedger, useSnoozeLedger } from './use-session-inbox';
 import type { ConnectionState } from './types';
 import { showThreadMenu } from './session-actions';
 import { useEkho } from '@/lib';
@@ -41,9 +41,11 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
   const [attentionOnly, setAttentionOnly] = useState(false);
   // Sessions carry their agent; the inbox route only ever shows one agent at a time.
   const { snoozed, snooze, unsnooze } = useSnoozeLedger(sessions[0]?.agentId ?? '');
+  const { loaded: autoSettleLoaded, setAutoSettle } = useAutoSettleLedger(sessions[0]?.agentId ?? '');
   const toggle = useCallback((id: SectionId) => setCollapsed((previous) => ({ ...previous, [id]: !previous[id] })), []);
   const handleSnooze = useCallback((sessionId: string) => { void snooze(sessionId); }, [snooze]);
   const handleUnsnooze = useCallback((sessionId: string) => { void unsnooze(sessionId); }, [unsnooze]);
+  const handleAutoSettle = useCallback((sessionId: string, enabled: boolean) => { void setAutoSettle(sessionId, enabled); }, [setAutoSettle]);
   const rows = useMemo(() => {
     const result: ListRow[] = [];
     const search = query.trim().toLocaleLowerCase();
@@ -80,7 +82,7 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
           <Text style={item.id === 'settled' ? styles.finishedSectionText : styles.sectionText}>{item.title}</Text>
           <Text style={item.id === 'settled' ? styles.finishedSectionText : styles.sectionCount}>{item.count} {Boolean(query.trim()) || !collapsed[item.id] ? '⌃' : '⌄'}</Text>
         </Pressable>
-      ) : <SessionRow session={item.session} snoozed={isSessionSnoozed(snoozed, item.session.id)} onPress={onSessionPress} onSettle={onSettle} onReopen={onReopen} onSnooze={handleSnooze} onUnsnooze={handleUnsnooze} onForked={onForked} />}
+      ) : <SessionRow session={item.session} snoozed={isSessionSnoozed(snoozed, item.session.id)} onPress={onSessionPress} onSettle={onSettle} onReopen={onReopen} onAutoSettle={autoSettleLoaded ? handleAutoSettle : undefined} onSnooze={handleSnooze} onUnsnooze={handleUnsnooze} onForked={onForked} />}
       ListEmptyComponent={<View style={styles.empty}><Text style={styles.emptyTitle}>{connection !== 'connected' && !sessions.length ? 'Threads are unavailable' : query ? 'No matching threads' : attentionOnly ? 'All caught up' : 'Start a thread'}</Text><Text style={styles.emptyText}>{connection !== 'connected' && !sessions.length ? 'Reconnect to load your threads.' : query ? 'Try a different search.' : attentionOnly ? 'No threads need your attention.' : 'Choose New thread to get started.'}</Text></View>}
     />
     </View>
@@ -103,8 +105,8 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
   </KeyboardFrame>;
 }
 
-const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettle, onReopen, onSnooze, onUnsnooze, onForked }: {
-  session: InboxSession; snoozed: boolean; onPress: Props['onSessionPress']; onSettle: Props['onSettle']; onReopen: Props['onReopen']; onSnooze: (sessionId: string) => void; onUnsnooze: (sessionId: string) => void; onForked?: Props['onForked'];
+const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettle, onReopen, onAutoSettle, onSnooze, onUnsnooze, onForked }: {
+  session: InboxSession; snoozed: boolean; onPress: Props['onSessionPress']; onSettle: Props['onSettle']; onReopen: Props['onReopen']; onAutoSettle?: (sessionId: string, enabled: boolean) => void; onSnooze: (sessionId: string) => void; onUnsnooze: (sessionId: string) => void; onForked?: Props['onForked'];
 }) {
   const { fontScale } = useWindowDimensions();
   const { factor } = useTextScale();
@@ -122,11 +124,12 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
     const reportFailure = (action: string) => (error: unknown) => {
       Alert.alert(`Could not ${action}`, error instanceof Error ? error.message : 'Try again.');
     };
-    showThreadMenu({ title: session.title, pinned, settled: session.settled, snoozed }, {
+    showThreadMenu({ title: session.title, pinned, settled: session.settled, snoozed, autoSettle: !session.autoSettleDisabled }, {
       onOpen: open,
       ...(action?.label === 'Settle' ? { onSettle: perform } : {}),
       ...(action?.label === 'Reopen' ? { onReopen: perform } : {}),
       ...(snoozed ? { onUnsnooze: () => onUnsnooze(session.id) } : { onSnooze: () => onSnooze(session.id) }),
+      ...(onAutoSettle ? { onAutoSettle: (enabled: boolean) => onAutoSettle(session.id, enabled) } : {}),
       onRegenerateTitle: () => { void regenerateTitle(session.agentId, session.id, session.preview ?? session.title).catch(reportFailure('regenerate the title')); },
       onPin: (next) => { void setPinned(session.agentId, session.id, next).catch(reportFailure(next ? 'pin the thread' : 'unpin the thread')); },
       onFork: () => { void forkSession(session.agentId, session.id).then((id) => onForked?.(id)).catch(reportFailure('fork the thread')); },

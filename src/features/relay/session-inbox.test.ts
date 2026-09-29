@@ -2,7 +2,7 @@ import { createSessionInboxProjector, type SessionInboxState } from './session-i
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { countSnoozedSessions, deriveSessionInbox, isSessionSnoozed, pruneSnoozedLedger, reopenSession, settleSession, snoozeSession, unsnoozeSession } from './session-inbox.ts';
+import { AUTO_SETTLE_DELAY_SECONDS, countSnoozedSessions, deriveSessionInbox, isAutoSettleDue, isSessionSnoozed, pruneSnoozedLedger, reopenSession, settleSession, snoozeSession, unsnoozeSession } from './session-inbox.ts';
 
 const baseState = {
   status: 'connected' as const,
@@ -229,4 +229,21 @@ test('unsnooze returns the thread immediately', () => {
   const ledger = snoozeSession({}, 's', 150);
   assert.equal(isSessionSnoozed(unsnoozeSession(ledger, 's'), 's', 100), false);
   assert.equal(unsnoozeSession(ledger, 'missing'), ledger);
+});
+
+test('auto-settle fires only 3h after activity on settle-eligible threads', () => {
+  const due = { settled: false, running: false, pendingApproval: false, pinned: false, activityAt: 1000 };
+  const at = (seconds: number) => isAutoSettleDue(due, undefined, seconds);
+  assert.equal(at(1000 + AUTO_SETTLE_DELAY_SECONDS), false);
+  assert.equal(at(1000 + AUTO_SETTLE_DELAY_SECONDS + 1), true);
+
+  const exempt = (overrides: Partial<typeof due>, disabled?: boolean) => isAutoSettleDue({ ...due, ...overrides }, disabled, 1000 + AUTO_SETTLE_DELAY_SECONDS + 1);
+  assert.equal(exempt({ settled: true }), false);
+  assert.equal(exempt({ running: true }), false);
+  assert.equal(exempt({ pendingApproval: true }), false);
+  assert.equal(exempt({ pinned: true }), false);
+  assert.equal(exempt({}, true), false);
+  assert.equal(exempt({}, false), true);
+  assert.equal(exempt({}, undefined), true);
+  assert.equal(isAutoSettleDue({ ...due, activityAt: 0 }, undefined, 1000 + AUTO_SETTLE_DELAY_SECONDS + 1), false);
 });

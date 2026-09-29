@@ -18,6 +18,7 @@ import { PairingClient, parsePairingLink } from './pairing';
 import { HermesClient, HermesRequestError, type RunEventSubscription } from './hermes-client';
 import type {
   AgentRecord,
+  InboxConfig,
   InboxSettledState,
   AgentRuntimeState,
   AgentTransport,
@@ -38,7 +39,7 @@ export interface EkhoContextValue {
   loading: boolean;
   error?: string;
   pair(link: string, deviceName?: string): Promise<AgentRecord>;
-  saveInbox(agentId: string, settled: InboxSettledState, importOnly?: boolean): Promise<void>;
+  saveInbox(agentId: string, settled: InboxSettledState, importOnly?: boolean, config?: InboxConfig): Promise<void>;
   refreshAgent(agentId: string): Promise<void>;
   retryAgent(agentId: string): Promise<void>;
   startRun(agentId: string, input: string, options?: StartRunOptions): Promise<HermesRunStatus>;
@@ -170,6 +171,16 @@ export function EkhoProvider({
               updateRuntime(agent.id, { sessions });
               if (history && status.sessionId) setMessages((current) => ({ ...current, [`${agent.id}:${status.sessionId}`]: reconcileHistory(current[`${agent.id}:${status.sessionId}`] ?? [], history) }));
               closeSubscription(agent.id, runId);
+              // The final response may commit moments after the terminal event;
+              // incomplete history gets one retry before the next refresh picks it up.
+              if (history?.at(-1)?.role === 'tool') {
+                setTimeout(() => {
+                  // The subscription is already closed here, so `closed` is always true.
+                  void client.sessionMessages(status.sessionId!).then((retry) => {
+                    setMessages((current) => ({ ...current, [`${agent.id}:${status.sessionId}`]: reconcileHistory(current[`${agent.id}:${status.sessionId}`] ?? [], retry) }));
+                  }).catch(() => undefined);
+                }, 2_000);
+              }
             }
           }).catch(() => undefined);
         }
@@ -457,14 +468,17 @@ export function EkhoProvider({
     return session.id;
   }, [refreshAgent, setRuntime]);
 
-  const saveInbox = useCallback(async (agentId: string, settled: InboxSettledState, importOnly = false): Promise<void> => {
+  const saveInbox = useCallback(async (agentId: string, settled: InboxSettledState, importOnly = false, config?: InboxConfig): Promise<void> => {
     const client = clients.current.get(agentId);
     if (!client) throw new Error('Connect to the agent to update finished threads.');
-    const saved = await client.inbox(settled, importOnly);
+    const saved = await client.inbox(settled, importOnly, config);
     setRuntime((current) => {
       const state = current[agentId];
       if (!state) return current;
-      return { ...current, [agentId]: { ...state, sessions: state.sessions.map((session) => ({ ...session, settledAt: saved[session.id] })) } };
+      return { ...current, [agentId]: { ...state, sessions: state.sessions.map((session) => {
+        const config = saved.config[session.id];
+        return { ...session, settledAt: saved.settled[session.id], ...(config ? { autoSettleDisabled: config.auto_settle === false } : {}) };
+      }) } };
     });
   }, [setRuntime]);
 

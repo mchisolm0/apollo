@@ -21,6 +21,7 @@ import type {
   HermesRunState,
   HermesRunStatus,
   HermesSession,
+  InboxConfig,
   InboxSettledState,
   StartRunOptions,
 } from './types';
@@ -240,24 +241,28 @@ export class HermesClient {
   }
 
   async sessions(): Promise<readonly HermesSession[]> {
-    const [body, settled] = await Promise.all([this.request('/api/sessions?limit=200'), this.inbox()]);
+    const [body, inbox] = await Promise.all([this.request('/api/sessions?limit=200'), this.inbox()]);
     if (!isJsonObject(body) || !Array.isArray(body.data)) throw new Error('Hermes sessions response was invalid');
     return body.data.map((value) => {
       const session = parseSession(value);
-      return { ...session, settledAt: settled[session.id] };
+      const config = inbox.config[session.id];
+      return { ...session, settledAt: inbox.settled[session.id], ...(config ? { autoSettleDisabled: config.auto_settle === false } : {}) };
     });
   }
 
-  async inbox(settled?: InboxSettledState, importOnly = false): Promise<InboxSettledState> {
+  async inbox(settled?: InboxSettledState, importOnly = false, config?: InboxConfig): Promise<{ settled: InboxSettledState; config: InboxConfig }> {
+    const payload: Record<string, unknown> = { importOnly };
+    if (settled) payload.settled = settled;
+    if (config) payload.config = config;
     let body: unknown;
     try {
-      body = await this.request('/v1/inbox', settled ? {
+      body = await this.request('/v1/inbox', settled || config ? {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ settled, importOnly }),
+        body: JSON.stringify(payload),
       } : {});
     } catch (error) {
       if (error instanceof HermesRequestError && error.status === 404) {
-        if (!settled) return {};
+        if (!settled && !config) return { settled: {}, config: {} };
         throw new Error('Update the Ekho connector to sync finished threads.');
       }
       throw error;
@@ -268,7 +273,14 @@ export class HermesClient {
       if (timestamp !== null && (typeof timestamp !== 'number' || !Number.isFinite(timestamp) || timestamp < 0)) throw new Error('Invalid inbox timestamp');
       result[id] = timestamp;
     }
-    return result;
+    const parsedConfig: Record<string, { auto_settle?: boolean }> = {};
+    if (isJsonObject(body.config)) {
+      for (const [id, entry] of Object.entries(body.config)) {
+        if (!isJsonObject(entry) || typeof entry.auto_settle !== 'boolean') continue;
+        parsedConfig[id] = { auto_settle: entry.auto_settle };
+      }
+    }
+    return { settled: result, config: parsedConfig };
   }
 
   async sessionMessages(sessionId: string): Promise<readonly HermesMessage[]> {

@@ -51,6 +51,9 @@ export interface HermesCapabilities {
 
 export type InboxSettledState = Readonly<Record<string, number | null>>;
 
+/** Per-session connector config shared across paired devices. Only auto_settle exists today; absent means default (on). */
+export type InboxConfig = Readonly<Record<string, { auto_settle?: boolean }>>;
+
 export interface HermesSkill {
   name: string;
   description?: string;
@@ -67,6 +70,8 @@ export interface HermesModel {
 
 export interface HermesSession {
   settledAt?: number | null;
+  /** Server-side auto-settle opt-out from the connector inbox config; absent means no server opinion. */
+  autoSettleDisabled?: boolean;
   id: string;
   source?: string;
   model?: string;

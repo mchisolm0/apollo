@@ -1,10 +1,10 @@
 import Constants from 'expo-constants';
 import * as Updates from 'expo-updates';
 import type { ReactNode } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Switch, Text, useWindowDimensions, View } from 'react-native';
 
-import { ConnectionAction, ConnectionMark, connectionLabels, IconButton, RelayButton, relayColors, TEXT_SCALE_FACTORS, useTextScale, styles as uiStyles } from './relay-ui';
-import type { TextScaleKey } from './relay-ui';
+import { ConnectionAction, ConnectionMark, connectionLabels, IconButton, RelayButton, relayColors, useColors, useRelayTheme, RelaySlider, CODE_SIZE_MAX, CODE_SIZE_MIN, TEXT_SIZE_MAX, TEXT_SIZE_MIN, useTextScale, styles as uiStyles } from './relay-ui';
+import { THEMES, type ThemeId } from './theme';
 import type { RelayAgent } from './types';
 
 export type AgentSettingsScreenProps = {
@@ -19,11 +19,13 @@ export type AgentSettingsScreenProps = {
   onForgetAgent?: () => void;
 };
 
-const TEXT_SIZE_ORDER: readonly TextScaleKey[] = ['small', 'default', 'large'];
-const TEXT_SIZE_LABELS: Record<TextScaleKey, string> = { small: 'Small', default: 'Default', large: 'Large' };
-
 export function AgentSettingsScreen({ agent, deviceName = 'This device', environmentCount, pairedAt, onBack, onTestConnection, onEditEndpoint, onRevokeDevice, onForgetAgent }: AgentSettingsScreenProps) {
-  const { scale, factor, setScale } = useTextScale();
+  const { pt, factor, setSize, codeSize, codeCustom, setCodeCustom, setCodeSize } = useTextScale();
+  const { id: themeId, setTheme } = useRelayTheme();
+  const colors = useColors();
+  const { fontScale } = useWindowDimensions();
+  const large = fontScale > 1.3;
+  const monoSize = codeCustom ? codeSize : 13 * factor;
   return (
     <View style={uiStyles.screen}>
       <View style={styles.header}>
@@ -52,30 +54,66 @@ export function AgentSettingsScreen({ agent, deviceName = 'This device', environ
           {agent.platform ? <SettingRow label="Platform" value={agent.platform} /> : null}
         </SettingSection>
         {onTestConnection ? <ConnectionAction state={agent.connection} onReconnect={onTestConnection} /> : null}
-        {onTestConnection ? <View style={styles.primaryAction}><Pressable accessibilityRole="button" onPress={onTestConnection} style={styles.testConnection}><Text style={styles.testConnectionText}>Test connection</Text></Pressable></View> : null}
+        {onTestConnection ? <View style={styles.primaryAction}><Pressable accessibilityRole="button" onPress={onTestConnection} style={styles.testConnection}><Text style={[styles.testConnectionText, { color: colors.cyan }]}>Test connection</Text></Pressable></View> : null}
 
         <SettingSection label="Appearance">
-          {TEXT_SIZE_ORDER.map((option) => (
-            <Pressable
-              key={option}
-              accessibilityRole="radio"
-              accessibilityLabel={`Text size ${TEXT_SIZE_LABELS[option]}`}
-              accessibilityState={{ selected: option === scale }}
-              onPress={() => void setScale(option)}
-              style={({ pressed }) => [styles.row, { opacity: pressed ? 0.65 : 1 }]}
-            >
-              <Text style={styles.rowLabel}>{TEXT_SIZE_LABELS[option]}</Text>
-              <Text style={{ color: relayColors.secondary, fontSize: 15 * TEXT_SCALE_FACTORS[option] }}>Aa</Text>
-              {option === scale ? <Text style={styles.rowAction}>Selected</Text> : null}
-            </Pressable>
-          ))}
-        </SettingSection>
-        <View style={styles.preview}>
-          <Text style={[styles.previewBody, { fontSize: 16 * factor, lineHeight: 24 * factor }]}>The quick brown fox jumps over the lazy dog</Text>
-          <View style={styles.previewCode}>
-            <Text style={[styles.previewCodeText, { fontSize: 13 * factor, lineHeight: 21 * factor }]} selectable>{'const reply = await agent.run("summarize");'}</Text>
+          <View style={styles.themeRow}>
+            {THEMES.map((theme) => (
+              <Pressable
+                key={theme.id}
+                accessibilityRole="button"
+                accessibilityLabel={`${theme.label} theme`}
+                accessibilityState={{ selected: themeId === theme.id }}
+                onPress={() => void setTheme(theme.id as ThemeId)}
+                style={[styles.themeChip, themeId === theme.id && { borderColor: colors.cyan, borderWidth: 2, padding: 5 }]}
+              >
+                <View style={[styles.themeDot, { backgroundColor: theme.accent }]} />
+                <Text style={styles.themeChipLabel}>{theme.label}</Text>
+              </Pressable>
+            ))}
           </View>
-        </View>
+          <View style={[styles.row, large && styles.rowLarge]}>
+            <Text style={styles.sizeGlyphSmall}>AA</Text>
+            <Text style={[styles.rowLabel, large && styles.rowLabelLarge]}>Text size</Text>
+            <Text style={[styles.rowValue, large && styles.rowValueLarge]}>{pt} pt</Text>
+            <Text style={styles.sizeGlyphLarge}>A</Text>
+          </View>
+          <RelaySlider min={TEXT_SIZE_MIN} max={TEXT_SIZE_MAX} value={pt} label="Text size" onChange={(next) => void setSize(next)} />
+          <View style={styles.preview}>
+            <Text style={[styles.previewBody, { fontSize: 16 * factor, lineHeight: 24 * factor }]}>The quick brown fox jumps over the lazy dog.</Text>
+            <Text style={[styles.previewBody, styles.previewSecondary, { fontSize: 16 * factor, lineHeight: 24 * factor }]}>Messages, labels, and headings scale with this size.</Text>
+            <View style={styles.previewCode}>
+              <Text style={[styles.previewCodeText, { fontSize: monoSize, lineHeight: monoSize + 8 }]} selectable>{'const reply = await agent.run("summarize");'}</Text>
+            </View>
+          </View>
+        </SettingSection>
+
+        <SettingSection label="Terminal">
+          <View style={styles.terminal}>
+            <Text style={[styles.terminalLine, { color: colors.green, fontSize: monoSize, lineHeight: monoSize + 6 }]}>{'$ ekho status'}</Text>
+            <Text style={[styles.terminalLine, { color: colors.primary, fontSize: monoSize, lineHeight: monoSize + 6 }]}>{'agent: luna · connected'}</Text>
+            <Text style={[styles.terminalLine, { color: colors.amber, fontSize: monoSize, lineHeight: monoSize + 6 }]}>{'⟳ run 4f2a · streaming…'}</Text>
+            <Text style={[styles.terminalLine, { color: colors.muted, fontSize: monoSize, lineHeight: monoSize + 6 }]}>{'# done in 1.2s'}</Text>
+          </View>
+          <View style={[styles.row, styles.terminalToggle]}>
+            <Text style={styles.rowLabel}>Custom font size</Text>
+            <Switch
+              value={codeCustom}
+              onValueChange={(next) => void setCodeCustom(next)}
+              trackColor={{ true: colors.cyan, false: relayColors.lineStrong }}
+              thumbColor={colors.primary}
+            />
+          </View>
+          {codeCustom ? (
+            <>
+              <View style={styles.row}>
+                <Text style={styles.rowLabel}>Code size</Text>
+                <Text style={styles.rowValue}>{codeSize} pt</Text>
+              </View>
+              <RelaySlider min={CODE_SIZE_MIN} max={CODE_SIZE_MAX} value={codeSize} label="Code size" onChange={(next) => void setCodeSize(next)} />
+            </>
+          ) : null}
+        </SettingSection>
 
         <SettingSection label="This device">
           <SettingRow label="Name" value={deviceName} />
@@ -110,9 +148,10 @@ function SettingSection({ label, children }: { label: string; children: ReactNod
 
 function SettingRow({ label, value, onPress }: { label: string; value: string; onPress?: () => void }) {
   const { fontScale } = useWindowDimensions();
+  const cyan = useColors().cyan;
   const large = fontScale > 1.3;
   const rowStyle = [styles.row, large && styles.rowLarge];
-  const content = <><Text style={[styles.rowLabel, large && styles.rowLabelLarge]}>{label}</Text><Text style={[styles.rowValue, large && styles.rowValueLarge]} selectable>{value}</Text>{onPress ? <Text style={styles.rowAction}>Edit</Text> : null}</>;
+  const content = <><Text style={[styles.rowLabel, large && styles.rowLabelLarge]}>{label}</Text><Text style={[styles.rowValue, large && styles.rowValueLarge]} selectable>{value}</Text>{onPress ? <Text style={[styles.rowAction, { color: cyan }]}>Edit</Text> : null}</>;
   if (!onPress) return <View style={rowStyle}>{content}</View>;
   return <Pressable accessibilityRole="button" accessibilityLabel={`Edit ${label}`} onPress={onPress} style={({ pressed }) => [rowStyle, { opacity: pressed ? 0.65 : 1 }]}>{content}</Pressable>;
 }
@@ -127,21 +166,32 @@ const styles = StyleSheet.create({
   hostname: { color: relayColors.secondary, fontSize: 13 },
   section: { paddingTop: 22, gap: 8 },
   sectionLabel: { color: relayColors.primary, fontSize: 14, fontWeight: '600' },
-  rows: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: relayColors.line },
-  row: { minHeight: 56, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: relayColors.line, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  rows: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: relayColors.line, gap: 10, paddingBottom: 6 },
+  row: { minHeight: 56, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: relayColors.line, flexDirection: 'row', alignItems: 'center', gap: 12, paddingTop: 12, paddingHorizontal: 0 },
   rowLarge: { flexDirection: 'column', alignItems: 'stretch', gap: 6, paddingVertical: 12 },
   rowLabel: { color: relayColors.primary, fontSize: 17, lineHeight: 23, flexShrink: 0 },
   rowLabelLarge: { flexShrink: 1 },
   rowValue: { color: relayColors.secondary, fontSize: 17, lineHeight: 23, flex: 1, textAlign: 'right' },
   rowValueLarge: { flex: 0, textAlign: 'left', alignSelf: 'stretch' },
-  rowAction: { color: relayColors.cyan, fontSize: 15, lineHeight: 20, fontWeight: '600' },
+  rowAction: { fontSize: 15, lineHeight: 20, fontWeight: '600' },
+  sizeGlyphSmall: { color: relayColors.secondary, fontSize: 13, fontWeight: '600' },
+  sizeGlyphLarge: { color: relayColors.primary, fontSize: 22, fontWeight: '600' },
   primaryAction: { paddingTop: 8 },
-  testConnection: { minHeight: 44, justifyContent: 'center' }, testConnectionText: { color: relayColors.cyan, fontSize: 15 },
+  testConnection: { minHeight: 44, justifyContent: 'center' }, testConnectionText: { fontSize: 15 },
+  themeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingVertical: 10 },
+  themeChip: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, minHeight: 36, borderRadius: 10, borderWidth: 1, borderColor: relayColors.line, backgroundColor: relayColors.surface },
+
+  themeChipLabel: { color: relayColors.primary, fontSize: 14 },
+  themeDot: { width: 12, height: 12, borderRadius: 6 },
   preview: { paddingTop: 14, gap: 10 },
   previewBody: { color: relayColors.primary },
+  previewSecondary: { color: relayColors.secondary },
   // Mirrors the message-content codeBlock so the preview matches thread text.
   previewCode: { backgroundColor: '#151517', borderRadius: 8, padding: 14 },
   previewCodeText: { color: '#e8e8ed', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  terminal: { backgroundColor: '#151517', borderRadius: 8, padding: 14, gap: 6 },
+  terminalLine: { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 13, lineHeight: 19 },
+  terminalToggle: { borderTopWidth: 0 },
   dangerSection: { paddingTop: 28, gap: 10 },
   dangerHelp: { color: relayColors.muted, fontSize: 12, lineHeight: 17, paddingTop: 2, maxWidth: 330 },
 });

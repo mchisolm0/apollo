@@ -239,6 +239,7 @@ function Session({ id, agentId, isSheet }: { id: string; agentId: string; isShee
           const titleInput = lastUserText ?? session?.title?.trim() ?? '';
           showSessionActions(session?.title ?? 'Thread', [
             ...(item?.settled ? [{ label: 'Reopen thread', onPress: () => { void inbox.reopen(item.id); } }] : item && canSettleSession(item) ? [{ label: 'Finish thread', onPress: () => { void inbox.settle(item.id); openInbox(); } }] : []),
+            ...(item && !item.settled && inbox.loaded ? [{ label: `Auto-settle ${item.autoSettleDisabled ? 'On' : 'Off'}`, onPress: () => { void inbox.setAutoSettle(item.id, item.autoSettleDisabled); } }] : []),
             ...(resolvedId && titleInput ? [{ label: 'Regenerate title', onPress: () => { void act(() => regenerateTitle(agentId, resolvedId, titleInput)); } }] : []),
             ...(resolvedId ? [{ label: 'Delete thread', destructive: true, onPress: () => Alert.alert('Delete thread?', `"${session?.title ?? 'Thread'}" will be permanently removed.`, [
               { text: 'Cancel', style: 'cancel' },
