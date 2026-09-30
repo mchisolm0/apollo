@@ -45,13 +45,13 @@ export interface EkhoContextValue {
   refreshAgent(agentId: string): Promise<void>;
   retryAgent(agentId: string): Promise<void>;
   startRun(agentId: string, input: string, options?: StartRunOptions): Promise<HermesRunStatus>;
-  createSession(agentId: string, title?: string, sessionId?: string): Promise<string>;
+  createSession(agentId: string, title?: string, sessionId?: string, signal?: AbortSignal): Promise<string>;
   deleteSession(agentId: string, sessionId: string): Promise<void>;
   setPinned(agentId: string, sessionId: string, pinned: boolean): Promise<void>;
   forkSession(agentId: string, sessionId: string): Promise<string>;
   regenerateTitle(agentId: string, sessionId: string, input: string): Promise<string | undefined>;
   models(agentId: string): Promise<readonly HermesModel[]>;
-  uploadAttachment(agentId: string, file: { name: string; mimeType: string; data: string }): Promise<Attachment>;
+  uploadAttachment(agentId: string, file: { name: string; mimeType: string; data: string }, signal?: AbortSignal): Promise<Attachment>;
   attachmentSource(agentId: string, id: string): AttachmentSource | undefined;
   sessionMessages(agentId: string, sessionId: string): Promise<readonly HermesMessage[]>;
   skills(agentId: string): Promise<readonly HermesSkill[]>;
@@ -418,10 +418,10 @@ export function EkhoProvider({
     } finally { startingRuns.current.delete(key); }
   }, [catalog, refreshAgent, subscribe, updateRuntime, updateRun, setRuntime]);
 
-  const uploadAttachment = useCallback(async (agentId: string, file: { name: string; mimeType: string; data: string }) => {
+  const uploadAttachment = useCallback(async (agentId: string, file: { name: string; mimeType: string; data: string }, signal?: AbortSignal) => {
     const client = clients.current.get(agentId);
     if (!client) throw new Error('Reconnect to upload attachments.');
-    try { return await client.uploadAttachment(file); }
+    try { return await client.uploadAttachment(file, signal); }
     catch (error) {
       if (error instanceof HermesRequestError && error.status === 404) throw new Error('Update the connector on this agent to send attachments.');
       throw error;
@@ -503,14 +503,14 @@ export function EkhoProvider({
     return status;
   }, [updateRun]);
 
-  const createSession = useCallback(async (agentId: string, title?: string, sessionId?: string): Promise<string> => {
+  const createSession = useCallback(async (agentId: string, title?: string, sessionId?: string, signal?: AbortSignal): Promise<string> => {
     let client = clients.current.get(agentId);
     if (!client) {
       await refreshAgent(agentId);
       client = clients.current.get(agentId);
     }
     if (!client) throw new Error('Agent is offline');
-    const session = await client.createSession({ title, id: sessionId });
+    const session = await client.createSession({ title, id: sessionId }, signal);
     newSessions.current.add(`${agentId}:${session.id}`);
     setRuntime((current) => {
       const existing = current[agentId] ?? emptyRuntime();

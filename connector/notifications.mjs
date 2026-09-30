@@ -107,7 +107,15 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
       };
       return { ...run, event: { ...run.events[event.key], key: event.key } };
     });
-    if (!prepared?.session_id || !ID.test(prepared.session_id)) return false;
+    if (!prepared) return true;
+    if (!prepared.session_id || !ID.test(prepared.session_id)) {
+      if (!TERMINAL.has(status.status)) return false;
+      await store.update((current) => {
+        const saved = current.notification_runs?.[runId]?.events?.[event.key];
+        if (saved) saved.delivered = [...saved.targets];
+      });
+      return true;
+    }
 
     for (const deviceId of prepared.event.targets) {
       if (prepared.event.delivered.includes(deviceId)) continue;
@@ -118,10 +126,11 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
         continue;
       }
       try {
-        const result = await sendPush(device.notifications.expo_push_token, notificationFor(event.kind, agentId, prepared));
+        const sentToken = device.notifications.expo_push_token;
+        const result = await sendPush(sentToken, notificationFor(event.kind, agentId, prepared));
         await store.update((current) => {
           const currentDevice = current.devices.find((candidate) => candidate.id === deviceId);
-          if (result?.status === "unregistered" && currentDevice) {
+          if (result?.status === "unregistered" && currentDevice?.notifications?.expo_push_token === sentToken) {
             delete currentDevice.notifications;
             for (const run of Object.values(current.notification_runs ?? {})) {
               for (const savedEvent of Object.values(run.events ?? {})) {
@@ -150,6 +159,7 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
 
   async function watch(runId) {
     let delay = pollInterval;
+    let deliveryAttempts = 0;
     try {
       while (!closed && active.has(runId)) {
         if (!(await registeredDevices()).length) return;
@@ -176,6 +186,8 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
           });
           return;
         }
+        // Preserve failed delivery for a later registration refresh, without a permanent retry loop.
+        if (TERMINAL.has(status.status) && ++deliveryAttempts >= 5) return;
         await wait(delay);
       }
     } finally {
@@ -185,6 +197,7 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
 
   async function start(runId) {
     if (closed || !sendPush || active.has(runId) || !(await registeredDevices()).length) return;
+    if (closed || active.has(runId)) return;
     active.set(runId, null);
     const operation = watch(runId).catch(() => {
       // A storage outage must not crash the connector. The next registration/run refresh retries.
@@ -198,7 +211,7 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
       if (!run || typeof run.run_id !== "string" || !ID.test(run.run_id)) return;
       const tracked = await store.update((state) => {
         if (!state.devices.some((device) => !device.revoked_at && device.notifications)) return false;
-        state.notification_runs ??= {};
+        state.notification_runs = Object.assign(Object.create(null), state.notification_runs ?? {});
         state.notification_runs[run.run_id] ??= {
           run_id: run.run_id,
           session_id: typeof run.session_id === "string" && ID.test(run.session_id) ? run.session_id : null,

@@ -216,6 +216,7 @@ export class HermesClient {
   }
 
   private async request(path: string, init: RequestInit = {}): Promise<unknown> {
+    if (init.signal?.aborted) throw new Error('Sending was interrupted.');
     const response = await this.fetchImpl(`${this.baseUrl}/${path.replace(/^\/+/, '')}`, {
       ...init,
       headers: {
@@ -289,8 +290,8 @@ export class HermesClient {
     return body.data.map(parseMessage);
   }
 
-  async uploadAttachment(file: { name: string; mimeType: string; data: string }): Promise<Attachment> {
-    const body = await this.request('/v1/ekho/attachments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(file) });
+  async uploadAttachment(file: { name: string; mimeType: string; data: string }, signal?: AbortSignal): Promise<Attachment> {
+    const body = await this.request('/v1/ekho/attachments', { signal, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(file) });
     if (!isJsonObject(body) || !isAttachment(body.attachment)) throw new Error('The attachment upload response was invalid.');
     return body.attachment;
   }
@@ -306,10 +307,11 @@ export class HermesClient {
     return body.title;
   }
 
-  async createSession(options: { id?: string; title?: string } = {}): Promise<HermesSession> {
+  async createSession(options: { id?: string; title?: string } = {}, signal?: AbortSignal): Promise<HermesSession> {
     let body: unknown;
     try {
       body = await this.request('/api/sessions', {
+        signal,
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(options),
@@ -317,7 +319,7 @@ export class HermesClient {
     } catch (error) {
       // A queued thread keeps its client-generated ID across ambiguous requests.
       if (!options.id || !(error instanceof HermesRequestError) || error.status !== 409 || error.code !== 'session_exists') throw error;
-      body = await this.request(`/api/sessions/${encodeURIComponent(options.id)}`);
+      body = await this.request(`/api/sessions/${encodeURIComponent(options.id)}`, { signal });
     }
     if (!isJsonObject(body)) throw new Error('Hermes create session response was invalid');
     const session = parseSession(body.session);
@@ -361,7 +363,7 @@ export class HermesClient {
       'Idempotency-Key': options.idempotencyKey ?? createIdempotencyKey(),
     };
     if (options.sessionKey) headers['X-Hermes-Session-Key'] = options.sessionKey;
-    return parseRun(await this.request('/v1/runs', { method: 'POST', headers, body: JSON.stringify(payload) }));
+    return parseRun(await this.request('/v1/runs', { signal: options.signal, method: 'POST', headers, body: JSON.stringify(payload) }));
   }
 
   runStatus(runId: string): Promise<HermesRunStatus> {

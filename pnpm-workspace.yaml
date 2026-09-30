@@ -1,6 +1,9 @@
 packages:
   - connector
+  - modules/*
 
 allowBuilds:
   react-native-enriched-markdown: true
   unrs-resolver: true
+patchedDependencies:
+  react-native-nitro-modules@0.35.9: patches/react-native-nitro-modules@0.35.9.patch

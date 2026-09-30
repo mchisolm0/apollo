@@ -6,6 +6,35 @@ import { join } from "node:path";
 import { StateStore, createConnectorServer } from "./index.mjs";
 import { createRunNotificationMonitor } from "./notifications.mjs";
 
+test("terminal notification retries stop and stale push results preserve a newer token", async () => {
+  for (const scenario of ["unroutable", "replaced-token", "push-failure"]) {
+    const state = { devices: [{ id: "phone", notifications: { expo_push_token: "old", notify_on_completion: true } }] };
+    let pushes = 0;
+    let writes = 0;
+    const monitor = createRunNotificationMonitor({
+      store: { read: async () => structuredClone(state), update: async (change) => { writes++; return change(state); } },
+      agentId: "agent", pollInterval: 1,
+      fetchRun: async () => ({ status: "completed", session_id: scenario === "unroutable" ? null : "thread" }),
+      sendPush: async () => {
+        pushes++;
+        if (scenario === "push-failure") throw new Error("Unavailable");
+        state.devices[0].notifications.expo_push_token = "new";
+        return { status: "unregistered" };
+      },
+    });
+    try {
+      await Promise.all([monitor.trackRun({ run_id: "run", status: "running" }), monitor.trackRun({ run_id: "run", status: "running" })]);
+      await waitFor(() => scenario === "push-failure" ? pushes === 5 : state.notification_runs?.run?.events?.completed?.delivered.includes("phone"));
+      const settledWrites = writes;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(writes, settledWrites);
+      if (scenario === "replaced-token") assert.equal(state.devices[0].notifications.expo_push_token, "new");
+      if (scenario === "replaced-token") assert.equal(pushes, 1);
+      if (scenario === "unroutable") assert.equal(pushes, 0);
+    } finally { monitor.close(); }
+  }
+});
+
 test("notification history compaction retains active and undelivered runs", async () => {
   const state = { devices: [{ notifications: {} }], notification_runs: {} };
   for (let i = 0; i < 260; i++) {
@@ -18,6 +47,10 @@ test("notification history compaction retains active and undelivered runs", asyn
   assert.equal(state.notification_runs["active-0"].status, "running");
   assert.ok(state.notification_runs.retry);
   assert.equal(Object.keys(state.notification_runs).length, 262 + 256);
+  await monitor.trackRun({ run_id: "__proto__", status: "running" });
+  assert.equal(Object.hasOwn(state.notification_runs, "__proto__"), true);
+  assert.equal(state.notification_runs.__proto__.status, "running");
+  assert.equal(Object.prototype.status, undefined);
   monitor.close();
 });
 

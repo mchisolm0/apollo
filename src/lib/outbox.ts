@@ -97,7 +97,8 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
   const runtime = ManagedRuntime.make(Layer.succeed(OutboxEnvironment, dependencies));
   const mutex = Effect.unsafeMakeSemaphore(1);
   const listeners = new Set<() => void>();
-  const inFlight = new Set<string>();
+  const inFlight = new Map<string, AbortController>();
+  const discardOnFinish = new Map<string, readonly DraftAttachment[]>();
   let snapshot: OutboxSnapshot = { loaded: false, items: [] };
   let worker: Fiber.RuntimeFiber<never, never> | undefined;
   let disposed = false;
@@ -152,7 +153,8 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
   const deliver = (message: QueuedMessage) => Effect.gen(function* () {
     const env = yield* OutboxEnvironment;
     if (inFlight.has(message.id) || (!message.acceptedRunId && !env.canSend(message))) return;
-    inFlight.add(message.id);
+    const controller = new AbortController();
+    inFlight.set(message.id, controller);
     yield* Effect.gen(function* () {
       if (!canReplayMessage(message, now())) {
         yield* mutate((items) => items.map((item) => item.id === message.id ? { ...item, state: 'failed', error: NEEDS_REVIEW } : item));
@@ -167,9 +169,14 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
         return items.map((item) => item.id === message.id ? current : item);
       }));
       const result = yield* Effect.either(Effect.tryPromise({
-        try: (signal) => current.acceptedRunId ? Promise.resolve(current.acceptedRunId) : env.deliver(current, checkpoint, signal),
+        try: (signal) => {
+          signal.addEventListener('abort', () => controller.abort(), { once: true });
+          if (signal.aborted) controller.abort();
+          return current.acceptedRunId ? Promise.resolve(current.acceptedRunId) : env.deliver(current, checkpoint, controller.signal);
+        },
         catch: (error) => error,
       }));
+      if (controller.signal.aborted) return;
       if (result._tag === 'Right') {
         // Persist acceptance before cleanup, so a failed cleanup never resends a turn.
         yield* Effect.tryPromise(() => checkpoint({ acceptedRunId: result.right }));
@@ -183,7 +190,12 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
           nextAttemptAt: queued ? now() + Math.min(1000 * 2 ** current.attempts, 30_000) : undefined,
         } : item));
       }
-    }).pipe(Effect.ensuring(Effect.sync(() => inFlight.delete(message.id))));
+    }).pipe(Effect.ensuring(Effect.sync(() => {
+      inFlight.delete(message.id);
+      const files = discardOnFinish.get(message.id);
+      if (files) dependencies.discardAttachments(files);
+      discardOnFinish.delete(message.id);
+    })));
   });
 
   const drain = Effect.gen(function* () {
@@ -238,8 +250,16 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
     forgetAgent: (agentId: string) => run(Effect.gen(function* () {
       const removed = snapshot.items.filter((item) => item.agentId === agentId);
       yield* mutate((items) => items.filter((item) => item.agentId !== agentId));
-      removed.forEach((item) => dependencies.discardAttachments(item.attachments));
-    })),
+      removed.forEach((item) => {
+        const controller = inFlight.get(item.id);
+        if (controller) {
+          discardOnFinish.set(item.id, item.attachments);
+          controller.abort();
+        } else dependencies.discardAttachments(item.attachments);
+      });
+    }).pipe(Effect.tapError((error) => Effect.sync(() => publish({
+      ...snapshot, error: error instanceof Error ? error.message : 'Could not remove queued messages. Retrying cleanup.',
+    }))))),
     dispose: async () => {
       disposed = true;
       if (worker) await Effect.runPromise(Fiber.interrupt(worker));
