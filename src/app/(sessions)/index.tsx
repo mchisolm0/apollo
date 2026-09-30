@@ -1,4 +1,5 @@
-import { Redirect, useLocalSearchParams, useRouter } from 'expo-router';
+import { HAS_MAIL_TOOLBAR } from '@/features/relay/mail-toolbar';
+import { Redirect, Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -19,8 +20,22 @@ export default function SessionsRoute() {
   if (!agent) return <Redirect href="/connect" />;
   const connection = state?.status === 'connected' ? 'connected' : state?.status === 'revoked' ? 'revoked' : state?.status === 'connecting' ? 'connecting' : 'offline';
   const open = (id: string) => router.push({ pathname: '/session/[id]', params: { id, agentId: agent.id } });
-  return <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
-    <View style={styles.header}>
+  const picker = <AgentPicker agents={agents} selected={agent} runtime={runtime}
+    onSelect={(agentId) => router.setParams({ agentId })}
+    onDetails={(agentId) => router.push({ pathname: '/settings/[agentId]', params: { agentId } })}
+    onPair={() => router.push('/connect')} />;
+  return <SafeAreaView style={styles.screen} edges={HAS_MAIL_TOOLBAR ? ['bottom'] : ['top', 'bottom']}>
+    {HAS_MAIL_TOOLBAR ? <Stack.Screen options={{
+      headerShown: true,
+      headerTitle: () => picker,
+      headerStyle: { backgroundColor: colors.background },
+      headerTintColor: colors.primary,
+      headerShadowVisible: false,
+      headerRight: () => <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+        <ConnectionAction state={connection} onReconnect={() => void retryAgent(agent.id)} onDetails={() => router.push({ pathname: '/settings/[agentId]', params: { agentId: agent.id } })} />
+        <IconButton name="gearshape" label="Settings" onPress={() => router.push('/settings')} />
+      </View>,
+    }} /> : <View style={styles.header}>
       <View style={styles.identity}>
         <AgentPicker agents={agents} selected={agent} runtime={runtime}
           onSelect={(agentId) => router.setParams({ agentId })}
@@ -29,7 +44,7 @@ export default function SessionsRoute() {
       </View>
       <ConnectionAction state={connection} onReconnect={() => void retryAgent(agent.id)} onDetails={() => router.push({ pathname: '/settings/[agentId]', params: { agentId: agent.id } })} />
       <IconButton name="gearshape" label="Settings" onPress={() => router.push('/settings')} />
-    </View>
+    </View>}
     {inbox.error ? <Text style={styles.error} accessibilityRole="alert">{inbox.error}</Text> : null}
     <SessionList connection={connection} sessions={inbox.sessions} onSessionPress={(session) => open(session.id)} onSettle={(id) => { void inbox.settle(id); }} onReopen={(id) => { void inbox.reopen(id); }} onNewSession={() => open('new')} onForked={(id) => open(id)} />
   </SafeAreaView>;
