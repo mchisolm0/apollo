@@ -182,7 +182,7 @@ function messageKey(message: HermesMessage, index: number, occurrence: number): 
 
 function historyFingerprint(message: HermesMessage, index: number): string {
   const calls = message.toolCalls?.map((call) => `${toolIdentity(call) ?? ''}:${callName(call) ?? ''}:${JSON.stringify(callArguments(call))}`).join('|') ?? '';
-  return [message.id ?? `index-${index}`, message.role, message.content, message.reasoningContent, message.reasoning, message.toolCallId, message.toolName, calls].map((value) => value ?? '').join('\u001f');
+  return [message.id ?? `index-${index}`, message.timestamp, message.role, message.content, message.reasoningContent, message.reasoning, message.toolCallId, message.toolName, calls].map((value) => value ?? '').join('\u001f');
 }
 
 function toolText(value: Record<string, unknown>): string {

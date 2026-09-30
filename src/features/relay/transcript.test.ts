@@ -147,6 +147,17 @@ test('names the run phase while active and the outcome once stopped', () => {
   assert.deepEqual([activity.status, activity.startedAt, activity.endedAt], ['stopped', 100, 112]);
 });
 
+test('refreshed history timestamps update the turn duration', () => {
+  const projector = createTranscriptProjector();
+  const history = (end: number) => [
+    message({ id: 'u1', role: 'user', content: 'Go', timestamp: 100 }),
+    message({ id: 't1', role: 'tool', toolName: 'terminal', toolCallId: 'c1', content: 'ok' }),
+    message({ id: 'a1', role: 'assistant', content: 'Done.', timestamp: end }),
+  ];
+  assert.equal(activityOf(projector({ history: history(110), events: [], running: false })).endedAt, 110);
+  assert.equal(activityOf(projector({ history: history(142), events: [], running: false })).endedAt, 142);
+});
+
 test('switches to durable current-turn history after a terminal final match', () => {
   const rows = createTranscriptProjector()({
     history: [
