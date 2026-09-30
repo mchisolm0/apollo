@@ -107,7 +107,15 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
       };
       return { ...run, event: { ...run.events[event.key], key: event.key } };
     });
-    if (!prepared?.session_id || !ID.test(prepared.session_id)) return false;
+    if (!prepared) return true;
+    if (!prepared.session_id || !ID.test(prepared.session_id)) {
+      if (!TERMINAL.has(status.status)) return false;
+      await store.update((current) => {
+        const saved = current.notification_runs?.[runId]?.events?.[event.key];
+        if (saved) saved.delivered = [...saved.targets];
+      });
+      return true;
+    }
 
     for (const deviceId of prepared.event.targets) {
       if (prepared.event.delivered.includes(deviceId)) continue;
@@ -118,10 +126,11 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
         continue;
       }
       try {
-        const result = await sendPush(device.notifications.expo_push_token, notificationFor(event.kind, agentId, prepared));
+        const sentToken = device.notifications.expo_push_token;
+        const result = await sendPush(sentToken, notificationFor(event.kind, agentId, prepared));
         await store.update((current) => {
           const currentDevice = current.devices.find((candidate) => candidate.id === deviceId);
-          if (result?.status === "unregistered" && currentDevice) {
+          if (result?.status === "unregistered" && currentDevice?.notifications?.expo_push_token === sentToken) {
             delete currentDevice.notifications;
             for (const run of Object.values(current.notification_runs ?? {})) {
               for (const savedEvent of Object.values(run.events ?? {})) {
@@ -150,6 +159,7 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
 
   async function watch(runId) {
     let delay = pollInterval;
+    let deliveryAttempts = 0;
     try {
       while (!closed && active.has(runId)) {
         if (!(await registeredDevices()).length) return;
@@ -176,6 +186,8 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
           });
           return;
         }
+        // Preserve failed delivery for a later registration refresh, without a permanent retry loop.
+        if (TERMINAL.has(status.status) && ++deliveryAttempts >= 5) return;
         await wait(delay);
       }
     } finally {
