@@ -30,7 +30,7 @@ export default function SessionsRoute() {
     pendingSessions.set(item.sessionId, { id: item.sessionId, agentId: agent.id, title: (item.text || item.attachments[0]?.name || 'Queued thread').slice(0, 72), updatedAt: 'Queued', activityAt: item.createdAt / 1000, sortAt: item.createdAt / 1000, status: 'active', settled: false, attention: false, pendingApproval: false, queued: true, failed: false, pinned: false, autoSettleDisabled: false });
   }
   const queuedIds = new Set(outbox.items.filter((item) => item.agentId === agent.id).map((item) => item.sessionId));
-  const sessions = [...pendingSessions.values(), ...inbox.sessions.map((session) => queuedIds.has(session.id) ? { ...session, queued: true } : session)];
+  const sessions = [...inbox.sessions.map((session) => queuedIds.has(session.id) ? { ...session, queued: true } : session), ...pendingSessions.values()];
   return <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
     <View style={styles.header}>
       <View style={styles.identity}>
