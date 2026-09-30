@@ -27,6 +27,7 @@ export type OutboxDependencies = {
   canSend(message: QueuedMessage): boolean;
   deliver(message: QueuedMessage, checkpoint: (patch: Checkpoint) => Promise<void>, signal: AbortSignal): Promise<string>;
   discardAttachments(attachments: readonly DraftAttachment[]): void;
+  referencedMessageIds?(): Promise<readonly string[]>;
   now?: () => number;
 };
 
@@ -79,7 +80,7 @@ export function readyMessages(items: readonly QueuedMessage[], now: number): rea
 }
 
 export function canReplayMessage(item: QueuedMessage, now: number): boolean {
-  return item.acceptedRunId !== undefined || item.firstAttemptAt === undefined || now - item.firstAttemptAt < SAFE_REPLAY_AGE;
+  return item.acceptedRunId !== undefined || item.firstAttemptAt === undefined || (now >= item.firstAttemptAt && now - item.firstAttemptAt < SAFE_REPLAY_AGE);
 }
 
 function retryable(error: unknown): boolean {
@@ -100,7 +101,7 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
   let snapshot: OutboxSnapshot = { loaded: false, items: [] };
   let worker: Fiber.RuntimeFiber<never, never> | undefined;
   let disposed = false;
-  // ponytail: retain small delivery receipts; compact only once no saved draft can reference them.
+  // Receipts protect stale prepared drafts after failed cleanup or a crash.
   let completed = new Set<string>();
   const now = dependencies.now ?? Date.now;
 
@@ -110,6 +111,14 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
   }
   const save = (items: readonly QueuedMessage[], receipts = completed) => Effect.gen(function* () {
     const env = yield* OutboxEnvironment;
+    if (receipts.size > 256 && env.referencedMessageIds) {
+      const readIds = env.referencedMessageIds;
+      receipts = yield* Effect.tryPromise(() => readIds()).pipe(
+        Effect.map((ids) => new Set([...receipts].filter((id) => ids.includes(id)))),
+        // An unreadable draft must never lose its protection against duplicate delivery.
+        Effect.orElseSucceed(() => receipts),
+      );
+    }
     yield* Effect.tryPromise(() => env.storage.setItem(OUTBOX_KEY, JSON.stringify({ items, completed: [...receipts] })));
     completed = receipts;
     publish({ loaded: true, items });

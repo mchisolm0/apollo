@@ -4,6 +4,22 @@ import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StateStore, createConnectorServer } from "./index.mjs";
+import { createRunNotificationMonitor } from "./notifications.mjs";
+
+test("notification history compaction retains active and undelivered runs", async () => {
+  const state = { devices: [{ notifications: {} }], notification_runs: {} };
+  for (let i = 0; i < 260; i++) {
+    state.notification_runs[`active-${i}`] = { status: "running" };
+    state.notification_runs[`done-${i}`] = { status: "completed", updated_at: new Date(i).toISOString(), events: { completed: { targets: ["phone"], delivered: ["phone"] } } };
+  }
+  state.notification_runs.retry = { status: "completed", events: { completed: { targets: ["phone"], delivered: [] } } };
+  const monitor = createRunNotificationMonitor({ store: { read: async () => state, update: async (change) => change(state) } });
+  await monitor.trackRun({ run_id: "new", status: "running" });
+  assert.equal(state.notification_runs["active-0"].status, "running");
+  assert.ok(state.notification_runs.retry);
+  assert.equal(Object.keys(state.notification_runs).length, 262 + 256);
+  monitor.close();
+});
 
 async function fixture(options = {}) {
   const directory = await mkdtemp(join(tmpdir(), "ekho-connector-"));

@@ -207,8 +207,15 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
           updated_at: new Date().toISOString(),
           events: {},
         };
-        const entries = Object.entries(state.notification_runs).sort(([, a], [, b]) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
-        state.notification_runs = Object.fromEntries(entries.slice(0, 256));
+        const entries = Object.entries(state.notification_runs);
+        // Pending delivery must survive history compaction, including failed push attempts.
+        const pending = entries.filter(([, run]) => !TERMINAL.has(run.status)
+          || (["completed", "failed"].includes(run.status) && !Object.keys(run.events ?? {}).length)
+          || Object.values(run.events ?? {}).some((event) => event.targets.some((id) => !event.delivered.includes(id))));
+        const pendingIds = new Set(pending.map(([id]) => id));
+        const history = entries.filter(([id]) => !pendingIds.has(id))
+          .sort(([, a], [, b]) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
+        state.notification_runs = Object.fromEntries([...pending, ...history.slice(0, 256)]);
         return true;
       });
       if (tracked) await start(run.run_id);

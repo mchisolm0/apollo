@@ -23,11 +23,14 @@ test('concurrent threads retain independent streams, controls, and saved run IDs
   const approved: string[] = [];
   let record = { id: 'agent', endpoint: { url: 'http://localhost' }, activeRunIds: [] as readonly string[] };
   let count = 0;
+  const removal: string[] = [];
+  let registrationError: Error | undefined;
   const catalog = {
     get: () => record,
     list: () => [record],
     credentials: { get: async () => 'test-token' },
     update: async (_id: string, patch: Partial<typeof record>) => { record = { ...record, ...patch }; return record; },
+    remove: async () => { removal.push('credential'); },
   };
   class Client {
     async capabilities() { return { features: {} }; }
@@ -62,8 +65,13 @@ test('concurrent threads retain independent streams, controls, and saved run IDs
     // Open subscriptions arm a quiet-stream check; it must not keep the test process alive.
     setTimeout: (callback: () => void, ms?: number) => setTimeout(callback, ms).unref(),
     require: (id: string) => {
-      if (id === '@/features/notifications/notifications') return {};
       if (id === '@/config/posthog') return { posthog: { capture() {} } };
+      if (id === '@/features/notifications/notifications') return {
+        createNotificationRegistrationClient: () => ({ unregister: async () => {
+          if (registrationError) throw registrationError;
+          removal.push('notification');
+        } }),
+      };
       if (id === 'react-native') return { AppState: {} };
       if (id === './catalog') return {};
       if (id === './pairing') return { PairingClient: class {} };
@@ -101,4 +109,11 @@ test('concurrent threads retain independent streams, controls, and saved run IDs
   streams.clear();
   await mount().refreshAgent('agent');
   assert.deepEqual([...streams.keys()], [second.runId, third.runId]);
+  registrationError = new Error('Offline');
+  await assert.rejects(api.removeAgent('agent'), /Offline/);
+  assert.deepEqual(removal, []);
+  registrationError = undefined;
+  await api.removeAgent('agent');
+  assert.deepEqual(removal, ['notification', 'credential']);
+  assert.equal(streams.size, 0);
 });
