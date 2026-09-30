@@ -307,13 +307,22 @@ export class HermesClient {
   }
 
   async createSession(options: { id?: string; title?: string } = {}): Promise<HermesSession> {
-    const body = await this.request('/api/sessions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(options),
-    });
+    let body: unknown;
+    try {
+      body = await this.request('/api/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(options),
+      });
+    } catch (error) {
+      // A queued thread keeps its client-generated ID across ambiguous requests.
+      if (!options.id || !(error instanceof HermesRequestError) || error.status !== 409 || error.code !== 'session_exists') throw error;
+      body = await this.request(`/api/sessions/${encodeURIComponent(options.id)}`);
+    }
     if (!isJsonObject(body)) throw new Error('Hermes create session response was invalid');
-    return parseSession(body.session);
+    const session = parseSession(body.session);
+    if (options.id && session.id !== options.id) throw new Error('The agent returned a different thread than requested.');
+    return session;
   }
 
   async deleteSession(sessionId: string): Promise<void> {

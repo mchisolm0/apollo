@@ -2,7 +2,7 @@ import { createSessionInboxProjector, type SessionInboxState } from './session-i
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { AUTO_SETTLE_DELAY_SECONDS, countSnoozedSessions, dateLabel, deriveSessionInbox, isAutoSettleDue, isSessionSnoozed, pruneSnoozedLedger, reopenSession, settleSession, snoozeSession, unsnoozeSession } from './session-inbox.ts';
+import { AUTO_SETTLE_DELAY_SECONDS, countSnoozedSessions, canSettleSession, dateLabel, deriveSessionInbox, isAutoSettleDue, isSessionSnoozed, pruneSnoozedLedger, reopenSession, settleSession, snoozeSession, unsnoozeSession } from './session-inbox.ts';
 
 const baseState = {
   status: 'connected' as const,
@@ -257,4 +257,11 @@ test('inbox ages are compact for the last week', () => {
   assert.equal(dateLabel(ago(3 * 86400), now), '3d');
   assert.doesNotMatch(dateLabel(ago(10 * 86400), now), /^\d+[mhd]$/u);
   assert.equal(dateLabel(0, now), '');
+});
+
+
+test('queued messages prevent manual and automatic settling', () => {
+  const session = { ...deriveSessionInbox('agent', baseState).find((item) => item.id === 'quiet')!, queued: true };
+  assert.equal(canSettleSession(session), false);
+  assert.equal(isAutoSettleDue(session, false, session.activityAt + AUTO_SETTLE_DELAY_SECONDS + 1), false);
 });

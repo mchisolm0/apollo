@@ -16,7 +16,10 @@ export default function configure({ config }: ConfigContext): ExpoConfig {
       ...config.updates,
       requestHeaders: { 'expo-channel-name': variant === 'development' ? 'ekho-dev' : variant },
     },
-    plugins: [...(config.plugins ?? []), 'expo-notifications'],
+    plugins: [...(config.plugins ?? []), 'expo-notifications', ['expo-sharing', {
+      ios: { enabled: true, extensionBundleIdentifier: `com.matthewchisolm.ekho${suffix}.sharing`, appGroupId: `group.com.matthewchisolm.ekho${suffix}`, activationRule: { supportsText: true, supportsWebUrlWithMaxCount: 1, supportsImageWithMaxCount: 4, supportsFileWithMaxCount: 4 } },
+      android: { enabled: true, singleShareMimeTypes: ['*/*'], multipleShareMimeTypes: ['*/*'] },
+    }]],
     ios: { ...config.ios, bundleIdentifier: `com.matthewchisolm.ekho${suffix}` },
     android: { ...config.android, package: `com.matthewchisolm.ekho${suffix}` },
   };

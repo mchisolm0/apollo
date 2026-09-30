@@ -1,7 +1,10 @@
+import { TextInputWrapper } from 'expo-paste-input';
+import * as Clipboard from 'expo-clipboard';
+import type { QueuedMessage } from '../../lib/outbox';
 import { splitAttachmentMessage, type AttachmentSource, type DraftAttachment } from '../../lib/attachments';
 import { AttachmentStrip } from './attachment-strip';
 import { memo, useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
 import { MenuView } from '@expo/ui/community/menu';
 import { LegendList, useRecyclingState, type LegendListRef } from '@legendapp/list/react-native';
@@ -27,6 +30,12 @@ export type RunScreenProps = {
   attachments?: readonly DraftAttachment[];
   isPicking?: boolean;
   onAddAttachments?: () => void;
+  onPasteImages?: (uris: readonly string[]) => void;
+  queuedMessages?: readonly QueuedMessage[];
+  onRetryQueued?: (id: string) => void;
+  onRemoveQueued?: (id: string) => void;
+  sendDisabled?: boolean;
+  onRetryError?: () => void;
   onPickAttachments?: (kind: 'photos' | 'files') => void;
   onRemoveAttachment?: (id: string) => void;
   attachmentSource?: (id: string) => AttachmentSource | undefined;
@@ -56,7 +65,7 @@ export type RunScreenProps = {
   onDeny?: (approval: ApprovalRequest) => void;
 };
 
-export function RunScreen({ session, events, connection, approval, draft = '', attachments = [], isPicking = false, onAddAttachments, onPickAttachments, onRemoveAttachment, attachmentSource, agentName, isSending = false, isLoading = false, isActing = false, statusLabel, error, skills = [], skillsLoading = false, skillsError, onRefreshSkills, models = [], modelsLoading = false, defaultModel, selectedModel, onSelectModel, onBack, onSessionActions, onDraftChange, onSend, onStop, onReconnect, onAgentDetails, onApprove, onDeny }: RunScreenProps) {
+export function RunScreen({ session, events, connection, approval, draft = '', attachments = [], isPicking = false, onAddAttachments, onPasteImages, queuedMessages = [], onRetryQueued, onRemoveQueued, sendDisabled = false, onRetryError, onPickAttachments, onRemoveAttachment, attachmentSource, agentName, isSending = false, isLoading = false, isActing = false, statusLabel, error, skills = [], skillsLoading = false, skillsError, onRefreshSkills, models = [], modelsLoading = false, defaultModel, selectedModel, onSelectModel, onBack, onSessionActions, onDraftChange, onSend, onStop, onReconnect, onAgentDetails, onApprove, onDeny }: RunScreenProps) {
   const { fontScale } = useWindowDimensions();
   const { factor } = useTextScale();
   const list = useRef<LegendListRef>(null);
@@ -77,7 +86,7 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
   const renderItem = useCallback(({ item }: { item: TranscriptRow }) => item.kind === 'activity'
     ? <ActivityEntry row={item} connection={connection} onDisclosure={suspendFollow} />
     : <TranscriptEntry row={item} agentName={agentName ?? 'Hermes'} attachmentSource={attachmentSource} />, [suspendFollow, agentName, attachmentSource, connection]);
-  const canSend = connection === 'connected' && !isSending && !isActing && !isPicking && Boolean(draft.trim() || attachments.length);
+  const canSend = connection !== 'revoked' && !sendDisabled && !isActing && !isPicking && Boolean(draft.trim() || attachments.length);
   const typedSkill = selection.start === selection.end ? skillTrigger(draft, selection.end) : undefined;
   const skillMenuTrigger: SkillTrigger | undefined = !skillsDismissed ? typedSkill ?? (skillsOpen ? { query: '', start: selection.end, end: selection.end } : undefined) : undefined;
   const skillMatches = matchingSkills(skillMenuTrigger, skills);
@@ -86,9 +95,9 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
   // Collapsed, the single line sits centered beside the action button.
   const pillHeight = Math.max(COLLAPSED_ACTION, 23 * factor + 8);
   const expanded = focused || modelOpen || attachments.length > 0 || Boolean(skillMenuTrigger);
-  const action = isSending
+  const action = isSending && !draft.trim() && !attachments.length
     ? <ComposerAction kind="stop" size={expanded ? EXPANDED_ACTION : COLLAPSED_ACTION} disabled={isActing || connection !== 'connected'} onPress={() => onStop?.()} />
-    : <ComposerAction kind="send" size={expanded ? EXPANDED_ACTION : COLLAPSED_ACTION} label={isActing ? 'Sending message' : 'Send message'} disabled={!canSend} onPress={() => onSend(draft.trim())} />;
+    : <ComposerAction kind="send" size={expanded ? EXPANDED_ACTION : COLLAPSED_ACTION} label={isActing ? 'Saving message' : connection !== 'connected' || isSending || queuedMessages.length ? 'Queue message' : 'Send message'} disabled={!canSend} onPress={() => onSend(draft.trim())} />;
   const chooseSkill = (skill: HermesSkill) => {
     if (!skillMenuTrigger) return;
     const result = insertSkill(draft, skillMenuTrigger, skill.name);
@@ -143,7 +152,15 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
         scrollEventThrottle={32}
       />
       {!following && events.length > 0 ? <Pressable accessibilityRole="button" onPress={() => { dragging.current = false; setFollowing(true); list.current?.scrollToEnd({ animated: true }); }} style={styles.latest}><Text style={styles.link}>Jump to latest ↓</Text></Pressable> : null}
-      {error ? <View style={styles.error} accessibilityRole="alert"><Text style={styles.errorText}>{error}</Text></View> : null}
+      {error ? <View style={styles.error} accessibilityRole="alert"><Text style={styles.errorText}>{error}</Text>{onRetryError ? <Pressable accessibilityRole="button" accessibilityLabel="Retry" disabled={isActing} onPress={onRetryError} style={{ minHeight: 44, justifyContent: "center" }}><Text style={styles.link}>Retry</Text></Pressable> : null}</View> : null}
+      {queuedMessages.length > 0 ? <ScrollView style={styles.queue} keyboardShouldPersistTaps="handled">
+        {queuedMessages.map((message) => <View key={message.id} style={styles.queueRow}>
+          <View style={{ flex: 1 }}><Text style={styles.queueLabel}>{message.state === 'sending' ? 'Sending' : message.state === 'failed' ? 'Not sent' : 'Queued'}</Text><Text selectable numberOfLines={2} style={styles.queueText}>{message.text || message.attachments.map((file) => file.name).join(', ')}</Text>{message.error ? <Text style={styles.queueError}>{message.error}</Text> : null}</View>
+          {message.state === 'failed' ? <Pressable accessibilityRole="button" accessibilityLabel="Retry queued message" onPress={() => onRetryQueued?.(message.id)} style={styles.queueAction}><Text style={styles.link}>Retry</Text></Pressable> : null}
+          <Pressable accessibilityRole="button" accessibilityLabel="Copy queued message" style={styles.queueAction} onPress={() => { void Clipboard.setStringAsync(message.text).catch(() => Alert.alert("Could not copy", "Try again.")); }}><Text style={styles.link}>Copy</Text></Pressable>
+          {message.state !== 'sending' ? <IconButton name="xmark" label="Remove queued message" onPress={() => onRemoveQueued?.(message.id)} /> : null}
+        </View>)}
+      </ScrollView> : null}
       {approval ? (
         <View style={styles.approval} accessibilityRole="alert">
           <ScrollView style={styles.approvalScroll} keyboardShouldPersistTaps="handled">
@@ -161,6 +178,7 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
           {skillMenuTrigger ? <SkillMenu skills={skillMatches} loading={skillsLoading} error={skillsError} onRetry={onRefreshSkills} onSelect={chooseSkill} /> : null}
           <View style={expanded ? styles.composerField : styles.composerPill}>
             {expanded ? <AttachmentStrip files={attachments.map((file) => ({ ...file, source: { uri: file.uri } }))} onRemove={onRemoveAttachment} disabled={isActing || isPicking} /> : null}
+            <TextInputWrapper style={expanded ? undefined : { flex: 1 }} onPaste={(payload) => { if (payload.type === 'images' && !isActing && !isPicking && !sendDisabled) onPasteImages?.(payload.uris); }}>
             <TextInput
               ref={input}
               // Grows from one line to five before scrolling while expanded.
@@ -179,8 +197,9 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
               placeholderTextColor={colors.secondary}
               selectionColor={colors.cyan}
               accessibilityLabel="Message Hermes"
-              accessibilityHint={connection !== 'connected' ? 'Drafts are saved. Reconnect to send.' : undefined}
+              accessibilityHint={connection !== 'connected' ? 'Messages are saved in the outbox until this agent reconnects.' : undefined}
             />
+            </TextInputWrapper>
             {expanded ? <View style={styles.toolbar}>
               {onPickAttachments && Platform.OS !== 'web' ? (
                 <MenuView
@@ -383,6 +402,14 @@ const StepEntry = memo(function StepEntry({ step, onDisclosure }: { step: Transc
 });
 
 const styles = StyleSheet.create({
+  queue: { flexGrow: 0, maxHeight: 160, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
+  queueRow: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, paddingVertical: 8 },
+  queueLabel: { color: colors.secondary, fontSize: 12, marginBottom: 3 },
+  queueText: { color: colors.primary, fontSize: 14, lineHeight: 20 },
+  queueError: { color: colors.red, fontSize: 12, lineHeight: 17, marginTop: 4 },
+  queueAction: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 8 },
+  queueSend: { minHeight: 44, minWidth: 58, backgroundColor: colors.primary, borderRadius: 12, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 10 },
+
   navigation: { minHeight: 64, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, gap: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
   back: { minHeight: 44, width: 32, justifyContent: 'center', alignItems: 'center' },
   heading: { flex: 1, paddingVertical: 8, gap: 4 },

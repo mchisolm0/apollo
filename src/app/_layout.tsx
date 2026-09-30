@@ -4,6 +4,8 @@ import { StatusBar } from 'expo-status-bar';
 
 import { TextScaleProvider, useColors } from '@/features/relay/relay-ui';
 import { EkhoProvider } from '@/lib';
+import { OutboxProvider } from '@/lib/outbox-context';
+import { IncomingShareProvider } from '@/features/sharing';
 import { NotificationNavigation } from '@/features/notifications';
 
 function InnerStack() {
@@ -33,9 +35,13 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
     <EkhoProvider>
+      <OutboxProvider>
+      <IncomingShareProvider>
       <TextScaleProvider>
         <InnerStack />
       </TextScaleProvider>
+      </IncomingShareProvider>
+      </OutboxProvider>
     </EkhoProvider>
     </GestureHandlerRootView>
   );

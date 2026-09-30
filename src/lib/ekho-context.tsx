@@ -44,7 +44,7 @@ export interface EkhoContextValue {
   refreshAgent(agentId: string): Promise<void>;
   retryAgent(agentId: string): Promise<void>;
   startRun(agentId: string, input: string, options?: StartRunOptions): Promise<HermesRunStatus>;
-  createSession(agentId: string, title?: string): Promise<string>;
+  createSession(agentId: string, title?: string, sessionId?: string): Promise<string>;
   deleteSession(agentId: string, sessionId: string): Promise<void>;
   setPinned(agentId: string, sessionId: string, pinned: boolean): Promise<void>;
   forkSession(agentId: string, sessionId: string): Promise<string>;
@@ -385,7 +385,7 @@ export function EkhoProvider({
       updateRuntime(agentId, { status: 'connected' });
       if (status.sessionId) {
         const key = `${agentId}:${status.sessionId}`;
-        setMessages((current) => ({ ...current, [key]: [...(current[key] ?? []), { id: `run-user-${status.runId}`, role: 'user', content: attachmentMessage(input, options?.attachments), timestamp: status.createdAt }] }));
+        setMessages((current) => current[key]?.some((message) => message.id === `run-user-${status.runId}`) ? current : ({ ...current, [key]: [...(current[key] ?? []), { id: `run-user-${status.runId}`, role: 'user', content: attachmentMessage(input, options?.attachments), timestamp: status.createdAt }] }));
       }
       subscribe(agent, client, status.runId);
       if (status.sessionId && newSessions.current.delete(`${agentId}:${status.sessionId}`)) {
@@ -490,14 +490,14 @@ export function EkhoProvider({
     return status;
   }, [updateRun]);
 
-  const createSession = useCallback(async (agentId: string, title?: string): Promise<string> => {
+  const createSession = useCallback(async (agentId: string, title?: string, sessionId?: string): Promise<string> => {
     let client = clients.current.get(agentId);
     if (!client) {
       await refreshAgent(agentId);
       client = clients.current.get(agentId);
     }
     if (!client) throw new Error('Agent is offline');
-    const session = await client.createSession(title ? { title } : {});
+    const session = await client.createSession({ title, id: sessionId });
     newSessions.current.add(`${agentId}:${session.id}`);
     setRuntime((current) => {
       const existing = current[agentId] ?? emptyRuntime();

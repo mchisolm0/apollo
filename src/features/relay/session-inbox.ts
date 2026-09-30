@@ -9,6 +9,7 @@ export interface InboxSession extends RelaySession {
   activityAt: number;
   status: InboxStatus;
   settled: boolean;
+  queued?: boolean;
   attention: boolean;
   pendingApproval: boolean;
   failed: boolean;
@@ -160,8 +161,8 @@ export function sortSessionInbox(sessions: readonly InboxSession[]): InboxSessio
   return [...sessions].sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || (b.status === 'active' ? b.sortAt - a.sortAt : b.activityAt - a.activityAt));
 }
 
-export function canSettleSession(session: Pick<InboxSession, 'status' | 'pendingApproval' | 'running' | 'settled'>): boolean {
-  return !session.settled && !session.running && !session.pendingApproval && (session.status === 'attention' || session.status === 'active');
+export function canSettleSession(session: Pick<InboxSession, 'status' | 'pendingApproval' | 'running' | 'settled' | 'queued'>): boolean {
+  return !session.settled && !session.queued && !session.running && !session.pendingApproval && (session.status === 'attention' || session.status === 'active');
 }
 
 /**
@@ -169,11 +170,11 @@ export function canSettleSession(session: Pick<InboxSession, 'status' | 'pending
  * check uses nowSeconds, so callers can probe eligibility by passing a future time.
  */
 export function isAutoSettleDue(
-  session: Pick<InboxSession, 'settled' | 'running' | 'pendingApproval' | 'pinned' | 'activityAt'>,
+  session: Pick<InboxSession, 'settled' | 'running' | 'pendingApproval' | 'pinned' | 'activityAt' | 'queued'>,
   autoSettleDisabled: boolean | undefined,
   nowSeconds: number,
 ): boolean {
-  return !session.settled && !session.running && !session.pendingApproval
+  return !session.settled && !session.queued && !session.running && !session.pendingApproval
     && !session.pinned
     && autoSettleDisabled !== true
     // activityAt 0 means the backend sent no timestamps; idle time is unknown.
