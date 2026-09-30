@@ -1,3 +1,4 @@
+import { posthog } from '@/config/posthog';
 import { useOutbox } from '../../lib/outbox-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
@@ -224,6 +225,7 @@ export function useSessionInbox(agentId: string, state: SessionInboxState | unde
     try {
       await saveInbox(agentId, { [sessionId]: session.activityAt || Math.floor(Date.now() / 1000) });
       await update(agentId, entryFor(agentId).settled);
+      posthog.capture('session_settled', { agent_id: agentId, session_id: sessionId });
       return true;
     } catch (cause) { reportError(cause); return false; }
   }, [agentId, sessions, store.loaded, saveInbox, reportError]);
@@ -236,6 +238,7 @@ export function useSessionInbox(agentId: string, state: SessionInboxState | unde
       const next = { ...entryFor(agentId).settled };
       delete next[sessionId];
       await update(agentId, next);
+      posthog.capture('session_reopened', { agent_id: agentId, session_id: sessionId });
       return true;
     } catch (cause) { reportError(cause); return false; }
   }, [agentId, sessions, store.loaded, saveInbox, reportError]);

@@ -47,7 +47,8 @@
     "@ekho/native-review-diff": "file:modules/ekho-review-diff",
     "expo-clipboard": "~57.0.1",
     "react-native-nitro-markdown": "0.5.8",
-    "react-native-nitro-modules": "0.35.9"
+    "react-native-nitro-modules": "0.35.9",
+    "posthog-react-native": "4.67.1"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",
