@@ -39,7 +39,7 @@ export function createNotificationRegistrationClient({ endpoint, accessToken, fe
       signal: controller.signal,
     });
     const result: unknown = await response.json().catch(() => undefined);
-    if (!response.ok) throw new Error(`Notification registration failed (${response.status})`);
+    if (!response.ok) throw Object.assign(new Error(`Notification registration failed (${response.status})`), { status: response.status });
     return result;
     } finally { clearTimeout(timer); }
   };

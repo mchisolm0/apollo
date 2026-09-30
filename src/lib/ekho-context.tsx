@@ -552,7 +552,21 @@ export function EkhoProvider({
 
   const retryAgent = useCallback((agentId: string) => refreshAgent(agentId), [refreshAgent]);
 
+  const notificationClient = useCallback(async (agentId: string) => {
+    const agent = catalog.get(agentId);
+    if (!agent) throw new Error('Agent is no longer paired.');
+    const accessToken = await catalog.credentials.get(agentId);
+    if (!accessToken) throw new Error('Pair this device again to manage notifications.');
+    return createNotificationRegistrationClient({ endpoint: agent.endpoint.url, accessToken });
+  }, [catalog]);
+
   const removeAgent = useCallback(async (agentId: string) => {
+    const client = await notificationClient(agentId);
+    try { await client.unregister(); }
+    catch (error) {
+      // Revoked credentials and older connectors have no registration to remove.
+      if (!(error && typeof error === 'object' && 'status' in error && [401, 404].includes(Number(error.status)))) throw error;
+    }
     closeSubscription(agentId);
     clients.current.delete(agentId);
     await catalog.remove(agentId);
@@ -567,17 +581,9 @@ export function EkhoProvider({
       for (const key of Object.keys(next)) if (key.startsWith(`${agentId}:`)) delete next[key];
       return next;
     });
-  }, [catalog, closeSubscription, setRuntime]);
+  }, [catalog, closeSubscription, notificationClient, setRuntime]);
 
   const hasSession = useCallback((agentId: string, sessionId: string) => runtimeRef.current[agentId]?.sessions.some((session) => session.id === sessionId) ?? false, []);
-
-  const notificationClient = useCallback(async (agentId: string) => {
-    const agent = catalog.get(agentId);
-    if (!agent) throw new Error('Agent is no longer paired.');
-    const accessToken = await catalog.credentials.get(agentId);
-    if (!accessToken) throw new Error('Pair this device again to manage notifications.');
-    return createNotificationRegistrationClient({ endpoint: agent.endpoint.url, accessToken });
-  }, [catalog]);
 
   const value = useMemo<EkhoContextValue>(() => ({
     agents,
