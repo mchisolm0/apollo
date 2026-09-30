@@ -62,20 +62,21 @@ export function OutboxProvider({ children }: PropsWithChildren) {
         };
         available();
         if (message.createsSession) {
-          await api.current.createSession(message.agentId, (message.text || message.attachments[0]?.name || 'New thread').slice(0, 72), message.sessionId);
+          await api.current.createSession(message.agentId, (message.text || message.attachments[0]?.name || 'New thread').slice(0, 72), message.sessionId, signal);
           await checkpoint({ createsSession: false });
         }
         let attachments = message.attachments;
         for (const file of attachments) {
           if (file.uploaded) continue;
           available();
-          const uploaded = await api.current.uploadAttachment(message.agentId, { name: file.name, mimeType: file.mimeType, data: await new File(file.uri).base64() });
+          const uploaded = await api.current.uploadAttachment(message.agentId, { name: file.name, mimeType: file.mimeType, data: await new File(file.uri).base64() }, signal);
           attachments = attachments.map((entry) => entry.id === file.id ? { ...entry, uploaded } : entry);
           await checkpoint({ attachments });
         }
         available();
         const run = await api.current.startRun(message.agentId, message.text, {
           sessionId: message.sessionId,
+          signal,
           idempotencyKey: message.id,
           model: message.model,
           instructions: message.instructions,
@@ -95,7 +96,14 @@ export function OutboxProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     if (!outbox || ekho.loading || !snapshot.loaded) return;
     const removed = new Set(snapshot.items.filter((item) => !ekho.agents.some((agent) => agent.id === item.agentId)).map((item) => item.agentId));
-    for (const agentId of removed) void outbox.forgetAgent(agentId).catch(() => {});
+    let current = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = async () => {
+      const results = await Promise.allSettled([...removed].map((agentId) => outbox.forgetAgent(agentId)));
+      if (current && results.some((result) => result.status === 'rejected')) timer = setTimeout(() => void cleanup(), 5_000);
+    };
+    void cleanup();
+    return () => { current = false; clearTimeout(timer); };
   }, [outbox, ekho.agents, ekho.loading, snapshot.loaded, snapshot.items]);
 
   const requireOutbox = () => {

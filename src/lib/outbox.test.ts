@@ -5,6 +5,39 @@ import { canReplayMessage, createOutboxRuntime, decodeOutbox, type OutboxDepende
 
 const first = { id: 'message-one', agentId: 'agent-one', sessionId: 'thread-one', createsSession: false, text: 'Do the work', attachments: [] };
 
+test('forgetting aborts delivery and waits for the attachment reader before cleanup', async () => {
+  let aborted = false;
+  let discarded = false;
+  let release!: () => void;
+  let started!: () => void;
+  const entered = new Promise<void>((resolve) => { started = resolve; });
+  const reading = new Promise<void>((resolve) => { release = resolve; });
+  const setup = fixture({
+    deliver: async (_, checkpoint, signal) => {
+      signal.addEventListener('abort', () => { aborted = true; });
+      started();
+      await reading;
+      if (signal.aborted) throw new Error('Cancelled');
+      await checkpoint({ acceptedRunId: 'unexpected' });
+      return 'unexpected';
+    },
+    discardAttachments: () => { discarded = true; },
+  });
+  const outbox = createOutboxRuntime(setup.dependencies);
+  await outbox.enqueue(first);
+  const delivery = outbox.drain();
+  await entered;
+  await outbox.forgetAgent(first.agentId);
+  assert.equal(aborted, true);
+  assert.equal(discarded, false);
+  release();
+  await delivery;
+  assert.equal(discarded, true);
+  assert.deepEqual(outbox.getSnapshot().items, []);
+  assert.deepEqual(JSON.parse(setup.stored()!).completed, []);
+  await outbox.dispose();
+});
+
 test('a backward clock requires review before replaying an ambiguous send', () => {
   const message: QueuedMessage = { ...first, createdAt: 1000, firstAttemptAt: 1000, state: 'queued', attempts: 1 };
   assert.equal(canReplayMessage(message, 999), false);
