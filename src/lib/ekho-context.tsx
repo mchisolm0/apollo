@@ -572,10 +572,10 @@ export function EkhoProvider({
   const retryAgent = useCallback((agentId: string) => refreshAgent(agentId), [refreshAgent]);
 
   const removeAgent = useCallback(async (agentId: string) => {
-    posthog.capture('agent_removed', { agent_id: agentId });
     closeSubscription(agentId);
     clients.current.delete(agentId);
     await catalog.remove(agentId);
+    posthog.capture('agent_removed', { agent_id: agentId });
     setAgents(catalog.list());
     setRuntime((current) => {
       const next = { ...current };
