@@ -43,7 +43,11 @@
     "expo-crypto": "~57.0.2",
     "expo-sharing": "~57.0.18",
     "expo-paste-input": "0.1.15",
-    "expo-clipboard": "~57.0.1"
+    "@ekho/native-markdown-text": "file:modules/ekho-markdown-text",
+    "@ekho/native-review-diff": "file:modules/ekho-review-diff",
+    "expo-clipboard": "~57.0.1",
+    "react-native-nitro-markdown": "0.5.8",
+    "react-native-nitro-modules": "0.35.9"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",
