@@ -48,6 +48,7 @@ export default function SettingsRoute() {
         onBack={() => router.back()}
         onTestConnection={() => void refreshAgent(agent.id)}
         onForgetAgent={confirmForget}
+        onNotifications={() => router.push({ pathname: "/notifications/[agentId]", params: { agentId } })}
       />
     </SafeAreaView>
   );

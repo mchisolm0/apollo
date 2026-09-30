@@ -4,6 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 
 import { TextScaleProvider, useColors } from '@/features/relay/relay-ui';
 import { EkhoProvider } from '@/lib';
+import { NotificationNavigation } from '@/features/notifications';
 
 function InnerStack() {
   const colors = useColors();
@@ -22,6 +23,7 @@ function InnerStack() {
   return (
     <ThemeProvider value={theme}>
       <StatusBar style="light" />
+      <NotificationNavigation />
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }} />
     </ThemeProvider>
   );

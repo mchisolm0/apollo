@@ -1,5 +1,6 @@
 import { saveAttachment, readAttachment, MAX_UPLOAD_BODY_BYTES } from './attachments.mjs';
 import { generateThreadTitle } from './thread-title.mjs';
+import { createExpoPushSender, createRunNotificationMonitor, parseNotificationRegistration } from './notifications.mjs';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { execFile } from "node:child_process";
@@ -184,8 +185,35 @@ export function createConnectorServer(options = {}) {
   if (!adminSecret) throw new Error("EKHO_ADMIN_SECRET is required");
   const label = options.label ?? process.env.EKHO_AGENT_LABEL ?? hostname();
   const store = options.store ?? new StateStore(options.statePath ?? process.env.EKHO_STATE_FILE ?? defaultStatePath(), label);
+  const expoPushUrl = options.expoPushUrl ?? process.env.EKHO_EXPO_PUSH_URL;
+  const sendPush = options.sendPush ?? (expoPushUrl ? createExpoPushSender({
+    url: expoPushUrl,
+    accessToken: options.expoAccessToken ?? process.env.EKHO_EXPO_ACCESS_TOKEN,
+    fetchImpl: options.fetchImpl ?? fetch,
+  }) : null);
 
   const attachmentDirectory = options.attachmentDirectory ?? `${dirname(options.statePath ?? process.env.EKHO_STATE_FILE ?? defaultStatePath())}/attachments`;
+
+  async function fetchRun(runId) {
+    const response = await (options.fetchImpl ?? fetch)(new URL(`/v1/runs/${encodeURIComponent(runId)}`, hermesUrl), {
+      headers: { authorization: `Bearer ${hermesApiKey}`, accept: "application/json" },
+      redirect: "error",
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) throw new Error(`Hermes run status failed (${response.status})`);
+    return response.json();
+  }
+
+  let notificationMonitor = null;
+
+  function removeNotificationRegistration(state, device) {
+    delete device.notifications;
+    for (const run of Object.values(state.notification_runs ?? {})) {
+      for (const event of Object.values(run.events ?? {})) {
+        if (event.targets.includes(device.id) && !event.delivered.includes(device.id)) event.delivered.push(device.id);
+      }
+    }
+  }
 
   async function attachmentRequest(req, res, id) {
     if (!await authenticateDevice(req)) return error(res, 401, "device authentication required", "unauthorized");
@@ -232,6 +260,7 @@ export function createConnectorServer(options = {}) {
       capabilities,
       auth_methods: ["pairing_token"],
       pairing: { exchange_path: EXCHANGE_PATH, url_scheme: "ekho", fragment_token: true },
+      notifications: { registration_path: "/v1/ekho/notifications", available: Boolean(sendPush) },
       ...(options.publicBaseUrl ? { public_base_url: options.publicBaseUrl } : {}),
     };
   }
@@ -256,13 +285,16 @@ export function createConnectorServer(options = {}) {
     }
     if (req.method === "GET" && url.pathname === "/admin/devices") {
       const state = await store.read();
-      return json(res, 200, { devices: state.devices.map(({ token_hash, ...device }) => device) });
+      return json(res, 200, { devices: state.devices.map(({ token_hash, notifications, ...device }) => ({ ...device, notifications_registered: Boolean(notifications) })) });
     }
     const revoke = url.pathname.match(/^\/admin\/devices\/([A-Za-z0-9._~-]+)\/revoke$/u);
     if (req.method === "POST" && revoke) {
       const device = await store.update((state) => {
         const found = state.devices.find((candidate) => candidate.id === revoke[1]);
-        if (found && !found.revoked_at) found.revoked_at = isoNow();
+        if (found && !found.revoked_at) {
+          found.revoked_at = isoNow();
+          removeNotificationRegistration(state, found);
+        }
         return found;
       });
       return device ? json(res, 200, { device_id: device.id, revoked_at: device.revoked_at }) : error(res, 404, "device not found", "not_found");
@@ -343,6 +375,42 @@ export function createConnectorServer(options = {}) {
     return json(res, 200, result);
   }
 
+  async function notifications(req, res) {
+    const authenticated = await authenticateDevice(req);
+    if (!authenticated) return error(res, 401, "device authentication required", "unauthorized");
+    if (req.method === "GET") {
+      const device = (await store.read()).devices.find((candidate) => candidate.id === authenticated.id && !candidate.revoked_at);
+      const registration = device?.notifications;
+      return json(res, 200, registration ? {
+        registered: true,
+        notify_on_approval: registration.notify_on_approval,
+        notify_on_completion: registration.notify_on_completion,
+        notify_on_failure: registration.notify_on_failure,
+      } : { registered: false });
+    }
+    if (req.method === "PUT") {
+      if (!sendPush) return error(res, 503, "push delivery is not configured", "notifications_unavailable");
+      const registration = parseNotificationRegistration(parseJson(await readBody(req, 16 * 1024)));
+      const saved = await store.update((state) => {
+        const device = state.devices.find((candidate) => candidate.id === authenticated.id && !candidate.revoked_at);
+        if (!device) return false;
+        device.notifications = { ...registration, registered_at: isoNow() };
+        return true;
+      });
+      if (!saved) return error(res, 401, "device authentication required", "unauthorized");
+      await notificationMonitor?.registrationsChanged();
+      return json(res, 200, { registered: true });
+    }
+    if (req.method === "DELETE") {
+      await store.update((state) => {
+        const device = state.devices.find((candidate) => candidate.id === authenticated.id && !candidate.revoked_at);
+        if (device) removeNotificationRegistration(state, device);
+      });
+      return json(res, 200, { registered: false });
+    }
+    return error(res, 405, "method not allowed");
+  }
+
   async function proxy(req, res, url) {
     if (!validProxyRoute(req.method, url.pathname)) return error(res, 404, "route not available through Ekho", "not_found");
     const device = await authenticateDevice(req);
@@ -357,7 +425,7 @@ export function createConnectorServer(options = {}) {
     headers["x-ekho-device-id"] = device.id;
     let upstream;
     try {
-      upstream = await fetch(new URL(`${url.pathname}${url.search}`, hermesUrl), { method: req.method, headers, body, redirect: "error", signal: controller.signal });
+      upstream = await (options.fetchImpl ?? fetch)(new URL(`${url.pathname}${url.search}`, hermesUrl), { method: req.method, headers, body, redirect: "error", signal: controller.signal });
     } catch (cause) {
       if (res.headersSent) return;
       return error(res, 502, `Hermes is unreachable: ${cause.message}`, "hermes_unreachable");
@@ -366,6 +434,16 @@ export function createConnectorServer(options = {}) {
     for (const name of ["content-type", "cache-control", "etag", "last-modified", "location", "retry-after"]) {
       const value = upstream.headers.get(name);
       if (value) responseHeaders[name] = value;
+    }
+    if (req.method === "POST" && url.pathname === "/v1/runs" && upstream.ok) {
+      const responseBody = Buffer.from(await upstream.arrayBuffer());
+      try {
+        const run = JSON.parse(responseBody.toString("utf8"));
+        const requestBody = parseJson(body ?? Buffer.alloc(0));
+        await notificationMonitor?.trackRun({ ...run, session_id: requestBody.session_id });
+      } catch { /* The successful Hermes response still belongs to the caller. */ }
+      res.writeHead(upstream.status, responseHeaders);
+      return res.end(responseBody);
     }
     res.writeHead(upstream.status, responseHeaders);
     if (!upstream.body) return res.end();
@@ -380,6 +458,7 @@ export function createConnectorServer(options = {}) {
       if (req.method === "POST" && url.pathname === EXCHANGE_PATH) return exchange(req, res);
       if (url.pathname.startsWith("/admin/")) return handleAdmin(req, res, url);
       if (req.method === "POST" && url.pathname === "/v1/ekho/thread-title") return threadTitle(req, res);
+      if (url.pathname === "/v1/ekho/notifications") return await notifications(req, res);
       const attachmentRoute = url.pathname.match(/^\/v1\/ekho\/attachments(?:\/([a-f0-9-]{36}))?$/);
       if (attachmentRoute) return await attachmentRequest(req, res, attachmentRoute[1]);
       if (url.pathname === "/v1/inbox") return await inbox(req, res);
@@ -392,8 +471,17 @@ export function createConnectorServer(options = {}) {
   return {
     server,
     store,
-    async start() { await store.load(); await new Promise((resolve, reject) => { server.once("error", reject); server.listen(port, host, resolve); }); return server.address(); },
-    async close() { await new Promise((resolve, reject) => server.close((cause) => cause ? reject(cause) : resolve())); },
+    async start() {
+      const state = await store.load();
+      notificationMonitor = createRunNotificationMonitor({ store, agentId: state.agent_id, fetchRun, sendPush, pollInterval: options.notificationPollInterval });
+      await notificationMonitor.registrationsChanged();
+      await new Promise((resolve, reject) => { server.once("error", reject); server.listen(port, host, resolve); });
+      return server.address();
+    },
+    async close() {
+      notificationMonitor?.close();
+      await new Promise((resolve, reject) => server.close((cause) => cause ? reject(cause) : resolve()));
+    },
   };
 }
 

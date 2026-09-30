@@ -32,3 +32,9 @@ Paired devices can `POST /v1/ekho/attachments` with JSON `{ "name": "notes.txt",
 The mobile app includes saved attachment paths and metadata in the Runs API input. Hermes must run on the same machine and be able to read these files; image understanding requires its image-reading tool. Message attachments are not uploaded to a public bucket. Existing connectors must be updated before mobile attachment sends work.
 
 Paired devices read `GET /v1/inbox` and update `PATCH /v1/inbox` with `{ "settled": { "session-id": 123 } }`. Timestamps are session activity times in seconds; `null` explicitly reopens a thread. The connector saves this ledger in its existing state file, shared by all paired devices. Optional `"importOnly": true` fills missing entries without overriding existing timestamps or reopen markers. Update/restart the connector and update the app to enable this; opening the updated app on an existing device migrates its local settled threads. Other devices pick up changes when connecting or returning to the foreground.
+
+# Push notifications
+
+Set `EKHO_EXPO_PUSH_URL=https://exp.host/--/api/v2/push/send` on the connector host to enable push delivery. If the Expo project uses push access-token security, also set `EKHO_EXPO_ACCESS_TOKEN`.
+
+Paired devices manage their own registration at `GET|PUT|DELETE /v1/ekho/notifications`. The connector stores the Expo push token in its mode-0600 state file and never returns it from the device admin API. It polls only runs accepted while at least one device is registered. Completion and failure notifications contain agent, session, and run IDs. Approval notifications open Ekho for review and do not expose an approval action.

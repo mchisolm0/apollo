@@ -62,6 +62,7 @@ test('concurrent threads retain independent streams, controls, and saved run IDs
     // Open subscriptions arm a quiet-stream check; it must not keep the test process alive.
     setTimeout: (callback: () => void, ms?: number) => setTimeout(callback, ms).unref(),
     require: (id: string) => {
+      if (id === '@/features/notifications/notifications') return {};
       if (id === 'react-native') return { AppState: {} };
       if (id === './catalog') return {};
       if (id === './pairing') return { PairingClient: class {} };
