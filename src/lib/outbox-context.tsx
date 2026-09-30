@@ -9,6 +9,7 @@ import type { DraftAttachment } from './attachments';
 import { useEkho } from './ekho-context';
 import { createOutboxRuntime, type OutboxSnapshot } from './outbox';
 import { isRunActive } from './run-state';
+import { isJsonObject } from './protocol';
 
 type Outbox = ReturnType<typeof createOutboxRuntime>;
 type QueueInput = { id?: string; agentId: string; sessionId?: string; createsSession?: boolean; text: string; model?: string; instructions?: string; attachments: readonly DraftAttachment[] };
@@ -34,6 +35,18 @@ export function OutboxProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     const queue = createOutboxRuntime({
       storage: AsyncStorage,
+      referencedMessageIds: async () => {
+        const keys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith('ekho.draft.v2.'));
+        const drafts = await AsyncStorage.multiGet(keys);
+        return drafts.flatMap(([, saved]) => {
+          const record: unknown = saved === null ? null : JSON.parse(saved);
+          if (record !== null && !isJsonObject(record)) throw new Error('Saved draft is invalid.');
+          const prepared = isJsonObject(record) ? record.prepared : undefined;
+          if (prepared === undefined) return [];
+          if (!isJsonObject(prepared) || typeof prepared.id !== 'string') throw new Error('Saved draft identity is invalid.');
+          return [prepared.id];
+        });
+      },
       canSend: (message) => {
         const { agents, runtime, loading } = api.current;
         const state = runtime[message.agentId];

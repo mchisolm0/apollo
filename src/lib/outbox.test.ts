@@ -1,9 +1,32 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createOutboxRuntime, decodeOutbox, type OutboxDependencies, type QueuedMessage } from './outbox.ts';
+import { canReplayMessage, createOutboxRuntime, decodeOutbox, type OutboxDependencies, type QueuedMessage } from './outbox.ts';
 
 const first = { id: 'message-one', agentId: 'agent-one', sessionId: 'thread-one', createsSession: false, text: 'Do the work', attachments: [] };
+
+test('a backward clock requires review before replaying an ambiguous send', () => {
+  const message: QueuedMessage = { ...first, createdAt: 1000, firstAttemptAt: 1000, state: 'queued', attempts: 1 };
+  assert.equal(canReplayMessage(message, 999), false);
+  assert.equal(canReplayMessage({ ...message, acceptedRunId: 'accepted' }, 999), true);
+});
+
+test('receipt compaction preserves stale drafts and keeps all receipts when drafts cannot be read', async () => {
+  for (const unreadable of [false, true]) {
+    const completed = [first.id, ...Array.from({ length: 256 }, (_, i) => `old-${i}`)];
+    let stored = JSON.stringify({ items: [], completed });
+    const setup = fixture({
+      storage: { getItem: async () => stored, setItem: async (_, value) => { stored = value; } },
+      referencedMessageIds: async () => { if (unreadable) throw new Error('unreadable draft'); return [first.id]; },
+    });
+    const outbox = createOutboxRuntime(setup.dependencies);
+    await outbox.enqueue(first);
+    await outbox.drain();
+    assert.deepEqual(setup.sent, []);
+    assert.deepEqual(JSON.parse(stored).completed, unreadable ? completed : [first.id]);
+    await outbox.dispose();
+  }
+});
 
 test('forgetting an agent discards its queued attachments after persistence', async () => {
   const discarded: string[] = [];
