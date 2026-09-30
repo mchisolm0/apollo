@@ -10,7 +10,7 @@ import { RunScreen, relayColors } from '@/features/relay';
 import { showSessionActions } from '@/features/relay/session-actions';
 import { useSessionInbox } from '@/features/relay/use-session-inbox';
 import { canSettleSession } from '@/features/relay/session-inbox';
-import { createTranscriptProjector } from '@/features/relay/transcript';
+import { createTranscriptProjector, type TranscriptRow } from '@/features/relay/transcript';
 import { selectedSkillNames } from '@/features/relay/composer-skills';
 import { useSessionDraft } from '@/features/relay/use-session-draft';
 import { useEkho } from '@/lib';
@@ -35,7 +35,12 @@ function Session({ id, agentId }: { id: string; agentId: string }) {
   const [localError, setLocalError] = useState<string>();
   const [loading, setLoading] = useState(id !== 'new');
   const [acting, setActing] = useState(false);
-  const [sendingText, setSendingText] = useState<string>();
+  const [sending, setSending] = useState<{ text: string; startedAt: number }>();
+  // Shown until the run exists: the message being sent and a "Starting" activity timed from the tap.
+  const sendingRows = useMemo<readonly TranscriptRow[]>(() => sending ? [
+    { id: 'sending-message', kind: 'user', text: sending.text, status: 'running' },
+    { id: 'sending-activity', kind: 'activity', status: 'running', phase: 'starting', steps: [], startedAt: sending.startedAt },
+  ] : [], [sending]);
   const actionLock = useRef(false);
   const pickerLock = useRef(false);
   const [picking, setPicking] = useState(false);
@@ -103,7 +108,7 @@ function Session({ id, agentId }: { id: string; agentId: string }) {
   const allEvents = state?.events ?? noEvents;
   const live = runId ? allEvents.filter((event) => event.runId === runId) : noEvents;
   const history = resolvedId ? messages[`${agentId}:${resolvedId}`] ?? noMessages : noMessages;
-  const events = project({ history, events: live, runId: run?.runId, runStartedAt: run?.createdAt, runOutput: run?.output, running });
+  const events = project({ history, events: live, runId: run?.runId, runStartedAt: run?.createdAt, runEndedAt: run?.updatedAt, runStatus: run?.status, runOutput: run?.output, running });
   const request = currentApproval(live, run);
   const command = typeof request?.command === 'string' ? request.command : typeof request?.preview === 'string' ? request.preview : undefined;
   const approval = command ? {
@@ -120,7 +125,7 @@ function Session({ id, agentId }: { id: string; agentId: string }) {
     setLocalError(undefined);
     try { await operation(); }
     catch (error) { setLocalError(error instanceof Error ? error.message : 'The action failed. Try again.'); }
-    finally { actionLock.current = false; setActing(false); setSendingText(undefined); }
+    finally { actionLock.current = false; setActing(false); setSending(undefined); }
   };
 
   const pick = async (kind: 'photos' | 'files') => {
@@ -155,7 +160,7 @@ function Session({ id, agentId }: { id: string; agentId: string }) {
     const instructions = requestedSkills.length
       ? `The user explicitly selected these installed skills: ${JSON.stringify(requestedSkills)}. Before responding, call skill_view for each exact name and follow its instructions. The $name references in the message identify these selections. If a skill cannot be loaded, tell the user.`
       : undefined;
-    setSendingText(text || attachments.map((file) => file.name).join(', '));
+    setSending({ text: text || attachments.map((file) => file.name).join(', '), startedAt: Date.now() / 1000 });
     let sessionId = resolvedId;
     if (!sessionId) {
       sessionId = await createSession(agentId, (text || attachments[0]?.name || 'Attached files').slice(0, 72));
@@ -201,7 +206,7 @@ function Session({ id, agentId }: { id: string; agentId: string }) {
       <RunScreen
         session={{ id: resolvedId ?? 'new', agentId, title: session?.title?.trim() || 'New thread', updatedAt: '' }}
         agentName={agent.label}
-        events={sendingText && !running ? [...events, { id: 'sending-message', kind: 'user', text: sendingText, status: 'running' }] : events}
+        events={sendingRows.length && !running ? [...events, ...sendingRows] : events}
         connection={connection}
         approval={approval}
         draft={draft}

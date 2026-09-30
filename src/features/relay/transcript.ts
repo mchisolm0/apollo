@@ -1,66 +1,112 @@
 import { eventTransportIdentity } from '../../lib/run-state.ts';
-import type { HermesMessage, HermesRunEvent } from '../../lib/types';
+import type { HermesMessage, HermesRunEvent, HermesRunState } from '../../lib/types';
+import { toSeconds, toolTarget } from './activity.ts';
 
 export type TranscriptStatus = 'running' | 'complete' | 'failed';
 
-export interface TranscriptTool {
+/** One tool call. `input` is the call's target (command, path, query), `output` its result preview. */
+export interface TranscriptToolStep {
   readonly id: string;
+  readonly kind: 'tool';
   readonly name: string;
-  readonly text: string;
+  readonly input: string;
+  readonly output: string;
   readonly status: TranscriptStatus;
+  /** Seconds, when Hermes reported it. */
+  readonly duration?: number;
 }
+
+/** Commentary the agent wrote mid-turn, before its final answer. */
+export interface TranscriptNoteStep {
+  readonly id: string;
+  readonly kind: 'note';
+  readonly text: string;
+}
+
+/** Reasoning text the provider chose to expose. */
+export interface TranscriptThoughtStep {
+  readonly id: string;
+  readonly kind: 'thought';
+  readonly text: string;
+}
+
+export type TranscriptStep = TranscriptToolStep | TranscriptNoteStep | TranscriptThoughtStep;
 
 export interface TranscriptMessageRow {
   readonly id: string;
   readonly kind: 'user' | 'assistant' | 'error';
   readonly text: string;
   readonly status?: TranscriptStatus;
+  /** Unix seconds or milliseconds, from durable history. */
+  readonly timestamp?: number;
 }
 
-export interface TranscriptWorkRow {
+export type ActivityStatus = TranscriptStatus | 'stopped';
+
+/** Run states worth naming while a turn is active. `starting` covers the send before a run exists. */
+export type ActivityPhase = 'starting' | 'working' | 'approval' | 'stopping';
+
+/**
+ * Everything the agent did during one turn before its final answer, folded
+ * into a single row. A running turn always has one, even before any step.
+ */
+export interface TranscriptActivityRow {
   readonly id: string;
-  readonly kind: 'work';
-  readonly summary: string;
-  readonly status: TranscriptStatus;
-  readonly items: readonly TranscriptTool[];
+  readonly kind: 'activity';
+  readonly status: ActivityStatus;
+  readonly phase?: ActivityPhase;
+  readonly steps: readonly TranscriptStep[];
+  readonly startedAt?: number;
+  readonly endedAt?: number;
 }
 
-export type TranscriptRow = TranscriptMessageRow | TranscriptWorkRow;
+export type TranscriptRow = TranscriptMessageRow | TranscriptActivityRow;
 
 export interface TranscriptProjectionInput {
   readonly history: readonly HermesMessage[];
   readonly events: readonly HermesRunEvent[];
   readonly runId?: string;
-  /** Unix seconds or milliseconds, used to distinguish an older equal answer. */
+  /** Unix seconds or milliseconds, used to distinguish an older equal answer and to time the turn. */
   readonly runStartedAt?: number;
+  /** Last status change of the current run; ends the timer of a settled live turn. */
+  readonly runEndedAt?: number;
+  readonly runStatus?: HermesRunState;
   readonly runOutput?: string;
   readonly running: boolean;
 }
 
 export type TranscriptProjector = (input: TranscriptProjectionInput) => readonly TranscriptRow[];
 
+type WorkStep = TranscriptToolStep | TranscriptThoughtStep;
+
+// Tool calls and reasoning between messages, before a turn folds them into its activity.
+interface WorkRow {
+  readonly id: string;
+  readonly kind: 'work';
+  readonly steps: readonly WorkStep[];
+}
+
+type FlatRow = TranscriptMessageRow | WorkRow;
+
 type MessageDescriptor = {
   readonly key: string;
   readonly kind: 'user' | 'assistant' | 'error';
   readonly text: string;
   readonly status: TranscriptStatus;
+  readonly timestamp?: number;
 };
-
-type ToolDescriptor = TranscriptTool & { readonly key: string };
 
 type WorkDescriptor = {
   readonly key: string;
   readonly kind: 'work';
-  readonly summary: string;
-  readonly status: TranscriptStatus;
-  readonly items: readonly ToolDescriptor[];
+  readonly steps: readonly WorkStep[];
 };
 
 type RowDescriptor = MessageDescriptor | WorkDescriptor;
 
 type HistoryCache = {
   readonly keys: readonly string[];
-  readonly rows: readonly TranscriptRow[];
+  readonly rows: readonly FlatRow[];
   readonly lastAssistantText?: string;
   readonly lastAssistantId?: string;
   readonly lastAssistantTimestamp?: number;
@@ -77,11 +123,17 @@ type LiveAtom =
   | {
       kind: 'tool';
       key: string;
-      id: string;
       name: string;
-      text: string;
+      input: string;
+      output: string;
       status: TranscriptStatus;
+      duration?: number;
       identity?: string;
+    }
+  | {
+      kind: 'thought';
+      key: string;
+      text: string;
     }
   | {
       kind: 'error';
@@ -94,7 +146,7 @@ type LiveCache = {
   readonly keys: readonly string[];
   readonly runKey: string;
   readonly atoms: readonly LiveAtom[];
-  readonly rows: readonly TranscriptRow[];
+  readonly rows: readonly FlatRow[];
   readonly failed: boolean;
   readonly terminal: boolean;
 };
@@ -105,16 +157,16 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function field(value: HermesRunEvent | Record<string, unknown>, ...names: readonly string[]): string | undefined {
   for (const name of names) {
     const candidate = stringValue(value[name]);
     if (candidate) return candidate;
   }
   return undefined;
-}
-
-function messageText(message: HermesMessage): string {
-  return message.content ?? message.reasoningContent ?? message.reasoning ?? EMPTY;
 }
 
 function statusForMessage(message: HermesMessage, kind: MessageDescriptor['kind']): TranscriptStatus {
@@ -129,12 +181,8 @@ function messageKey(message: HermesMessage, index: number, occurrence: number): 
 }
 
 function historyFingerprint(message: HermesMessage, index: number): string {
-  const calls = message.toolCalls?.map((call) => `${toolIdentity(call) ?? ''}:${toolName(call)}:${toolText(call)}`).join('|') ?? '';
-  return [message.id ?? `index-${index}`, message.role, message.content, message.reasoningContent, message.reasoning, message.toolCallId, message.toolName, calls].map((value) => value ?? '').join('\u001f');
-}
-
-function toolName(value: Record<string, unknown>, fallback = 'tool'): string {
-  return field(value, 'name', 'tool', 'tool_name', 'toolName') ?? fallback;
+  const calls = message.toolCalls?.map((call) => `${toolIdentity(call) ?? ''}:${callName(call) ?? ''}:${JSON.stringify(callArguments(call))}`).join('|') ?? '';
+  return [message.id ?? `index-${index}`, message.timestamp, message.role, message.content, message.reasoningContent, message.reasoning, message.toolCallId, message.toolName, calls].map((value) => value ?? '').join('\u001f');
 }
 
 function toolText(value: Record<string, unknown>): string {
@@ -145,57 +193,70 @@ function toolIdentity(value: Record<string, unknown>): string | undefined {
   return field(value, 'tool_call_id', 'toolCallId', 'call_id', 'callId', 'id');
 }
 
-function workStatus(items: readonly { status: TranscriptStatus }[]): TranscriptStatus {
-  if (items.some((item) => item.status === 'failed')) return 'failed';
-  if (items.some((item) => item.status === 'running')) return 'running';
-  return 'complete';
+// Durable tool calls use the OpenAI shape: { id, function: { name, arguments } }.
+function callName(call: Record<string, unknown>): string | undefined {
+  return field(call, 'name', 'tool', 'tool_name', 'toolName') ?? (isRecord(call.function) ? stringValue(call.function.name) : undefined);
 }
 
-export function friendlyToolName(name: string): string {
-  return name.replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+function callArguments(call: Record<string, unknown>): Record<string, unknown> {
+  const raw = isRecord(call.function) ? call.function.arguments : call.arguments;
+  if (isRecord(raw)) return raw;
+  if (typeof raw !== 'string') return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return isRecord(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
-function shortText(text: string): string {
-  const compact = text.trim().replace(/\s+/g, ' ');
-  return compact.length > 100 ? `${compact.slice(0, 97)}…` : compact;
+/** Hermes tool results are JSON; a failed call reports success: false, an error, or a non-zero exit code. */
+function resultFailed(content: string | undefined): boolean {
+  if (!content?.trimStart().startsWith('{')) return false;
+  try {
+    const result: unknown = JSON.parse(content);
+    if (!isRecord(result)) return false;
+    return result.success === false || Boolean(stringValue(result.error)) || (typeof result.exit_code === 'number' && result.exit_code !== 0);
+  } catch {
+    return false;
+  }
 }
 
-function workSummary(items: readonly { name: string; text: string; status: TranscriptStatus }[]): string {
-  const running = items.findLast((item) => item.status === 'running');
-  if (running) return shortText(running.text) ? `Running ${shortText(running.text)}` : `Running ${friendlyToolName(running.name)}`;
-  if (items.some((item) => item.status === 'failed')) return `Failed ${friendlyToolName(items.findLast((item) => item.status === 'failed')?.name ?? 'tool')}`;
-  return items.length === 1 ? `Completed ${friendlyToolName(items[0].name)}` : `${items.length} tools completed`;
+function sameStep(previous: TranscriptStep, next: TranscriptStep): boolean {
+  if (previous.id !== next.id || previous.kind !== next.kind) return false;
+  if (previous.kind === 'tool' && next.kind === 'tool') {
+    return previous.name === next.name && previous.input === next.input && previous.output === next.output && previous.status === next.status && previous.duration === next.duration;
+  }
+  return previous.kind !== 'tool' && next.kind !== 'tool' && previous.text === next.text;
 }
 
-function descriptorsToRows(descriptors: readonly RowDescriptor[], previous: readonly TranscriptRow[] = []): readonly TranscriptRow[] {
-  const previousByKey = new Map<string, TranscriptRow>();
+/** Reuse unchanged step objects so memoized rows skip re-rendering. */
+function stableSteps<T extends TranscriptStep>(next: readonly T[], previous: readonly TranscriptStep[]): readonly T[] {
+  const prior = new Map(previous.map((step) => [step.id, step]));
+  return next.map((step) => {
+    const match = prior.get(step.id);
+    return match && sameStep(match, step) ? match as T : step;
+  });
+}
+
+function sameSteps(previous: readonly TranscriptStep[], next: readonly TranscriptStep[]): boolean {
+  return previous.length === next.length && next.every((step, index) => step === previous[index]);
+}
+
+function descriptorsToRows(descriptors: readonly RowDescriptor[], previous: readonly FlatRow[] = []): readonly FlatRow[] {
+  const previousByKey = new Map<string, FlatRow>();
   for (const row of previous) previousByKey.set(row.id, row);
 
   return descriptors.map((descriptor) => {
     const id = descriptor.key;
     const prior = previousByKey.get(id);
     if (descriptor.kind === 'work') {
-      if (prior?.kind === 'work' && sameWork(prior, descriptor)) return prior;
-      const priorItems = prior?.kind === 'work' ? prior.items : [];
-      const items = descriptor.items.map((item, index) => {
-        const priorItem = priorItems[index];
-        if (priorItem && priorItem.id === item.id && priorItem.name === item.name && priorItem.text === item.text && priorItem.status === item.status) {
-          return priorItem;
-        }
-        return { id: item.id, name: item.name, text: item.text, status: item.status } satisfies TranscriptTool;
-      });
-      return { id, kind: 'work', summary: descriptor.summary, status: descriptor.status, items } satisfies TranscriptWorkRow;
+      const steps = stableSteps(descriptor.steps, prior?.kind === 'work' ? prior.steps : []);
+      if (prior?.kind === 'work' && sameSteps(prior.steps, steps)) return prior;
+      return { id, kind: 'work', steps } satisfies WorkRow;
     }
-    if (prior?.kind === descriptor.kind && prior.text === descriptor.text && prior.status === descriptor.status) return prior;
-    return { id, kind: descriptor.kind, text: descriptor.text, status: descriptor.status } satisfies TranscriptMessageRow;
-  });
-}
-
-function sameWork(prior: TranscriptWorkRow, next: WorkDescriptor): boolean {
-  if (prior.summary !== next.summary || prior.status !== next.status || prior.items.length !== next.items.length) return false;
-  return next.items.every((item, index) => {
-    const previous = prior.items[index];
-    return previous.id === item.id && previous.name === item.name && previous.text === item.text && previous.status === item.status;
+    if (prior?.kind === descriptor.kind && prior.text === descriptor.text && prior.status === descriptor.status && prior.timestamp === descriptor.timestamp) return prior;
+    return { id, kind: descriptor.kind, text: descriptor.text, status: descriptor.status, timestamp: descriptor.timestamp } satisfies TranscriptMessageRow;
   });
 }
 
@@ -205,61 +266,45 @@ function buildHistory(history: readonly HermesMessage[], previous?: HistoryCache
 
   const descriptors: RowDescriptor[] = [];
   const seenToolIds = new Map<string, number>();
-  const toolPositions = new Map<string, { descriptorIndex: number; itemIndex: number }>();
+  const toolPositions = new Map<string, { descriptorIndex: number; stepIndex: number }>();
   const messageOccurrences = new Map<string, number>();
-  const pushTool = (baseKey: string, value: Record<string, unknown>, index: number, status: TranscriptStatus) => {
-    const identity = toolIdentity(value);
-    if (identity) {
-      const position = toolPositions.get(identity);
-      if (position) {
-        const work = descriptors[position.descriptorIndex];
-        if (work?.kind === 'work') {
-          const items = [...work.items];
-          const existing = items[position.itemIndex];
-          if (existing) {
-            items[position.itemIndex] = {
-              ...existing,
-              name: toolName(value, existing.name),
-              text: toolText(value) || existing.text,
-              status,
-            };
-            descriptors[position.descriptorIndex] = {
-              ...work,
-              summary: workSummary(items),
-              status: workStatus(items),
-              items,
-            };
-            return;
-          }
-        }
-      }
-    }
-    const identityCount = identity ? (seenToolIds.get(identity) ?? 0) : 0;
-    if (identity) {
-      seenToolIds.set(identity, identityCount + 1);
-    }
-    const id = `history-tool-${identity ?? `${baseKey}-${index}`}-${identityCount}`;
-    const item: ToolDescriptor = {
-      key: id,
-      id,
-      name: toolName(value),
-      text: toolText(value),
-      status,
-    };
+  const pushStep = (step: WorkStep, identity?: string) => {
     const last = descriptors.at(-1);
     if (last?.kind === 'work') {
-      const descriptorIndex = descriptors.length - 1;
-      descriptors[descriptors.length - 1] = {
-        ...last,
-        key: last.key,
-        summary: workSummary([...last.items, item]),
-        status: workStatus([...last.items, item]),
-        items: [...last.items, item],
-      };
-      if (identity) toolPositions.set(identity, { descriptorIndex, itemIndex: last.items.length });
+      descriptors[descriptors.length - 1] = { ...last, steps: [...last.steps, step] };
+      if (identity) toolPositions.set(identity, { descriptorIndex: descriptors.length - 1, stepIndex: last.steps.length });
     } else {
-      descriptors.push({ key: `history-work-${id}`, kind: 'work', summary: workSummary([item]), status, items: [item] });
-      if (identity) toolPositions.set(identity, { descriptorIndex: descriptors.length - 1, itemIndex: 0 });
+      descriptors.push({ key: `history-work-${step.id}`, kind: 'work', steps: [step] });
+      if (identity) toolPositions.set(identity, { descriptorIndex: descriptors.length - 1, stepIndex: 0 });
+    }
+  };
+  // A call and its result arrive as separate messages; the shared call id merges them into one step.
+  const pushTool = (baseKey: string, call: { identity?: string; name?: string; input?: string; output?: string }, index: number, status: TranscriptStatus) => {
+    const { identity } = call;
+    const position = identity ? toolPositions.get(identity) : undefined;
+    const work = position ? descriptors[position.descriptorIndex] : undefined;
+    const existing = position && work?.kind === 'work' ? work.steps[position.stepIndex] : undefined;
+    if (position && work?.kind === 'work' && existing?.kind === 'tool') {
+      const steps = [...work.steps];
+      steps[position.stepIndex] = {
+        ...existing,
+        name: call.name ?? existing.name,
+        input: call.input || existing.input,
+        output: call.output || existing.output,
+        status,
+      };
+      descriptors[position.descriptorIndex] = { ...work, steps };
+      return;
+    }
+    const identityCount = identity ? (seenToolIds.get(identity) ?? 0) : 0;
+    if (identity) seenToolIds.set(identity, identityCount + 1);
+    const id = `history-tool-${identity ?? `${baseKey}-${index}`}-${identityCount}`;
+    pushStep({ id, kind: 'tool', name: call.name ?? 'tool', input: call.input ?? EMPTY, output: call.output ?? EMPTY, status }, identity);
+  };
+  const pushCalls = (key: string, message: HermesMessage) => {
+    for (const [toolIndex, rawCall] of message.toolCalls?.entries() ?? []) {
+      const name = callName(rawCall);
+      pushTool(key, { identity: toolIdentity(rawCall), name, input: (name && toolTarget(name, callArguments(rawCall))) || toolText(rawCall) }, toolIndex, 'complete');
     }
   };
 
@@ -268,42 +313,30 @@ function buildHistory(history: readonly HermesMessage[], previous?: HistoryCache
   let lastAssistantTimestamp: number | undefined;
   for (const [index, message] of history.entries()) {
     const role = message.role.toLowerCase();
-    const text = messageText(message);
+    const text = message.content ?? EMPTY;
     const identity = message.id ?? `index-${index}`;
     const occurrence = messageOccurrences.get(identity) ?? 0;
     messageOccurrences.set(identity, occurrence + 1);
     const key = messageKey(message, index, occurrence);
 
     if (role === 'tool') {
-      pushTool(key, {
-        id: message.toolCallId,
-        name: message.toolName,
-        text,
-      }, index, 'complete');
+      pushTool(key, { identity: message.toolCallId, name: message.toolName, output: text }, index, resultFailed(message.content) ? 'failed' : 'complete');
       continue;
     }
     if (role !== 'user' && role !== 'assistant' && role !== 'error') continue;
-    const kind: MessageDescriptor['kind'] = role === 'user' ? 'user' : role === 'assistant' ? 'assistant' : 'error';
-    if (!text && role !== 'error') {
-      if (role === 'assistant' && message.toolCalls) {
-        for (const [toolIndex, rawCall] of message.toolCalls.entries()) {
-          pushTool(key, rawCall, toolIndex, 'complete');
-        }
-      }
+    const reasoning = role === 'assistant' ? message.reasoningContent ?? message.reasoning : undefined;
+    if (reasoning?.trim()) pushStep({ id: `history-thought-${key}`, kind: 'thought', text: reasoning });
+    if (!text) {
+      if (role === 'assistant') pushCalls(key, message);
       continue;
     }
-    if (!text) continue;
-    const row: MessageDescriptor = { key: `history-${key}`, kind, text, status: statusForMessage(message, kind) };
-    descriptors.push(row);
+    const kind: MessageDescriptor['kind'] = role === 'user' ? 'user' : role === 'assistant' ? 'assistant' : 'error';
+    descriptors.push({ key: `history-${key}`, kind, text, status: statusForMessage(message, kind), timestamp: message.timestamp });
     if (kind === 'assistant') {
       lastAssistantText = text;
       lastAssistantId = message.id;
       lastAssistantTimestamp = message.timestamp;
-    }
-    if (role === 'assistant' && message.toolCalls) {
-      for (const [toolIndex, rawCall] of message.toolCalls.entries()) {
-        pushTool(key, rawCall, toolIndex, 'complete');
-      }
+      pushCalls(key, message);
     }
   }
 
@@ -322,10 +355,10 @@ function eventKey(event: HermesRunEvent): string {
     eventIdentity(event),
     field(event, 'delta'),
     field(event, 'message_id', 'messageId'),
+    event.error === true ? 'error' : undefined,
   ];
   return fields.map((value) => value ?? '').join('\u001f');
 }
-
 
 function eventIdentity(event: HermesRunEvent): string | undefined {
   return field(event, 'tool_call_id', 'toolCallId', 'call_id', 'callId', 'id');
@@ -371,26 +404,30 @@ function matchingTool(atoms: readonly LiveAtom[], identity: string | undefined, 
   return -1;
 }
 
+// tool.started carries the call's target as `preview`; tool.completed carries duration and, on newer Hermes, a result preview.
 function pushLiveTool(atoms: LiveAtom[], event: HermesRunEvent, runKey: string, ordinal: number): void {
   const name = eventToolName(event);
   const identity = eventIdentity(event);
   const transition = event.error ? 'fail' : toolTransition(eventType(event));
+  const text = eventText(event);
+  const duration = typeof event.duration === 'number' && Number.isFinite(event.duration) ? event.duration : undefined;
   const existingIndex = matchingTool(atoms, identity, name, transition !== 'start');
   if (existingIndex >= 0) {
     const existing = atoms[existingIndex];
     if (existing.kind !== 'tool') return;
-    const text = eventText(event);
     atoms[existingIndex] = {
       ...existing,
       name: name === 'tool' ? existing.name : name,
-      text: text || existing.text,
-      status: transition === 'fail' ? 'failed' : transition === 'complete' ? 'complete' : transition === 'start' ? existing.status : existing.status,
+      input: transition === 'start' ? text || existing.input : existing.input,
+      output: transition === 'start' ? existing.output : text || existing.output,
+      duration: duration ?? existing.duration,
+      status: transition === 'fail' ? 'failed' : transition === 'complete' ? 'complete' : existing.status,
     };
     return;
   }
   const status: TranscriptStatus = transition === 'start' ? 'running' : transition === 'fail' ? 'failed' : 'complete';
-  const id = `live-${runKey}-tool-${identity ?? ordinal}`;
-  atoms.push({ kind: 'tool', key: id, id, identity, name, text: eventText(event), status });
+  const started = transition === 'start';
+  atoms.push({ kind: 'tool', key: `live-${runKey}-tool-${identity ?? ordinal}`, identity, name, input: started ? text : EMPTY, output: started ? EMPTY : text, duration, status });
 }
 
 function processLiveEvent(atoms: LiveAtom[], event: HermesRunEvent, state: { assistantOrdinal: number; errorOrdinal: number; failed: boolean; terminal: boolean }, runKey: string, running: boolean, eventIndex: number): void {
@@ -408,6 +445,11 @@ function processLiveEvent(atoms: LiveAtom[], event: HermesRunEvent, state: { ass
       state.assistantOrdinal += 1;
       atoms.push({ kind: 'assistant', key, text: delta, status: running ? 'running' : 'complete', messageId });
     }
+    return;
+  }
+  if (type === 'reasoning.available') {
+    const text = eventText(event);
+    if (text.trim()) atoms.push({ kind: 'thought', key: `live-${runKey}-thought-${eventIndex}`, text });
     return;
   }
   if (isToolEvent(type)) {
@@ -429,16 +471,15 @@ function processLiveEvent(atoms: LiveAtom[], event: HermesRunEvent, state: { ass
     state.terminal = true;
     for (let index = 0; index < atoms.length; index += 1) {
       const atom = atoms[index];
-      if (atom.kind === 'assistant' && atom.status === 'running') atoms[index] = { ...atom, status: 'complete' };
-      if (atom.kind === 'tool' && atom.status === 'running') atoms[index] = { ...atom, status: 'complete' };
+      if ((atom.kind === 'assistant' || atom.kind === 'tool') && atom.status === 'running') atoms[index] = { ...atom, status: 'complete' };
     }
     const output = field(event, 'output', 'final_response');
     if (output) {
       // The final response also rides the terminal event for clients whose
       // stream missed deltas; it replaces whatever partial text the stream delivered.
+      // Hermes reports reasoning after the response it belongs to, so only tools bound the answer.
       const lastToolIndex = atoms.findLastIndex((atom) => atom.kind === 'tool');
-      const base = lastToolIndex < 0 ? -1 : lastToolIndex;
-      const answerIndex = atoms.findLastIndex((atom, index) => index > base && atom.kind === 'assistant');
+      const answerIndex = atoms.findLastIndex((atom, index) => index > lastToolIndex && atom.kind === 'assistant');
       if (answerIndex < 0) {
         atoms.push({ kind: 'assistant', key: `live-${runKey}-assistant-${state.assistantOrdinal++}`, text: output, status: 'complete' });
       } else {
@@ -449,6 +490,11 @@ function processLiveEvent(atoms: LiveAtom[], event: HermesRunEvent, state: { ass
       }
     }
   }
+}
+
+function atomStep(atom: LiveAtom & { kind: 'tool' | 'thought' }): WorkStep {
+  if (atom.kind === 'thought') return { id: atom.key, kind: 'thought', text: atom.text };
+  return { id: atom.key, kind: 'tool', name: atom.name, input: atom.input, output: atom.output, status: atom.status, duration: atom.duration };
 }
 
 function buildLive(events: readonly HermesRunEvent[], runId: string | undefined, running: boolean, previous?: LiveCache): LiveCache {
@@ -483,25 +529,17 @@ function buildLive(events: readonly HermesRunEvent[], runId: string | undefined,
   if (!running && !state.failed) {
     for (let index = 0; index < atoms.length; index += 1) {
       const atom = atoms[index];
-      if (atom.status === 'running') atoms[index] = { ...atom, status: 'complete' };
+      if ((atom.kind === 'assistant' || atom.kind === 'tool') && atom.status === 'running') atoms[index] = { ...atom, status: 'complete' };
     }
   }
 
   const descriptors: RowDescriptor[] = [];
   for (const atom of atoms) {
-    if (atom.kind === 'tool') {
-      const item: ToolDescriptor = { key: atom.key, id: atom.id, name: atom.name, text: atom.text, status: atom.status };
+    if (atom.kind === 'tool' || atom.kind === 'thought') {
+      const step = atomStep(atom);
       const last = descriptors.at(-1);
-      if (last?.kind === 'work') {
-        descriptors[descriptors.length - 1] = {
-          ...last,
-          summary: workSummary([...last.items, item]),
-          status: workStatus([...last.items, item]),
-          items: [...last.items, item],
-        };
-      } else {
-      descriptors.push({ key: `live-work-${atom.key}`, kind: 'work', summary: workSummary([item]), status: item.status, items: [item] });
-      }
+      if (last?.kind === 'work') descriptors[descriptors.length - 1] = { ...last, steps: [...last.steps, step] };
+      else descriptors.push({ key: `live-work-${atom.key}`, kind: 'work', steps: [step] });
     } else {
       descriptors.push({ key: atom.key, kind: atom.kind, text: atom.text, status: atom.status });
     }
@@ -509,14 +547,10 @@ function buildLive(events: readonly HermesRunEvent[], runId: string | undefined,
   return { keys, runKey, atoms, rows: descriptorsToRows(descriptors, previous?.rows), failed: state.failed, terminal: state.terminal };
 }
 
-function seconds(value: number): number {
-  return value > 100_000_000_000 ? value / 1000 : value;
-}
-
-function withoutReplay(history: HistoryCache, live: LiveCache, input: TranscriptProjectionInput): readonly TranscriptRow[] {
+function withoutReplay(history: HistoryCache, live: LiveCache, input: TranscriptProjectionInput): readonly FlatRow[] {
   const currentRunFinal = input.runStartedAt !== undefined
     && history.lastAssistantTimestamp !== undefined
-    && seconds(history.lastAssistantTimestamp) >= seconds(input.runStartedAt);
+    && toSeconds(history.lastAssistantTimestamp) >= toSeconds(input.runStartedAt);
   if (!input.running && currentRunFinal && input.runOutput && history.lastAssistantText === input.runOutput) return history.rows;
   const liveRows = [...live.rows];
   const lastAssistantIndex = liveRows.findLastIndex((row) => row.kind === 'assistant');
@@ -525,93 +559,73 @@ function withoutReplay(history: HistoryCache, live: LiveCache, input: Transcript
     const hasExplicitMatch = live.atoms.some((atom) => atom.kind === 'assistant' && atom.messageId && atom.messageId === history.lastAssistantId);
     const currentRunFinal = input.runStartedAt !== undefined
       && history.lastAssistantTimestamp !== undefined
-      && seconds(history.lastAssistantTimestamp) >= seconds(input.runStartedAt) - 1;
+      && toSeconds(history.lastAssistantTimestamp) >= toSeconds(input.runStartedAt) - 1;
     if (live.terminal && (hasExplicitMatch || currentRunFinal)) return history.rows;
     if (hasExplicitMatch || (live.terminal && history.rows.at(-1)?.kind === 'assistant')) liveRows.splice(lastAssistantIndex, 1);
   }
   return [...history.rows, ...liveRows];
 }
 
-function sameTranscriptItems(previous: readonly TranscriptTool[], next: readonly TranscriptTool[]): boolean {
-  return previous.length === next.length && next.every((item, index) => {
-    const prior = previous[index];
-    return prior.id === item.id && prior.name === item.name && prior.text === item.text && prior.status === item.status;
-  });
+// A created run reports `queued` and Hermes never streams `run.started`, so queued means working.
+function activityPhase(status: HermesRunState | undefined): ActivityPhase {
+  if (status === 'waiting_for_approval') return 'approval';
+  if (status === 'stopping') return 'stopping';
+  return 'working';
 }
 
-function foldedWorkRow(id: string, items: readonly TranscriptTool[], previous: readonly TranscriptRow[]): TranscriptWorkRow {
-  const summary = `Worked through ${items.length} ${items.length === 1 ? 'step' : 'steps'}`;
-  const prior = previous.find((row) => row.id === id);
-  if (prior?.kind === 'work' && prior.summary === summary && prior.status === workStatus(items) && sameTranscriptItems(prior.items, items)) return prior;
-  const priorItems = prior?.kind === 'work' ? prior.items : [];
-  const stableItems = items.map((item, index) => {
-    const priorItem = priorItems[index];
-    return priorItem && priorItem.id === item.id && priorItem.name === item.name && priorItem.text === item.text && priorItem.status === item.status
-      ? priorItem
-      : item;
-  });
-  return { id, kind: 'work', summary, status: workStatus(items), items: stableItems };
+function settledStatus(body: readonly FlatRow[], runStatus: HermesRunState | undefined): ActivityStatus {
+  if (runStatus === 'cancelled' || runStatus === 'interrupted') return 'stopped';
+  if (runStatus === 'failed' || body.some((row) => row.kind === 'error')) return 'failed';
+  return 'complete';
 }
 
-function foldTurn(rows: readonly TranscriptRow[], start: number, end: number, previous: readonly TranscriptRow[]): readonly TranscriptRow[] {
-  const assistants = rows
-    .slice(start + 1, end)
-    .map((row, offset) => row.kind === 'assistant' ? start + 1 + offset : -1)
-    .filter((index) => index >= 0);
-  if (assistants.length < 2) return rows.slice(start, end);
-  const firstAssistant = assistants[0];
-  const finalAssistant = assistants.at(-1) ?? firstAssistant;
-  if (rows.slice(firstAssistant, finalAssistant + 1).some((row) => row.status === 'running')) return rows.slice(start, end);
-  const intermediate = rows.slice(firstAssistant + 1, finalAssistant);
-  if (!intermediate.some((row) => row.kind !== 'error')) return rows.slice(start, end);
-
-  const folded: TranscriptRow[] = [rows[start], rows[firstAssistant]];
-  let items: TranscriptTool[] = [];
-  let part = 0;
-  const flush = () => {
-    if (!items.length) return;
-    folded.push(foldedWorkRow(`fold-${rows[firstAssistant].id}-${rows[finalAssistant].id}-${part++}`, items, previous));
-    items = [];
-  };
-  for (const row of intermediate) {
-    if (row.kind === 'error') {
-      flush();
-      folded.push(row);
-      continue;
-    }
-    if (row.kind === 'work') {
-      items.push(...row.items);
-      continue;
-    }
-    items.push({
-      id: `fold-${rows[firstAssistant].id}-${rows[finalAssistant].id}-progress-${items.length}`,
-      name: 'Progress update',
-      text: row.text,
-      status: row.status ?? 'complete',
-    });
+/**
+ * Fold one turn: the user message, then a single activity row holding every
+ * tool call, thought, and interim note, then errors and the final answer.
+ * Assistant text after the last tool call stays visible; while running it may
+ * still turn into a note once another tool starts.
+ */
+function groupTurn(user: TranscriptMessageRow | undefined, body: readonly FlatRow[], current: boolean, input: TranscriptProjectionInput, previous: ReadonlyMap<string, TranscriptRow>): TranscriptRow[] {
+  // Only tool calls mark text as interim: Hermes reports reasoning after the answer it produced.
+  const lastWork = body.findLastIndex((row) => row.kind === 'work' && row.steps.some((step) => step.kind === 'tool'));
+  const steps: TranscriptStep[] = [];
+  const visible: TranscriptMessageRow[] = [];
+  for (const [index, row] of body.entries()) {
+    if (row.kind === 'work') steps.push(...row.steps);
+    else if (row.kind === 'assistant' && index < lastWork) steps.push({ id: `note-${row.id}`, kind: 'note', text: row.text });
+    else visible.push(row);
   }
-  flush();
-  folded.push(rows[finalAssistant], ...rows.slice(finalAssistant + 1, end));
-  return folded;
+  const running = current && input.running;
+  const runStatus = current ? input.runStatus : undefined;
+  const status = running ? 'running' : settledStatus(body, runStatus);
+  // A settled turn without steps only needs a row when it ended badly.
+  if (!running && !steps.length && status !== 'stopped' && !(current && runStatus === 'failed')) return user ? [user, ...visible] : [...visible];
+
+  const startedAt = (current ? input.runStartedAt : undefined) ?? user?.timestamp;
+  const endedAt = running ? undefined : body.findLast((row): row is TranscriptMessageRow => row.kind !== 'work' && row.timestamp !== undefined)?.timestamp ?? (current ? input.runEndedAt : undefined);
+  const id = `activity-${user?.id ?? 'leading'}`;
+  const prior = previous.get(id);
+  const stable = stableSteps(steps, prior?.kind === 'activity' ? prior.steps : []);
+  const phase = running ? activityPhase(runStatus) : undefined;
+  const activity: TranscriptActivityRow = prior?.kind === 'activity' && prior.status === status && prior.phase === phase && prior.startedAt === startedAt && prior.endedAt === endedAt && sameSteps(prior.steps, stable)
+    ? prior
+    : { id, kind: 'activity', status, phase, steps: stable, startedAt, endedAt };
+  return user ? [user, activity, ...visible] : [activity, ...visible];
 }
 
-function foldFinishedTurns(rows: readonly TranscriptRow[], input: TranscriptProjectionInput, previous: readonly TranscriptRow[] = []): readonly TranscriptRow[] {
-  if (!rows.length) return rows;
-  const lastUser = rows.findLastIndex((row) => row.kind === 'user');
-  const activeTurnStart = input.running ? lastUser : -1;
+function groupTurns(rows: readonly FlatRow[], input: TranscriptProjectionInput, previous: readonly TranscriptRow[]): readonly TranscriptRow[] {
+  const previousById = new Map<string, TranscriptRow>();
+  for (const row of previous) if (row.kind === 'activity') previousById.set(row.id, row);
   const output: TranscriptRow[] = [];
   let cursor = 0;
   while (cursor < rows.length) {
-    const user = rows[cursor]?.kind === 'user';
-    if (!user) {
-      output.push(rows[cursor]);
-      cursor += 1;
-      continue;
-    }
-    const end = rows.findIndex((row, index) => index > cursor && row.kind === 'user');
-    const turnEnd = end < 0 ? rows.length : end;
-    output.push(...(cursor === activeTurnStart ? rows.slice(cursor, turnEnd) : foldTurn(rows, cursor, turnEnd, previous)));
-    cursor = turnEnd;
+    const head = rows[cursor];
+    const user = head.kind === 'user' ? head : undefined;
+    const bodyStart = user ? cursor + 1 : cursor;
+    const next = rows.findIndex((row, index) => index >= bodyStart && row.kind === 'user');
+    const end = next < 0 ? rows.length : next;
+    output.push(...groupTurn(user, rows.slice(bodyStart, end), end === rows.length, input, previousById));
+    cursor = end;
   }
   return output;
 }
@@ -619,7 +633,7 @@ function foldFinishedTurns(rows: readonly TranscriptRow[], input: TranscriptProj
 export function createTranscriptProjector(): TranscriptProjector {
   let historyCache: HistoryCache | undefined;
   let liveCache: LiveCache | undefined;
-  let lastRows: readonly TranscriptRow[] | undefined;
+  let lastRows: readonly TranscriptRow[] = [];
   let lastHistoryInput: readonly HermesMessage[] | undefined;
   let lastEvents: readonly HermesRunEvent[] | undefined;
   let lastRunning: boolean | undefined;
@@ -638,9 +652,10 @@ export function createTranscriptProjector(): TranscriptProjector {
       lastRunId = input.runId;
     }
     const live = liveCache ?? buildLive(input.events, input.runId, input.running);
-    const rows = foldFinishedTurns(withoutReplay(history, live, input), input, lastRows);
-    if (lastRows && rows.length === lastRows.length && rows.every((row, index) => row === lastRows?.[index])) return lastRows;
+    const rows = groupTurns(withoutReplay(history, live, input), input, lastRows);
+    if (rows.length === lastRows.length && rows.every((row, index) => row === lastRows[index])) return lastRows;
     lastRows = rows;
     return rows;
   };
 }
+

@@ -1,36 +1,71 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createTranscriptProjector } from './transcript.ts';
+import { createTranscriptProjector, type TranscriptActivityRow, type TranscriptRow } from './transcript.ts';
 import type { HermesMessage, HermesRunEvent } from '../../lib/types.ts';
 
 const message = (value: Partial<HermesMessage> & Pick<HermesMessage, 'role'>): HermesMessage => value;
 const event = (value: Partial<HermesRunEvent> & Pick<HermesRunEvent, 'event'>): HermesRunEvent => value;
 
-test('projects messages and collapses consecutive historical tools', () => {
+function activityOf(rows: readonly TranscriptRow[]): TranscriptActivityRow {
+  const row = rows.find((candidate) => candidate.kind === 'activity');
+  if (!row || row.kind !== 'activity') assert.fail('expected an activity row');
+  return row;
+}
+
+test('folds commentary and tool calls of a finished turn into one activity row', () => {
   const rows = createTranscriptProjector()({
     history: [
-      message({ id: 'u1', role: 'user', content: 'Find the report' }),
+      message({ id: 'u1', role: 'user', content: 'Find the report', timestamp: 1000 }),
       message({ id: 'meta', role: 'system', content: 'raw protocol metadata' }),
-      message({ id: 'a1', role: 'assistant', content: 'I will look.' }),
+      message({ id: 'a1', role: 'assistant', content: 'I will look.', timestamp: 1001 }),
       message({ id: 't1', role: 'tool', toolName: 'search', content: 'searched', toolCallId: 'call-1' }),
       message({ id: 't2', role: 'tool', toolName: 'open', content: 'opened', toolCallId: 'call-2' }),
-      message({ id: 'a2', role: 'assistant', content: 'Here it is.' }),
+      message({ id: 'a2', role: 'assistant', content: 'Here it is.', timestamp: 1042 }),
     ],
     events: [],
     running: false,
   });
 
-  assert.deepEqual(rows.map((row) => row.kind), ['user', 'assistant', 'work', 'assistant']);
-  assert.equal(rows[2]?.kind, 'work');
-  if (rows[2]?.kind === 'work') {
-    assert.equal(rows[2].items.length, 2);
-    assert.deepEqual(rows[2].items.map((item) => item.name), ['search', 'open']);
-    assert.equal(rows[2].status, 'complete');
+  assert.deepEqual(rows.map((row) => row.kind), ['user', 'activity', 'assistant']);
+  const activity = activityOf(rows);
+  assert.equal(activity.status, 'complete');
+  assert.deepEqual(activity.steps.map((step) => step.kind), ['note', 'tool', 'tool']);
+  assert.deepEqual(activity.steps.map((step) => step.kind === 'tool' ? step.output : step.text), ['I will look.', 'searched', 'opened']);
+  assert.equal(activity.startedAt, 1000);
+  assert.equal(activity.endedAt, 1042);
+});
+
+test('merges durable tool calls with their results, keeping the target, reasoning, and failures', () => {
+  const rows = createTranscriptProjector()({
+    history: [
+      message({ id: 'u1', role: 'user', content: 'Run the tests' }),
+      message({
+        id: 'a1',
+        role: 'assistant',
+        reasoning: 'The suite lives in pnpm.',
+        toolCalls: [{ id: 'call-1', type: 'function', function: { name: 'terminal', arguments: '{"command":"pnpm test"}' } }],
+      }),
+      message({ id: 't1', role: 'tool', toolName: 'terminal', toolCallId: 'call-1', content: '{"output":"1 failing","exit_code":1}' }),
+      message({ id: 'a2', role: 'assistant', content: 'One test fails.' }),
+    ],
+    events: [],
+    running: false,
+  });
+
+  assert.deepEqual(rows.map((row) => row.kind), ['user', 'activity', 'assistant']);
+  const [thought, tool] = activityOf(rows).steps;
+  assert.equal(thought?.kind === 'thought' && thought.text, 'The suite lives in pnpm.');
+  assert.equal(tool?.kind, 'tool');
+  if (tool?.kind === 'tool') {
+    assert.equal(tool.name, 'terminal');
+    assert.equal(tool.input, 'pnpm test');
+    assert.equal(tool.output, '{"output":"1 failing","exit_code":1}');
+    assert.equal(tool.status, 'failed');
   }
 });
 
-test('groups live tools, preserves assistant segments around them, and collapses start/completion', () => {
+test('keeps a live tool target from its start and its duration from completion', () => {
   const events = [
     event({ event: 'message.delta', delta: 'Before ' }),
     event({ event: 'message.delta', delta: 'the tool' }),
@@ -42,14 +77,41 @@ test('groups live tools, preserves assistant segments around them, and collapses
   ];
   const rows = createTranscriptProjector()({ history: [], events, runId: 'run-1', running: true });
 
-  assert.deepEqual(rows.map((row) => row.kind), ['assistant', 'work', 'assistant']);
-  assert.notEqual(rows[0]?.id, rows[2]?.id);
-  if (rows[1]?.kind === 'work') {
-    assert.equal(rows[1].items.length, 2);
-    assert.deepEqual(rows[1].items.map((item) => item.status), ['complete', 'complete']);
-    assert.equal(rows[1].items[0]?.text, '{"query":"report"}');
-    assert.equal(rows[1].items[1]?.text, 'done');
-  }
+  assert.deepEqual(rows.map((row) => row.kind), ['activity', 'assistant']);
+  const activity = activityOf(rows);
+  assert.equal(activity.status, 'running');
+  assert.deepEqual(activity.steps.map((step) => step.kind), ['note', 'tool', 'tool']);
+  const [, search, open] = activity.steps;
+  assert.deepEqual(search?.kind === 'tool' && [search.input, search.output, search.duration, search.status], ['{"query":"report"}', '', 12, 'complete']);
+  assert.deepEqual(open?.kind === 'tool' && [open.input, open.output], ['report.md', 'done']);
+});
+
+test('moves streamed commentary into the activity once a tool follows it', () => {
+  const projector = createTranscriptProjector();
+  const history = [message({ id: 'u1', role: 'user', content: 'Check it' })];
+  const commentary = [event({ event: 'message.delta', delta: 'Checking the config first.' })];
+  const streaming = projector({ history, events: commentary, runId: 'run-1', running: true });
+  assert.deepEqual(streaming.map((row) => row.kind), ['user', 'activity', 'assistant']);
+
+  const tooling = projector({ history, events: [...commentary, event({ event: 'reasoning.available', text: 'Config first.' }), event({ event: 'tool.started', tool: 'read_file', preview: 'app.config.ts' })], runId: 'run-1', running: true });
+  assert.deepEqual(tooling.map((row) => row.kind), ['user', 'activity']);
+  assert.deepEqual(activityOf(tooling).steps.map((step) => step.kind), ['note', 'thought', 'tool']);
+});
+
+test('reasoning reported after the answer does not fold the answer into the activity', () => {
+  const rows = createTranscriptProjector()({
+    history: [message({ id: 'u1', role: 'user', content: 'Why?' })],
+    events: [
+      event({ event: 'message.delta', delta: 'Because.' }),
+      event({ event: 'reasoning.available', text: 'Short answer is enough.' }),
+      event({ event: 'run.completed', output: 'Because.' }),
+    ],
+    runId: 'run-1',
+    running: false,
+  });
+  assert.deepEqual(rows.map((row) => row.kind), ['user', 'activity', 'assistant']);
+  assert.equal(rows[2]?.kind === 'assistant' && rows[2].text, 'Because.');
+  assert.deepEqual(activityOf(rows).steps.map((step) => step.kind), ['thought']);
 });
 
 test('keeps concurrent same-name no-ID tools separate', () => {
@@ -65,13 +127,35 @@ test('keeps concurrent same-name no-ID tools separate', () => {
     running: true,
   });
 
-  assert.equal(rows.length, 1);
-  if (rows[0]?.kind === 'work') {
-    assert.equal(rows[0].items.length, 2);
-    assert.notEqual(rows[0].items[0]?.id, rows[0].items[1]?.id);
-    assert.deepEqual(rows[0].items.map((item) => item.status), ['complete', 'complete']);
-    assert.equal(rows[0].summary, '2 tools completed');
-  }
+  const steps = activityOf(rows).steps;
+  assert.equal(steps.length, 2);
+  assert.notEqual(steps[0]?.id, steps[1]?.id);
+  assert.deepEqual(steps.map((step) => step.kind === 'tool' && step.status), ['complete', 'complete']);
+});
+
+test('names the run phase while active and the outcome once stopped', () => {
+  const history = [message({ id: 'u1', role: 'user', content: 'Deploy', timestamp: 100 })];
+  const phase = (runStatus: 'queued' | 'waiting_for_approval' | 'stopping' | 'running') => activityOf(createTranscriptProjector()({ history, events: [], runId: 'run-1', runStatus, running: true })).phase;
+  assert.equal(phase('queued'), 'working');
+  assert.equal(phase('waiting_for_approval'), 'approval');
+  assert.equal(phase('stopping'), 'stopping');
+  assert.equal(phase('running'), 'working');
+
+  const stopped = createTranscriptProjector()({ history, events: [event({ event: 'run.cancelled' })], runId: 'run-1', runStatus: 'cancelled', runStartedAt: 100, runEndedAt: 112, running: false });
+  assert.deepEqual(stopped.map((row) => row.kind), ['user', 'activity']);
+  const activity = activityOf(stopped);
+  assert.deepEqual([activity.status, activity.startedAt, activity.endedAt], ['stopped', 100, 112]);
+});
+
+test('refreshed history timestamps update the turn duration', () => {
+  const projector = createTranscriptProjector();
+  const history = (end: number) => [
+    message({ id: 'u1', role: 'user', content: 'Go', timestamp: 100 }),
+    message({ id: 't1', role: 'tool', toolName: 'terminal', toolCallId: 'c1', content: 'ok' }),
+    message({ id: 'a1', role: 'assistant', content: 'Done.', timestamp: end }),
+  ];
+  assert.equal(activityOf(projector({ history: history(110), events: [], running: false })).endedAt, 110);
+  assert.equal(activityOf(projector({ history: history(142), events: [], running: false })).endedAt, 142);
 });
 
 test('switches to durable current-turn history after a terminal final match', () => {
@@ -94,33 +178,11 @@ test('switches to durable current-turn history after a terminal final match', ()
     running: false,
   });
 
-  assert.deepEqual(rows.map((row) => row.kind), ['user', 'assistant', 'work', 'assistant']);
-  assert.equal(rows.at(-1)?.kind, 'assistant');
-  assert.equal(rows.length, 4);
+  assert.deepEqual(rows.map((row) => row.kind), ['user', 'activity', 'assistant']);
+  assert.equal(activityOf(rows).steps.length, 2);
 });
 
-test('folds finished turn progress while keeping opening and final assistants visible', () => {
-  const rows = createTranscriptProjector()({
-    history: [
-      message({ id: 'u1', role: 'user', content: 'Inspect the project' }),
-      message({ id: 'a1', role: 'assistant', content: 'I am checking.' }),
-      message({ id: 't1', role: 'tool', toolName: 'list_files', content: 'src' }),
-      message({ id: 'a2', role: 'assistant', content: 'I found the relevant files.' }),
-      message({ id: 't2', role: 'tool', toolName: 'read_file', content: 'transcript.ts' }),
-      message({ id: 'a3', role: 'assistant', content: 'Here is what changed.' }),
-    ],
-    events: [],
-    running: false,
-  });
-
-  assert.deepEqual(rows.map((row) => row.kind), ['user', 'assistant', 'work', 'assistant']);
-  if (rows[2]?.kind === 'work') {
-    assert.equal(rows[2].summary, 'Worked through 3 steps');
-    assert.deepEqual(rows[2].items.map((item) => item.name), ['list_files', 'Progress update', 'read_file']);
-  }
-});
-
-test('does not fold the active current turn and keeps errors outside folded work', () => {
+test('keeps errors visible and only adds an activity to a settled turn with steps', () => {
   const history = [
     message({ id: 'u1', role: 'user', content: 'Run it' }),
     message({ id: 'a1', role: 'assistant', content: 'Starting.' }),
@@ -128,11 +190,10 @@ test('does not fold the active current turn and keeps errors outside folded work
     message({ id: 'a2', role: 'assistant', content: 'I could not finish.' }),
   ];
   const active = createTranscriptProjector()({ history, events: [], running: true });
-  assert.deepEqual(active.map((row) => row.kind), ['user', 'assistant', 'error', 'assistant']);
+  assert.deepEqual(active.map((row) => row.kind), ['user', 'activity', 'assistant', 'error', 'assistant']);
 
   const finished = createTranscriptProjector()({ history, events: [], running: false });
   assert.deepEqual(finished.map((row) => row.kind), ['user', 'assistant', 'error', 'assistant']);
-  assert.equal(finished[2]?.kind, 'error');
 });
 
 test('folds a completed live turn before durable history catches up', () => {
@@ -149,8 +210,8 @@ test('folds a completed live turn before durable history catches up', () => {
     running: false,
   });
 
-  assert.deepEqual(rows.map((row) => row.kind), ['user', 'assistant', 'work', 'assistant']);
-  if (rows[2]?.kind === 'work') assert.equal(rows[2].summary, 'Worked through 1 step');
+  assert.deepEqual(rows.map((row) => row.kind), ['user', 'activity', 'assistant']);
+  assert.equal(activityOf(rows).status, 'complete');
 });
 
 test('suppresses only a final assistant replay, preserving legitimate repeated text', () => {
@@ -182,18 +243,19 @@ test('reuses settled history and unchanged live rows across tail updates and rep
   const first = projector({ history, events: firstEvents, runId: 'run-1', running: true });
   const second = projector({ history, events: [...firstEvents, event({ event: 'message.delta', delta: ' two' })], runId: 'run-1', running: true });
   assert.equal(second[0], first[0]);
-  assert.notEqual(second[1], first[1]);
-  if (second[1]?.kind === 'assistant') assert.equal(second[1].text, 'one two');
+  assert.equal(second[1], first[1], 'an unchanged activity keeps its identity');
+  assert.notEqual(second[2], first[2]);
+  if (second[2]?.kind === 'assistant') assert.equal(second[2].text, 'one two');
   else assert.fail('expected the live tail to be an assistant row');
 
   firstEvents.push(event({ event: 'message.delta', delta: ' two' }));
   const appended = projector({ history, events: firstEvents, runId: 'run-1', running: true });
-  assert.equal(appended[1]?.kind, 'assistant');
+  assert.equal(appended[2]?.kind, 'assistant');
   firstEvents.push(event({ event: 'message.delta', delta: ' three' }));
   const inPlace = projector({ history, events: firstEvents, runId: 'run-1', running: true });
   assert.equal(inPlace[0], second[0]);
-  assert.equal(inPlace[1]?.kind, 'assistant');
-  if (inPlace[1]?.kind === 'assistant') assert.equal(inPlace[1].text, 'one two three');
+  assert.equal(inPlace[2]?.kind, 'assistant');
+  if (inPlace[2]?.kind === 'assistant') assert.equal(inPlace[2].text, 'one two three');
 
   const replacement = projector({ history: [...history], events: [...firstEvents], runId: 'run-1', running: true });
   assert.equal(replacement, inPlace);
@@ -217,16 +279,16 @@ test('replayed timestamped events do not duplicate streamed text', () => {
   const projector = createTranscriptProjector();
   const delta = event({ event: 'message.delta', delta: 'Only once', timestamp: 100, event_id: 'event-1' });
   const rows = projector({ history: [], events: [delta, { ...delta }], runId: 'run-1', running: true });
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].kind === 'assistant' && rows[0].text, 'Only once');
+  assert.deepEqual(rows.map((row) => row.kind), ['activity', 'assistant']);
+  assert.equal(rows[1].kind === 'assistant' && rows[1].text, 'Only once');
 });
 
 test('preserves identical timestamped deltas without a transport identity', () => {
   const projector = createTranscriptProjector();
   const delta = event({ event: 'message.delta', delta: 'Same chunk', timestamp: 100 });
   const rows = projector({ history: [], events: [delta, { ...delta }], runId: 'run-1', running: true });
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].kind === 'assistant' && rows[0].text, 'Same chunkSame chunk');
+  assert.deepEqual(rows.map((row) => row.kind), ['activity', 'assistant']);
+  assert.equal(rows[1].kind === 'assistant' && rows[1].text, 'Same chunkSame chunk');
 });
 
 test('a polled final response replaces stale progress after the event stream disconnects', () => {
@@ -251,7 +313,7 @@ test('terminal output supplies the answer when deltas were missed', () => {
   ];
   const projector = createTranscriptProjector();
   const live = projector({ history: [], events, runId: 'run-1', running: false });
-  assert.deepEqual(live.map((row) => row.kind), ['work', 'assistant']);
+  assert.deepEqual(live.map((row) => row.kind), ['activity', 'assistant']);
   const answer = live.at(-1);
   assert.equal(answer?.kind === 'assistant' && answer.text, 'It looks like an old engine block, heavily corroded.');
 });
