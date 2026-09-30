@@ -18,6 +18,7 @@ function loadClient() {
   const exports: {
     HermesClient?: new (options: { endpoint: string; token: string; fetchImpl?: typeof fetch }) => {
       models(): Promise<readonly HermesModel[]>;
+      createSession(options?: { id?: string; title?: string }): Promise<{ id: string }>;
       deleteSession(id: string): Promise<void>;
       setPinned(id: string, pinned: boolean): Promise<void>;
       forkSession(id: string): Promise<{ id: string }>;
@@ -117,4 +118,26 @@ test('sessions merge settled timestamps and auto-settle config onto the rows', a
     { id: 'a', title: 'A', pinned: true, settledAt: 10, autoSettleDisabled: true },
     { id: 'b', title: 'B' },
   ]);
+});
+
+
+test('replayed session creation recovers only the matching session_exists conflict', async () => {
+  const seen: string[] = [];
+  let returnedId = 'queued-thread';
+  let code = 'session_exists';
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    seen.push(url);
+    return init?.method === 'POST'
+      ? { ok: false, status: 409, json: async () => ({ error: { code } }) }
+      : { ok: true, json: async () => ({ session: { id: returnedId } }) };
+  }) as unknown as typeof fetch;
+  const client = new HermesClient({ endpoint: 'https://agent.example.ts.net', token: 'token', fetchImpl });
+  assert.equal((await client.createSession({ id: 'queued-thread' })).id, 'queued-thread');
+  assert.equal(seen.at(-1), 'https://agent.example.ts.net/api/sessions/queued-thread');
+  returnedId = 'other-thread';
+  await assert.rejects(client.createSession({ id: 'queued-thread' }), /different thread/);
+  code = 'another_conflict';
+  const before = seen.length;
+  await assert.rejects(client.createSession({ id: 'queued-thread' }));
+  assert.equal(seen.length, before + 1);
 });

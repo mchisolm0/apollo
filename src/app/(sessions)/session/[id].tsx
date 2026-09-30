@@ -1,6 +1,7 @@
-import { File } from 'expo-file-system';
+import { useOutbox } from '@/lib/outbox-context';
+import { useIncomingShares } from '@/features/sharing';
 import { MAX_ATTACHMENTS } from '@/lib/attachments';
-import { pickAttachments, discardAttachment } from '@/features/relay/pick-attachments';
+import { pickAttachments, persistPastedImages, copySharedAttachments, discardAttachment } from '@/features/relay/pick-attachments';
 import { Redirect, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActionSheetIOS, Alert, AppState, Keyboard, Platform, StyleSheet } from 'react-native';
@@ -10,7 +11,7 @@ import { RunScreen, relayColors } from '@/features/relay';
 import { showSessionActions } from '@/features/relay/session-actions';
 import { useSessionInbox } from '@/features/relay/use-session-inbox';
 import { canSettleSession } from '@/features/relay/session-inbox';
-import { createTranscriptProjector, type TranscriptRow } from '@/features/relay/transcript';
+import { createTranscriptProjector } from '@/features/relay/transcript';
 import { selectedSkillNames } from '@/features/relay/composer-skills';
 import { useSessionDraft } from '@/features/relay/use-session-draft';
 import { useEkho } from '@/lib';
@@ -21,32 +22,27 @@ const noMessages: readonly HermesMessage[] = [];
 const noEvents: readonly HermesRunEvent[] = [];
 
 export default function SessionRoute() {
-  const { id, agentId, draft } = useLocalSearchParams<{ id: string; agentId: string; draft?: string }>();
+  const { id, agentId, draft, shareId } = useLocalSearchParams<{ id: string; agentId: string; draft?: string; shareId?: string }>();
   // A new thread keeps its screen and composer when its first send assigns a session id.
   const isDraft = id === 'new' || draft === '1';
-  return <Session key={`${agentId}:${isDraft ? 'draft' : id}`} id={id} agentId={agentId} />;
+  return <Session key={`${agentId}:${isDraft ? 'draft' : id}`} id={id} agentId={agentId} shareId={shareId} />;
 }
 
-function Session({ id, agentId }: { id: string; agentId: string }) {
-  const { agents, runtime, messages, createSession, sessionMessages, skills: loadSkills, models: loadModels, startRun, stopRun, approveRun, retryAgent, uploadAttachment, attachmentSource, deleteSession, regenerateTitle } = useEkho();
+function Session({ id, agentId, shareId }: { id: string; agentId: string; shareId?: string }) {
+  const { agents, runtime, messages, sessionMessages, skills: loadSkills, models: loadModels, stopRun, approveRun, retryAgent, attachmentSource, deleteSession, regenerateTitle } = useEkho();
+  const outbox = useOutbox();
+  const { getShare, acknowledgeShare } = useIncomingShares();
+  const [retryRevision, setRetryRevision] = useState(0);
   const [resolvedId, setResolvedId] = useState(id === 'new' ? undefined : id);
   const router = useRouter();
   const openInbox = () => { Keyboard.dismiss(); router.dismissTo({ pathname: '/', params: { agentId } }); };
   const [localError, setLocalError] = useState<string>();
   const [loading, setLoading] = useState(id !== 'new');
   const [acting, setActing] = useState(false);
-  const [sending, setSending] = useState<{ text: string; startedAt: number }>();
-  // Shown until the run exists: the message being sent and a "Starting" activity timed from the tap.
-  const sendingRows = useMemo<readonly TranscriptRow[]>(() => sending ? [
-    { id: 'sending-message', kind: 'user', text: sending.text, status: 'running' },
-    { id: 'sending-activity', kind: 'activity', status: 'running', phase: 'starting', steps: [], startedAt: sending.startedAt },
-  ] : [], [sending]);
   const actionLock = useRef(false);
   const pickerLock = useRef(false);
   const [picking, setPicking] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const pendingSend = useRef<{ text: string; key: string } | undefined>(undefined);
-  const { draft, setDraft, attachments, setAttachments, move: moveDraft, error: draftError } = useSessionDraft(agentId, id);
+  const { draft, setDraft, attachments, setAttachments, move: moveDraft, error: draftError, loaded: draftLoaded, appendShare, prepareSend, clear, retryLoad } = useSessionDraft(agentId, id);
   const fileSource = useCallback((fileId: string) => attachmentSource(agentId, fileId), [agentId, attachmentSource]);
   const agent = agents.find((candidate) => candidate.id === agentId);
   const state = runtime[agentId];
@@ -90,16 +86,32 @@ function Session({ id, agentId }: { id: string; agentId: string }) {
       void markRead(resolvedId);
     }
   }, [resolvedId, loading, localError, markRead]));
+  const queuedMessages = outbox.items.filter((item) => item.agentId === agentId && item.sessionId === resolvedId);
+  const awaitingCreation = queuedMessages.some((item) => item.createsSession);
+  const incoming = shareId ? getShare(shareId) : undefined;
+  useEffect(() => {
+    if (!incoming || !draftLoaded) return;
+    let mounted = true;
+    void copySharedAttachments(incoming.id, incoming.attachments)
+      .then((files) => appendShare(incoming.id, incoming.text, files).then(() => files))
+      .then(async () => {
+        await acknowledgeShare(incoming.id);
+        incoming.attachments.forEach(discardAttachment);
+      })
+      .then(() => { if (mounted) router.setParams({ shareId: undefined }); })
+      .catch((error: unknown) => { if (mounted) setLocalError(error instanceof Error ? error.message : 'Could not save shared content.'); });
+    return () => { mounted = false; };
+  }, [incoming, draftLoaded, appendShare, acknowledgeShare, router, retryRevision]);
   const project = useMemo(() => createTranscriptProjector(), []);
 
   useEffect(() => {
-    if (!resolvedId) return;
+    if (!resolvedId || awaitingCreation || !outbox.loaded) return;
     let mounted = true;
     void sessionMessages(agentId, resolvedId).catch((error: unknown) => {
       if (mounted) setLocalError(error instanceof Error ? error.message : 'Could not load thread');
     }).finally(() => { if (mounted) setLoading(false); });
     return () => { mounted = false; };
-  }, [agentId, resolvedId, sessionMessages]);
+  }, [agentId, resolvedId, sessionMessages, awaitingCreation, outbox.loaded]);
 
   const session = state?.sessions.find((candidate) => candidate.id === resolvedId);
   const run = sessionRun(state?.runs ?? {}, resolvedId);
@@ -125,11 +137,11 @@ function Session({ id, agentId }: { id: string; agentId: string }) {
     setLocalError(undefined);
     try { await operation(); }
     catch (error) { setLocalError(error instanceof Error ? error.message : 'The action failed. Try again.'); }
-    finally { actionLock.current = false; setActing(false); setSending(undefined); }
+    finally { actionLock.current = false; setActing(false); }
   };
 
   const pick = async (kind: 'photos' | 'files') => {
-      if (pickerLock.current || actionLock.current) return;
+      if (pickerLock.current || actionLock.current || !draftLoaded || incoming) return;
       pickerLock.current = true;
       setPicking(true);
       setLocalError(undefined);
@@ -143,7 +155,17 @@ function Session({ id, agentId }: { id: string; agentId: string }) {
     else Alert.alert('Attach', undefined, [{ text: 'Photos', onPress: () => void pick('photos') }, { text: 'Files', onPress: () => void pick('files') }, { text: 'Cancel', style: 'cancel' }]);
   };
 
+  const pasteImages = async (uris: readonly string[]) => {
+    if (pickerLock.current || actionLock.current || !draftLoaded) return;
+    pickerLock.current = true;
+    setPicking(true);
+    try { setAttachments([...attachments, ...await persistPastedImages(uris, MAX_ATTACHMENTS - attachments.length)]); }
+    catch (error) { setLocalError(error instanceof Error ? error.message : 'Could not paste images.'); }
+    finally { pickerLock.current = false; setPicking(false); }
+  };
+
   const send = (text: string) => void act(async () => {
+    if (pickerLock.current) return;
     // Skill instructions need a live catalog lookup. Offline, send the raw text.
     // A send racing the initial catalog load refetches once so $skill refs still resolve.
     let catalog = skills;
@@ -160,53 +182,24 @@ function Session({ id, agentId }: { id: string; agentId: string }) {
     const instructions = requestedSkills.length
       ? `The user explicitly selected these installed skills: ${JSON.stringify(requestedSkills)}. Before responding, call skill_view for each exact name and follow its instructions. The $name references in the message identify these selections. If a skill cannot be loaded, tell the user.`
       : undefined;
-    setSending({ text: text || attachments.map((file) => file.name).join(', '), startedAt: Date.now() / 1000 });
-    let sessionId = resolvedId;
-    if (!sessionId) {
-      sessionId = await createSession(agentId, (text || attachments[0]?.name || 'Attached files').slice(0, 72));
-      setResolvedId(sessionId);
-    }
-    const sendIdentity = JSON.stringify([text, attachments.map((file) => file.id)]);
-    if (pendingSend.current?.text !== sendIdentity) pendingSend.current = { text: sendIdentity, key: `${Date.now()}-${Math.random().toString(36).slice(2)}` };
-    let sent = false;
-    let files = attachments;
-    try {
-      setUploading(files.some((file) => !file.uploaded));
-      for (const file of files) {
-        if (file.uploaded) continue;
-        const uploaded = await uploadAttachment(agentId, { name: file.name, mimeType: file.mimeType, data: await new File(file.uri).base64() });
-        files = files.map((candidate) => candidate.id === file.id ? { ...candidate, uploaded } : candidate);
-        setAttachments(files);
-      }
-      setUploading(false);
-      await startRun(agentId, text, { sessionId, instructions, idempotencyKey: pendingSend.current.key, attachments: files.flatMap((file) => file.uploaded ? [file.uploaded] : []), ...(model ? { model } : {}) });
-      sent = true;
-      pendingSend.current = undefined;
-      setDraft('');
-      setAttachments([]);
-      files.forEach(discardAttachment);
-    } catch (error) {
-      if (id === 'new') Alert.alert('Could not start the thread', error instanceof Error ? error.message : 'Try again.');
-      throw error;
-    } finally {
-      setUploading(false);
-      if (id === 'new') {
-        await moveDraft(sessionId, sent ? '' : text, sent ? [] : files);
-        // Promote the current route without replacing the screen or its composer.
-        router.setParams({ id: sessionId, draft: '1' });
-      }
-    }
+    const prepared = await prepareSend();
+    await outbox.enqueue({ ...prepared, agentId, createsSession: !resolvedId || awaitingCreation, instructions, model });
+    if (!resolvedId) {
+      await moveDraft(prepared.sessionId, '', []);
+      setResolvedId(prepared.sessionId);
+      router.setParams({ id: prepared.sessionId, draft: '1' });
+    } else await clear();
   });
 
   if (!agent) return <Redirect href="/" />;
   const connection = state?.status === 'connected' ? 'connected' : state?.status === 'connecting' ? 'connecting' : state?.status === 'revoked' ? 'revoked' : 'offline';
-  const statusLabel = uploading ? 'Uploading attachments' : approval ? 'Needs approval' : running ? 'Working' : run?.status === 'failed' ? 'Failed' : run?.status === 'completed' ? 'Complete' : undefined;
+  const statusLabel = approval ? 'Needs approval' : running ? 'Working' : run?.status === 'failed' ? 'Failed' : run?.status === 'completed' ? 'Complete' : undefined;
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
       <RunScreen
         session={{ id: resolvedId ?? 'new', agentId, title: session?.title?.trim() || 'New thread', updatedAt: '' }}
         agentName={agent.label}
-        events={sendingRows.length && !running ? [...events, ...sendingRows] : events}
+        events={events}
         connection={connection}
         approval={approval}
         draft={draft}
@@ -225,6 +218,11 @@ function Session({ id, agentId }: { id: string; agentId: string }) {
         attachments={attachments}
         isPicking={picking}
         onAddAttachments={addAttachments}
+        onPasteImages={(uris) => void pasteImages(uris)}
+        queuedMessages={queuedMessages}
+        onRetryQueued={(messageId) => void act(() => outbox.retry(messageId))}
+        onRemoveQueued={(messageId) => void act(() => outbox.remove(messageId))}
+        sendDisabled={!draftLoaded || !outbox.loaded || Boolean(incoming)}
         onPickAttachments={(kind) => { void pick(kind); }}
         onRemoveAttachment={(fileId) => {
           const removed = attachments.find((file) => file.id === fileId);
@@ -232,11 +230,20 @@ function Session({ id, agentId }: { id: string; agentId: string }) {
           if (removed) discardAttachment(removed);
         }}
         attachmentSource={fileSource}
-        isLoading={loading}
+        isLoading={loading && !awaitingCreation}
         isSending={running}
         isActing={acting}
         statusLabel={statusLabel}
-        error={localError ?? draftError}
+        error={localError ?? draftError ?? outbox.error}
+        onRetryError={() => void act(async () => {
+          await retryLoad();
+          await outbox.reload();
+          setRetryRevision((value) => value + 1);
+          if (!incoming) {
+            await retryAgent(agentId);
+            if (resolvedId && !awaitingCreation) await sessionMessages(agentId, resolvedId);
+          }
+        })}
         onBack={openInbox}
         onSessionActions={() => {
           const item = inbox.sessions.find((candidate) => candidate.id === resolvedId);

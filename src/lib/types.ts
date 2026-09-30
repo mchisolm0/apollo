@@ -148,6 +148,7 @@ export interface HermesRunEvent {
 }
 
 export interface StartRunOptions {
+  signal?: AbortSignal;
   attachments?: readonly import('./attachments').Attachment[];
   sessionId?: string;
   instructions?: string;

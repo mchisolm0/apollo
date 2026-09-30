@@ -1,3 +1,4 @@
+import { useOutbox } from '../../lib/outbox-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
 
@@ -175,13 +176,17 @@ export type SessionInboxResult = {
 /** Reads stay local; legacy settle entries migrate to the shared connector ledger. */
 export function useSessionInbox(agentId: string, state: SessionInboxState | undefined): SessionInboxResult {
   const { saveInbox } = useEkho();
+  const { items } = useOutbox();
   const store = useSyncExternalStore(
     useCallback((listener) => subscribe(agentId, listener), [agentId]),
     useCallback(() => snapshot(agentId), [agentId]),
     useCallback(() => SERVER_SNAPSHOT, []),
   );
   const project = useMemo(() => createSessionInboxProjector(), []);
-  const sessions = useMemo(() => project(agentId, state, store.settled, store.read, store.autoSettleDisabled), [project, agentId, state, store.settled, store.read, store.autoSettleDisabled]);
+  const sessions = useMemo(() => {
+    const queued = new Set(items.filter((item) => item.agentId === agentId).map((item) => item.sessionId));
+    return project(agentId, state, store.settled, store.read, store.autoSettleDisabled).map((session) => queued.has(session.id) ? { ...session, queued: true } : session);
+  }, [project, agentId, state, store.settled, store.read, store.autoSettleDisabled, items]);
   useSnoozeExpiry(agentId, store.snoozed);
 
   const reportError = useCallback((cause: unknown) => {

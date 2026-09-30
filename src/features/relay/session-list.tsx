@@ -141,6 +141,7 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
   const status = session.settled || snoozed ? { text: session.updatedAt, style: styles.date }
     : session.pendingApproval ? { text: 'Needs approval', style: styles.approval }
     : session.running ? { text: 'Working', style: styles.activity }
+    : session.queued ? { text: 'Queued', style: styles.activity }
     : session.failed ? { text: 'Failed', style: styles.failed }
     : session.attention ? { text: 'New result', style: styles.activity }
     : { text: session.updatedAt, style: styles.date };
@@ -154,7 +155,7 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
       onPress={open}
       onLongPress={menu}
       accessibilityRole="button"
-      accessibilityLabel={`Open thread ${session.title}${session.pendingApproval ? ', needs approval' : session.running ? ', working' : session.failed && !session.settled ? ', failed' : session.settled ? ', finished' : session.attention ? ', new result' : ''}${snoozed ? ', snoozed' : ''}`}
+      accessibilityLabel={`Open thread ${session.title}${session.pendingApproval ? ', needs approval' : session.running ? ', working' : session.queued ? ', queued' : session.failed && !session.settled ? ', failed' : session.settled ? ', finished' : session.attention ? ', new result' : ''}${snoozed ? ', snoozed' : ''}`}
       accessibilityActions={action ? [{ name: 'showActions', label: 'Thread actions' }, { name: action.label.toLowerCase(), label: action.label }] : [{ name: 'showActions', label: 'Thread actions' }]}
       onAccessibilityAction={(event) => event.nativeEvent.actionName === 'showActions' ? menu() : perform()}
       style={({ pressed }) => [styles.row, pressed && styles.pressed]}
