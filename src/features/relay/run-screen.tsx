@@ -1,6 +1,6 @@
 import { splitAttachmentMessage, type AttachmentSource, type DraftAttachment } from '../../lib/attachments';
 import { AttachmentStrip } from './attachment-strip';
-import { memo, useCallback, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
 import { MenuView } from '@expo/ui/community/menu';
@@ -14,7 +14,8 @@ import { MessageContent } from './message-content';
 import { ModelPicker } from './model-picker';
 import type { HermesModel, HermesSkill } from '../../lib/types';
 import type { ApprovalRequest, ConnectionState, RelaySession } from './types';
-import { friendlyToolName, type TranscriptRow, type TranscriptTool } from './transcript';
+import { elapsed, formatDuration, liveActivityLabel, oneLine, readableOutput, settledActivityLabel, toolVerb } from './activity';
+import type { TranscriptActivityRow, TranscriptRow, TranscriptStep } from './transcript';
 
 export type RunScreenProps = {
   session: RelaySession;
@@ -72,7 +73,9 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
     ? { start: Math.min(observedSelection.start, draft.length), end: Math.min(observedSelection.end, draft.length) }
     : { start: draft.length, end: draft.length };
   const suspendFollow = useCallback(() => setFollowing(false), []);
-  const renderItem = useCallback(({ item }: { item: TranscriptRow }) => <TranscriptEntry row={item} agentName={agentName ?? 'Hermes'} attachmentSource={attachmentSource} onDisclosure={suspendFollow} />, [suspendFollow, agentName, attachmentSource]);
+  const renderItem = useCallback(({ item }: { item: TranscriptRow }) => item.kind === 'activity'
+    ? <ActivityEntry row={item} connection={connection} onDisclosure={suspendFollow} />
+    : <TranscriptEntry row={item} agentName={agentName ?? 'Hermes'} attachmentSource={attachmentSource} />, [suspendFollow, agentName, attachmentSource, connection]);
   const canSend = connection === 'connected' && !isSending && !isActing && !isPicking && Boolean(draft.trim() || attachments.length);
   const typedSkill = selection.start === selection.end ? skillTrigger(draft, selection.end) : undefined;
   const skillMenuTrigger: SkillTrigger | undefined = !skillsDismissed ? typedSkill ?? (skillsOpen ? { query: '', start: selection.end, end: selection.end } : undefined) : undefined;
@@ -113,6 +116,8 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
         keyExtractor={(item) => item.id}
         getItemType={(item) => item.kind}
         renderItem={renderItem}
+        // Rows only re-render on data changes; the live activity label also reads the connection.
+        extraData={connection}
         estimatedItemSize={100}
         drawDistance={500}
         contentContainerStyle={styles.listContent}
@@ -280,23 +285,8 @@ function SkillMenu({ skills, loading, error, onRetry, onSelect }: { skills: read
   </View>;
 }
 
-const TranscriptEntry = memo(function TranscriptEntry({ row, agentName, attachmentSource, onDisclosure }: { row: TranscriptRow; agentName: string; attachmentSource?: (id: string) => AttachmentSource | undefined; onDisclosure: () => void }) {
+const TranscriptEntry = memo(function TranscriptEntry({ row, agentName, attachmentSource }: { row: Exclude<TranscriptRow, TranscriptActivityRow>; agentName: string; attachmentSource?: (id: string) => AttachmentSource | undefined }) {
   const { factor } = useTextScale();
-  const [expanded, setExpanded] = useRecyclingState(false);
-  if (row.kind === 'work') {
-    const running = row.items.filter((tool) => tool.status === 'running');
-    const failed = row.items.filter((tool) => tool.status === 'failed');
-    const countLabel = row.items.some((tool) => tool.name === 'Progress update') ? 'activity updates' : row.items.length === 1 ? 'tool call' : 'tool calls';
-    const label = running.length ? `Working · ${friendlyToolName(running[0].name)}` : failed.length ? `${failed.length} failed · ${row.items.length} tool calls` : `${row.items.length} ${countLabel}`;
-    return <View style={styles.work}>
-      <Pressable style={styles.workToggle} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ expanded }} onPress={() => { onDisclosure(); setExpanded(!expanded); }}>
-        {running.length ? <ActivityIndicator size="small" color={colors.secondary} /> : <SymbolView name={{ ios: 'terminal', android: 'terminal', web: 'terminal' }} size={14} tintColor={failed.length ? colors.red : colors.secondary} />}
-        <Text style={[styles.workText, failed.length > 0 && styles.failedTool]}>{label}</Text>
-        <SymbolView name={{ ios: expanded ? 'chevron.up' : 'chevron.down', android: expanded ? 'expand_less' : 'expand_more', web: expanded ? 'expand_less' : 'expand_more' }} size={10} tintColor={colors.secondary} />
-      </Pressable>
-      {expanded ? row.items.map((tool) => <ToolEntry key={tool.id} tool={tool} onDisclosure={onDisclosure} />) : null}
-    </View>;
-  }
   if (row.kind === 'error') return <View style={styles.error} accessibilityRole="alert"><Text selectable style={styles.errorText}>{row.text}</Text></View>;
   const user = row.kind === 'user';
   // An agent row without content has nothing to show and only eats vertical space.
@@ -311,21 +301,83 @@ const TranscriptEntry = memo(function TranscriptEntry({ row, agentName, attachme
   </View>;
 });
 
-const ToolEntry = memo(function ToolEntry({ tool, onDisclosure }: { tool: TranscriptTool; onDisclosure: () => void }) {
-  const [expanded, setExpanded] = useState(false);
-  const name = friendlyToolName(tool.name);
-  const preview = tool.text.trim().replace(/\s+/g, ' ');
-  const failed = tool.status === 'failed';
-  const running = tool.status === 'running';
-  return <View>
-    <Pressable style={styles.toolToggle} accessibilityRole="button" accessibilityLabel={`${name}, ${tool.status}${preview ? `, ${preview.slice(0, 160)}` : ''}`} accessibilityState={{ expanded }} onPress={() => { onDisclosure(); setExpanded(!expanded); }}>
-      <SymbolView name={{ ios: 'terminal', android: 'terminal', web: 'terminal' }} size={14} tintColor={colors.muted} />
-      <Text style={[styles.toolName, failed && styles.failedTool]} numberOfLines={1}>{name}</Text>
-      <Text style={styles.toolPreview} numberOfLines={1}>{preview}</Text>
-      <SymbolView name={{ ios: expanded ? 'chevron.up' : 'chevron.down', android: expanded ? 'expand_less' : 'expand_more', web: expanded ? 'expand_less' : 'expand_more' }} size={10} tintColor={colors.secondary} />
-      {running ? <ActivityIndicator size="small" color={colors.secondary} /> : <SymbolView name={{ ios: failed ? 'exclamationmark' : 'checkmark', android: failed ? 'priority_high' : 'check', web: failed ? 'priority_high' : 'check' }} size={12} tintColor={failed ? colors.red : colors.secondary} />}
+// Whole wall-clock seconds as an external store, so a recycled row never renders a stale time.
+const secondsNow = () => Math.floor(Date.now() / 1000);
+const tickEverySecond = (onTick: () => void) => {
+  const timer = setInterval(onTick, 1000);
+  return () => clearInterval(timer);
+};
+const noTicks = () => () => undefined;
+
+/** Wall-clock seconds, re-rendering once a second only while `active`. */
+function useNow(active: boolean): number {
+  return useSyncExternalStore(active ? tickEverySecond : noTicks, secondsNow);
+}
+
+// One row per turn: a live status while running, then a fold like "Worked for 42s · 6 steps".
+const ActivityEntry = memo(function ActivityEntry({ row, connection, onDisclosure }: { row: TranscriptActivityRow; connection: ConnectionState; onDisclosure: () => void }) {
+  const [expanded, setExpanded] = useRecyclingState(false);
+  const running = row.status === 'running';
+  const now = useNow(running);
+  const label = running ? liveActivityLabel(row, connection) : settledActivityLabel(row);
+  const seconds = running ? elapsed(row.startedAt, now) : undefined;
+  const expandable = row.steps.length > 0;
+  const attention = running && (row.phase === 'approval' || connection !== 'connected');
+  return <View style={styles.activity}>
+    <Pressable
+      style={styles.activityToggle}
+      disabled={!expandable}
+      accessibilityRole={expandable ? 'button' : 'text'}
+      accessibilityLabel={seconds === undefined ? label : `${label}, ${formatDuration(seconds)}`}
+      accessibilityState={expandable ? { expanded } : undefined}
+      onPress={() => { onDisclosure(); setExpanded(!expanded); }}
+    >
+      {running ? <ActivityIndicator size="small" color={colors.secondary} /> : null}
+      <Text style={[styles.activityLabel, row.status === 'failed' && styles.failedText, attention && styles.attentionText]} numberOfLines={1} ellipsizeMode="middle">{label}</Text>
+      {seconds !== undefined ? <Text style={styles.activityTime}>{formatDuration(seconds)}</Text> : null}
+      {expandable ? <SymbolView name={{ ios: expanded ? 'chevron.up' : 'chevron.down', android: expanded ? 'expand_less' : 'expand_more', web: expanded ? 'expand_less' : 'expand_more' }} size={10} tintColor={colors.secondary} /> : null}
     </Pressable>
-    {expanded ? <View style={styles.toolDetails}><Text style={styles.toolStatus}>{running ? 'Running' : failed ? 'Failed' : 'Complete'}</Text><Text style={styles.toolOutput} selectable>{tool.text || 'No output'}</Text></View> : null}
+    {expanded ? row.steps.map((step) => <StepEntry key={step.id} step={step} onDisclosure={onDisclosure} />) : null}
+  </View>;
+});
+
+const MAX_DETAIL = 4000;
+
+function clip(text: string): string {
+  return text.length > MAX_DETAIL ? `${text.slice(0, MAX_DETAIL)}…` : text;
+}
+
+// A flat timeline line: verb, target, and duration or failure. Tapping shows the full input and output.
+const StepEntry = memo(function StepEntry({ step, onDisclosure }: { step: TranscriptStep; onDisclosure: () => void }) {
+  const [open, setOpen] = useState(false);
+  if (step.kind === 'note') return <Text selectable style={styles.note}>{step.text.trim()}</Text>;
+  const tool = step.kind === 'tool' ? step : undefined;
+  const verb = tool ? toolVerb(tool.name, tool.status) : 'Thought';
+  const target = oneLine(step.kind === 'tool' ? step.input || step.output : step.text);
+  const failed = tool?.status === 'failed';
+  const trailing = tool?.status === 'running' ? <ActivityIndicator size="small" color={colors.secondary} />
+    : failed ? <Text style={[styles.stepTime, styles.failedText]}>Failed</Text>
+      : tool?.duration !== undefined && tool.duration >= 1 ? <Text style={styles.stepTime}>{formatDuration(tool.duration)}</Text> : null;
+  return <View>
+    <Pressable
+      style={styles.step}
+      disabled={!target}
+      accessibilityRole="button"
+      accessibilityLabel={[verb, target, failed ? 'failed' : undefined].filter(Boolean).join(', ')}
+      accessibilityState={{ expanded: open }}
+      onPress={() => { onDisclosure(); setOpen(!open); }}
+    >
+      <Text style={[styles.stepVerb, failed && styles.failedText]}>{verb}</Text>
+      {/* Paths and commands keep both ends; prose reads from the start. */}
+      <Text style={styles.stepTarget} numberOfLines={1} ellipsizeMode={step.kind === 'tool' ? 'middle' : 'tail'}>{target}</Text>
+      {trailing}
+    </Pressable>
+    {open ? <View style={styles.stepDetail}>
+      {step.kind === 'tool' ? <>
+        {step.input ? <Text selectable style={styles.stepInput}>{clip(step.input)}</Text> : null}
+        {step.output ? <Text selectable style={styles.stepOutput}>{clip(readableOutput(step.output))}</Text> : null}
+      </> : <Text selectable style={styles.note}>{clip(step.text.trim())}</Text>}
+    </View> : null}
   </View>;
 });
 
@@ -344,16 +396,20 @@ const styles = StyleSheet.create({
   avatarText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   messageBody: { flex: 1, minWidth: 0, gap: 4 },
   author: { color: colors.primary, fontSize: 14, fontWeight: '600' },
-  work: { marginLeft: 40, marginBottom: 12 },
-  workToggle: { minHeight: 44, flexDirection: 'row', gap: 8, alignItems: 'center' },
-  workText: { color: colors.secondary, fontSize: 13 },
-  toolToggle: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 7 },
-  toolName: { color: '#d5d5d5', fontSize: 13, maxWidth: '45%', flexShrink: 1 },
-  toolPreview: { color: colors.muted, fontSize: 13, flex: 1 },
-  failedTool: { color: '#f18c94' },
-  toolDetails: { marginLeft: 7, paddingLeft: 15, marginBottom: 14, paddingVertical: 6, borderLeftWidth: 1, borderLeftColor: colors.lineStrong, gap: 8 },
-  toolStatus: { color: colors.secondary, fontSize: 12 },
-  toolOutput: { color: colors.secondary, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 12, lineHeight: 19 },
+  activity: { marginLeft: 40, marginTop: -8, marginBottom: 12 },
+  activityToggle: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  activityLabel: { flexShrink: 1, color: colors.secondary, fontSize: 13 },
+  activityTime: { color: colors.muted, fontSize: 13, fontVariant: ['tabular-nums'] },
+  attentionText: { color: colors.amber },
+  failedText: { color: '#f18c94' },
+  step: { minHeight: 36, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  stepVerb: { color: colors.muted, fontSize: 13 },
+  stepTarget: { flex: 1, color: '#d5d5d5', fontSize: 13 },
+  stepTime: { color: colors.muted, fontSize: 12, fontVariant: ['tabular-nums'] },
+  stepDetail: { marginBottom: 10, paddingLeft: 12, paddingVertical: 4, borderLeftWidth: 1, borderLeftColor: colors.lineStrong, gap: 8 },
+  stepInput: { color: colors.primary, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 12, lineHeight: 18 },
+  stepOutput: { color: colors.secondary, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 12, lineHeight: 18 },
+  note: { color: colors.secondary, fontSize: 13, lineHeight: 19, paddingVertical: 6 },
   latest: { alignSelf: 'center', paddingHorizontal: 16, minHeight: 44, justifyContent: 'center' },
   link: { color: colors.cyan, fontSize: 14 },
   error: { padding: 14, borderLeftWidth: 2, borderLeftColor: colors.red },

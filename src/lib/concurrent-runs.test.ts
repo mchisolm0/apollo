@@ -58,7 +58,9 @@ test('concurrent threads retain independent streams, controls, and saved run IDs
   }).outputText;
   const exports: { EkhoProvider?: React.ComponentType<React.PropsWithChildren<{ catalog: unknown }>>; useEkho?: () => EkhoContextValue } = {};
   runInNewContext(source, {
-    exports, setTimeout, clearTimeout,
+    exports, clearTimeout,
+    // Open subscriptions arm a quiet-stream check; it must not keep the test process alive.
+    setTimeout: (callback: () => void, ms?: number) => setTimeout(callback, ms).unref(),
     require: (id: string) => {
       if (id === 'react-native') return { AppState: {} };
       if (id === './catalog') return {};

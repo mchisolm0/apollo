@@ -63,6 +63,9 @@ export interface EkhoContextValue {
   removeAgent(agentId: string): Promise<void>;
 }
 
+// Several missed keepalives: long enough that a quiet but healthy run rarely pays for a status request.
+const QUIET_STREAM_MS = 45_000;
+
 const EkhoContext = createContext<EkhoContextValue | undefined>(undefined);
 
 function emptyRuntime(): AgentRuntimeState {
@@ -128,6 +131,8 @@ export function EkhoProvider({
     const key = JSON.stringify([agent.id, runId]);
     if (subscriptions.current.has(key)) return;
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
+    let quietTimer: ReturnType<typeof setTimeout> | undefined;
+    let recovering = false;
     let polling = false;
     let pollDelay = 3_000;
     let closed = false;
@@ -148,6 +153,66 @@ export function EkhoProvider({
         return { ...current, [agent.id]: { ...existing, status: 'connected', events, runs: { ...existing.runs, [runId]: activeRun } } };
       });
     };
+    // The stream failed or went stale: stop listening and reconcile from durable status and history.
+    const recover = (streamError: Error) => {
+      if (closed || recovering) return;
+      recovering = true;
+      // Hermes consumes and removes disconnected streams. Recover by polling.
+      source.close();
+      if (timer) clearTimeout(timer);
+      if (quietTimer) clearTimeout(quietTimer);
+      flush();
+      updateRuntime(agent.id, { status: 'offline', error: streamError.message });
+      // Hermes can expire a consumed SSE stream. Recover from durable status/history.
+      const reconcile = async () => {
+        if (polling || closed) return;
+        polling = true;
+        try {
+          const status = await client.runStatus(runId);
+          const history = status.sessionId ? await client.sessionMessages(status.sessionId) : undefined;
+          if (closed) return;
+          pollDelay = 3_000;
+          updateRuntime(agent.id, { status: 'connected', error: undefined });
+          updateRun(agent.id, status);
+          if (history && status.sessionId) setMessages((current) => ({ ...current, [`${agent.id}:${status.sessionId}`]: reconcileHistory(current[`${agent.id}:${status.sessionId}`] ?? [], history) }));
+          if (!isRunActive(status.status)) closeSubscription(agent.id, runId);
+        } catch (error) {
+          if (!closed) {
+            const revoked = error instanceof HermesRequestError && error.status === 401;
+            updateRuntime(agent.id, { status: revoked ? 'revoked' : 'offline', error: errorText(error) });
+            if (revoked) closeSubscription(agent.id, runId);
+            else pollDelay = Math.min(pollDelay * 2, 30_000);
+          }
+        } finally {
+          polling = false;
+          if (!closed) pollTimer = setTimeout(() => void reconcile(), pollDelay);
+        }
+      };
+      if (!pollTimer && !polling) void reconcile();
+    };
+    // react-native-sse drops Hermes's 10s keepalive comments, so silence alone
+    // cannot prove the stream died. After a quiet stretch, ask for the run status:
+    // an unreachable agent or an already-finished run means the stream is stale.
+    const checkQuiet = async () => {
+      if (closed || recovering) return;
+      try {
+        const status = await client.runStatus(runId);
+        if (closed || recovering) return;
+        if (isRunActive(status.status)) {
+          updateRun(agent.id, status);
+          armQuietCheck();
+          return;
+        }
+        recover(new Error('Hermes event stream went quiet'));
+      } catch (error) {
+        if (!closed) recover(error instanceof Error ? error : new Error('Hermes event stream went quiet'));
+      }
+    };
+    const armQuietCheck = () => {
+      if (recovering) return;
+      if (quietTimer) clearTimeout(quietTimer);
+      quietTimer = setTimeout(() => void checkQuiet(), QUIET_STREAM_MS);
+    };
     const source = client.subscribeRunEvents(runId, {
       onEvent: (event) => {
         if (closed) return;
@@ -155,6 +220,7 @@ export function EkhoProvider({
         if (identity && seen.has(identity)) return;
         if (identity) seen.add(identity);
         pending.push({ ...event, runId });
+        armQuietCheck();
         if (!timer) timer = setTimeout(flush, 50);
         if (['run.completed', 'run.failed', 'run.cancelled', 'run.interrupted'].includes(event.event)) {
           if (timer) clearTimeout(timer);
@@ -185,45 +251,14 @@ export function EkhoProvider({
           }).catch(() => undefined);
         }
       },
-      onError: (streamError) => {
-        if (closed) return;
-        // Hermes consumes and removes disconnected streams. Recover by polling.
-        source.close();
-        if (timer) clearTimeout(timer);
-        flush();
-        updateRuntime(agent.id, { status: 'offline', error: streamError.message });
-        // Hermes can expire a consumed SSE stream. Recover from durable status/history.
-        const reconcile = async () => {
-          if (polling || closed) return;
-          polling = true;
-          try {
-            const status = await client.runStatus(runId);
-            const history = status.sessionId ? await client.sessionMessages(status.sessionId) : undefined;
-            if (closed) return;
-            pollDelay = 3_000;
-            updateRuntime(agent.id, { status: 'connected', error: undefined });
-            updateRun(agent.id, status);
-            if (history && status.sessionId) setMessages((current) => ({ ...current, [`${agent.id}:${status.sessionId}`]: reconcileHistory(current[`${agent.id}:${status.sessionId}`] ?? [], history) }));
-            if (!isRunActive(status.status)) closeSubscription(agent.id, runId);
-          } catch (error) {
-            if (!closed) {
-              const revoked = error instanceof HermesRequestError && error.status === 401;
-              updateRuntime(agent.id, { status: revoked ? 'revoked' : 'offline', error: errorText(error) });
-              if (revoked) closeSubscription(agent.id, runId);
-              else pollDelay = Math.min(pollDelay * 2, 30_000);
-            }
-          } finally {
-            polling = false;
-            if (!closed) pollTimer = setTimeout(() => void reconcile(), pollDelay);
-          }
-        };
-        if (!pollTimer && !polling) void reconcile();
-      },
+      onError: recover,
     });
+    armQuietCheck();
     subscriptions.current.set(key, { runId, close: () => {
       closed = true;
       if (timer) clearTimeout(timer);
       if (pollTimer) clearTimeout(pollTimer);
+      if (quietTimer) clearTimeout(quietTimer);
       source.close();
     } });
   }, [closeSubscription, updateRuntime, updateRun, setRuntime]);
