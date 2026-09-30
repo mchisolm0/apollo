@@ -1,3 +1,4 @@
+import { posthog } from '@/config/posthog';
 import { createNotificationRegistrationClient, type NotificationRegistrationClient } from '@/features/notifications/notifications';
 import { attachmentMessage, type Attachment, type AttachmentSource } from './attachments';
 import {
@@ -356,6 +357,11 @@ export function EkhoProvider({
       setAgents(catalog.list());
       updateRuntime(agent.id, { status: 'idle', capabilities: result.descriptor.capabilities });
       await refreshAgent(agent.id);
+      posthog.capture('agent_paired', {
+        agent_id: agent.id,
+        transport: agent.endpoint.transport,
+        platform: result.descriptor.capabilities?.platform ?? null,
+      });
       return catalog.get(agent.id) ?? agent;
     } catch (pairingError) {
       setError(errorText(pairingError));
@@ -402,6 +408,12 @@ export function EkhoProvider({
         status.runId,
       ])] });
       setAgents(catalog.list());
+      posthog.capture('run_started', {
+        agent_id: agentId,
+        run_id: status.runId,
+        session_id: status.sessionId ?? null,
+        has_attachments: (options?.attachments?.length ?? 0) > 0,
+      });
       return status;
     } finally { startingRuns.current.delete(key); }
   }, [catalog, refreshAgent, subscribe, updateRuntime, updateRun, setRuntime]);
@@ -487,6 +499,7 @@ export function EkhoProvider({
     if (!client) throw new Error('Agent is offline');
     const status = await client.stopRun(runId);
     updateRun(agentId, status);
+    posthog.capture('run_stopped', { agent_id: agentId, run_id: runId });
     return status;
   }, [updateRun]);
 
@@ -503,6 +516,7 @@ export function EkhoProvider({
       const existing = current[agentId] ?? emptyRuntime();
       return { ...current, [agentId]: { ...existing, sessions: [session, ...existing.sessions.filter((item) => item.id !== session.id)] } };
     });
+    posthog.capture('session_created', { agent_id: agentId, session_id: session.id });
     return session.id;
   }, [refreshAgent, setRuntime]);
 
@@ -547,12 +561,18 @@ export function EkhoProvider({
       if (!existing || !existing.runs[runId]) return current;
       return { ...current, [agentId]: { ...existing, runs: { ...existing.runs, [runId]: status }, events: [...existing.events, { event: 'approval.responded', runId }] } };
     });
+    posthog.capture(choice === 'deny' ? 'run_denied' : 'run_approved', {
+      agent_id: agentId,
+      run_id: runId,
+      approval_scope: choice,
+    });
     return result;
   }, [setRuntime]);
 
   const retryAgent = useCallback((agentId: string) => refreshAgent(agentId), [refreshAgent]);
 
   const removeAgent = useCallback(async (agentId: string) => {
+    posthog.capture('agent_removed', { agent_id: agentId });
     closeSubscription(agentId);
     clients.current.delete(agentId);
     await catalog.remove(agentId);

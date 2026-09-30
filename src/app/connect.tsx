@@ -1,3 +1,4 @@
+import { posthog } from '@/config/posthog';
 import * as Device from 'expo-device';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -53,6 +54,7 @@ export default function ConnectRoute() {
     } catch (error) {
       setState('error');
       setErrorMessage(error instanceof Error ? error.message : 'Could not read this pairing link');
+      posthog.capture('agent_pairing_failed', { stage: 'describe' });
     } finally {
       preparing.current = false;
       setBusy(false);
@@ -75,6 +77,7 @@ export default function ConnectRoute() {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Pairing failed';
       setErrorMessage(message);
+      posthog.capture('agent_pairing_failed', { stage: 'confirm' });
       setState(/expired|invalid pairing token/i.test(message) ? 'expired' : 'error');
     } finally {
       preparing.current = false;

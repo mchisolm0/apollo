@@ -63,6 +63,7 @@ test('concurrent threads retain independent streams, controls, and saved run IDs
     setTimeout: (callback: () => void, ms?: number) => setTimeout(callback, ms).unref(),
     require: (id: string) => {
       if (id === '@/features/notifications/notifications') return {};
+      if (id === '@/config/posthog') return { posthog: { capture() {} } };
       if (id === 'react-native') return { AppState: {} };
       if (id === './catalog') return {};
       if (id === './pairing') return { PairingClient: class {} };

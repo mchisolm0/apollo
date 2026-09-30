@@ -1,4 +1,7 @@
-import { DarkTheme, Stack, ThemeProvider } from 'expo-router';
+import { useEffect } from 'react';
+import { PostHogProvider } from 'posthog-react-native';
+import { posthog } from '@/config/posthog';
+import { DarkTheme, Stack, ThemeProvider, usePathname } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StatusBar } from 'expo-status-bar';
 
@@ -25,15 +28,23 @@ function InnerStack() {
   return (
     <ThemeProvider value={theme}>
       <StatusBar style="light" />
+      <ScreenTracker />
       <NotificationNavigation />
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }} />
     </ThemeProvider>
   );
 }
 
+function ScreenTracker() {
+  const pathname = usePathname();
+  useEffect(() => { posthog.screen(pathname); }, [pathname]);
+  return null;
+}
+
 export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
+    <PostHogProvider client={posthog} autocapture={false}>
     <EkhoProvider>
       <OutboxProvider>
       <IncomingShareProvider>
@@ -43,6 +54,7 @@ export default function RootLayout() {
       </IncomingShareProvider>
       </OutboxProvider>
     </EkhoProvider>
+    </PostHogProvider>
     </GestureHandlerRootView>
   );
 }

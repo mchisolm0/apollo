@@ -1,3 +1,4 @@
+import { posthog } from '@/config/posthog';
 import { useOutbox } from '@/lib/outbox-context';
 import { useIncomingShares } from '@/features/sharing';
 import { MAX_ATTACHMENTS } from '@/lib/attachments';
@@ -145,7 +146,11 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
       pickerLock.current = true;
       setPicking(true);
       setLocalError(undefined);
-      try { setAttachments([...attachments, ...await pickAttachments(kind, MAX_ATTACHMENTS - attachments.length)]); }
+      try {
+        const picked = await pickAttachments(kind, MAX_ATTACHMENTS - attachments.length);
+        setAttachments([...attachments, ...picked]);
+        if (picked.length) posthog.capture('attachment_added', { kind, count: picked.length, agent_id: agentId });
+      }
       catch (error) { setLocalError(error instanceof Error ? error.message : 'Could not attach the file. Try again.'); }
       finally { pickerLock.current = false; setPicking(false); }
     };
@@ -263,7 +268,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
         onSend={send}
         onStop={() => run && void act(() => stopRun(agentId, run.runId))}
         onAgentDetails={() => router.push({ pathname: '/settings/[agentId]', params: { agentId } })}
-        onReconnect={() => void act(() => retryAgent(agentId))}
+        onReconnect={() => { posthog.capture('agent_reconnected', { agent_id: agentId }); void act(() => retryAgent(agentId)); }}
         onApprove={(value) => run && void act(() => approveRun(agentId, run.runId, 'once', { requestId: value.id === 'approval' ? undefined : value.id }))}
         onDeny={(value) => run && void act(() => approveRun(agentId, run.runId, 'deny', { requestId: value.id === 'approval' ? undefined : value.id }))}
       />
