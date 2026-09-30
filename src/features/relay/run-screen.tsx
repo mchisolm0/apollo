@@ -1,6 +1,8 @@
+import { followAfterScroll } from './feed-follow';
+import { CopyButton } from '../content/copy-button';
 import { splitAttachmentMessage, type AttachmentSource, type DraftAttachment } from '../../lib/attachments';
 import { AttachmentStrip } from './attachment-strip';
-import { memo, useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
 import { MenuView } from '@expo/ui/community/menu';
@@ -62,6 +64,9 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
   const list = useRef<LegendListRef>(null);
   const input = useRef<TextInput>(null);
   const dragging = useRef(false);
+  const atEnd = useRef(true);
+  const dragEndTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(dragEndTimer.current), []);
   const [following, setFollowing] = useState(true);
   const [observedSelection, setObservedSelection] = useState<{ start: number; end: number; text: string }>();
   const [inputSelection, setInputSelection] = useState<{ start: number; end: number }>();
@@ -99,6 +104,11 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
     setSkillsDismissed(false);
     requestAnimationFrame(() => input.current?.focus());
   };
+  const endScroll = () => {
+    if (!dragging.current) return;
+    dragging.current = false;
+    setFollowing((current) => followAfterScroll(current, 'end', atEnd.current));
+  };
   return (
     <KeyboardFrame key={fontScale}>
       <View style={styles.navigation}>
@@ -133,13 +143,14 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
         }}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
-        onScrollBeginDrag={() => { dragging.current = true; setFollowing(false); }}
+        onScrollBeginDrag={() => { clearTimeout(dragEndTimer.current); dragging.current = true; setFollowing((current) => followAfterScroll(current, 'begin', atEnd.current)); }}
         onScroll={(event) => {
-          if (!dragging.current) return;
           const { contentSize, contentOffset, layoutMeasurement } = event.nativeEvent;
-          setFollowing(contentSize.height - contentOffset.y - layoutMeasurement.height < 60);
+          atEnd.current = contentSize.height - contentOffset.y - layoutMeasurement.height <= 2;
         }}
-        onMomentumScrollEnd={() => { dragging.current = false; }}
+        onScrollEndDrag={() => { dragEndTimer.current = setTimeout(endScroll, 80); }}
+        onMomentumScrollBegin={() => { clearTimeout(dragEndTimer.current); dragging.current = true; }}
+        onMomentumScrollEnd={endScroll}
         scrollEventThrottle={32}
       />
       {!following && events.length > 0 ? <Pressable accessibilityRole="button" onPress={() => { dragging.current = false; setFollowing(true); list.current?.scrollToEnd({ animated: true }); }} style={styles.latest}><Text style={styles.link}>Jump to latest ↓</Text></Pressable> : null}
@@ -296,7 +307,7 @@ const TranscriptEntry = memo(function TranscriptEntry({ row, agentName, attachme
   return <View style={styles.message}>
     <View accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[styles.avatar, user && styles.userAvatar]}><Text style={styles.avatarText}>{user ? 'Y' : agentName.charAt(0).toUpperCase()}</Text></View>
     <View style={styles.messageBody}>
-      <Text style={[styles.author, { fontSize: 14 * factor }]}>{user ? 'You' : agentName}</Text>
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}><Text style={[styles.author, { fontSize: 14 * factor }]}>{user ? 'You' : agentName}</Text>{user ? <CopyButton text={message?.text ?? row.text} /> : null}</View>
       {message ? <>{message.text ? <Text selectable style={[styles.userText, { fontSize: 16 * factor, lineHeight: 24 * factor }]}>{message.text}</Text> : null}<AttachmentStrip files={message.attachments.map((file) => ({ ...file, source: attachmentSource?.(file.id) }))} /></> : <MessageContent text={row.text} />}
     </View>
   </View>;
