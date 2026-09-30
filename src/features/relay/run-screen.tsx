@@ -8,6 +8,7 @@ import { LegendList, useRecyclingState, type LegendListRef } from '@legendapp/li
 
 import { ConnectionAction, ConnectionMark, IconButton, relayColors as colors, useTextScale } from './relay-ui';
 import { KeyboardFrame } from './keyboard-frame';
+import { RingSpinner } from './ring-spinner';
 import { insertSkill, matchingSkills, selectedSkillNames, skillTrigger, type SkillTrigger } from './composer-skills';
 import { showSessionActions } from './session-actions';
 import { MessageContent } from './message-content';
@@ -332,7 +333,7 @@ const ActivityEntry = memo(function ActivityEntry({ row, connection, onDisclosur
       accessibilityState={expandable ? { expanded } : undefined}
       onPress={() => { onDisclosure(); setExpanded(!expanded); }}
     >
-      {running ? <ActivityIndicator size="small" color={colors.secondary} /> : null}
+      {running ? <RingSpinner color={attention ? colors.amber : colors.secondary} /> : null}
       <Text style={[styles.activityLabel, row.status === 'failed' && styles.failedText, attention && styles.attentionText]} numberOfLines={1} ellipsizeMode="middle">{label}</Text>
       {seconds !== undefined ? <Text style={styles.activityTime}>{formatDuration(seconds)}</Text> : null}
       {expandable ? <SymbolView name={{ ios: expanded ? 'chevron.up' : 'chevron.down', android: expanded ? 'expand_less' : 'expand_more', web: expanded ? 'expand_less' : 'expand_more' }} size={10} tintColor={colors.secondary} /> : null}
@@ -355,7 +356,7 @@ const StepEntry = memo(function StepEntry({ step, onDisclosure }: { step: Transc
   const verb = tool ? toolVerb(tool.name, tool.status) : 'Thought';
   const target = oneLine(step.kind === 'tool' ? step.input || step.output : step.text);
   const failed = tool?.status === 'failed';
-  const trailing = tool?.status === 'running' ? <ActivityIndicator size="small" color={colors.secondary} />
+  const trailing = tool?.status === 'running' ? <RingSpinner size={12} color={colors.muted} />
     : failed ? <Text style={[styles.stepTime, styles.failedText]}>Failed</Text>
       : tool?.duration !== undefined && tool.duration >= 1 ? <Text style={styles.stepTime}>{formatDuration(tool.duration)}</Text> : null;
   return <View>
