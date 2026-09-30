@@ -23,12 +23,13 @@ test("terminal notification retries stop and stale push results preserve a newer
       },
     });
     try {
-      await monitor.trackRun({ run_id: "run", status: "running" });
+      await Promise.all([monitor.trackRun({ run_id: "run", status: "running" }), monitor.trackRun({ run_id: "run", status: "running" })]);
       await waitFor(() => scenario === "push-failure" ? pushes === 5 : state.notification_runs?.run?.events?.completed?.delivered.includes("phone"));
       const settledWrites = writes;
       await new Promise((resolve) => setTimeout(resolve, 20));
       assert.equal(writes, settledWrites);
       if (scenario === "replaced-token") assert.equal(state.devices[0].notifications.expo_push_token, "new");
+      if (scenario === "replaced-token") assert.equal(pushes, 1);
       if (scenario === "unroutable") assert.equal(pushes, 0);
     } finally { monitor.close(); }
   }
@@ -46,6 +47,10 @@ test("notification history compaction retains active and undelivered runs", asyn
   assert.equal(state.notification_runs["active-0"].status, "running");
   assert.ok(state.notification_runs.retry);
   assert.equal(Object.keys(state.notification_runs).length, 262 + 256);
+  await monitor.trackRun({ run_id: "__proto__", status: "running" });
+  assert.equal(Object.hasOwn(state.notification_runs, "__proto__"), true);
+  assert.equal(state.notification_runs.__proto__.status, "running");
+  assert.equal(Object.prototype.status, undefined);
   monitor.close();
 });
 
