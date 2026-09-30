@@ -310,14 +310,15 @@ export class SessionDraftStore {
       if (requestedRevision !== this.revision) {
         moved = { ...this.record, prepared: undefined };
         await this.options.storage.setItem(nextKey, JSON.stringify(moved));
-      } else {
+      }
+      await this.options.storage.removeItem(this.key);
+      if (requestedRevision === this.revision) {
         this.record = moved;
         this.edited = true;
         this.revision += 1;
         this.publish({ draft, attachments, error: undefined });
       }
       this.persistenceKey = nextKey;
-      await this.options.storage.removeItem(this.key).catch(() => undefined);
       const destination = stores.get(nextKey);
       destination?.adopt(moved);
       if (stores.get(this.key) === this) stores.delete(this.key);

@@ -5,6 +5,19 @@ import { createOutboxRuntime, decodeOutbox, type OutboxDependencies, type Queued
 
 const first = { id: 'message-one', agentId: 'agent-one', sessionId: 'thread-one', createsSession: false, text: 'Do the work', attachments: [] };
 
+test('forgetting an agent discards its queued attachments after persistence', async () => {
+  const discarded: string[] = [];
+  const file = { id: 'attachment', name: 'a.txt', mimeType: 'text/plain', size: 2, uri: 'file:///a.txt' };
+  const setup = fixture({ canSend: () => false, discardAttachments: (files) => discarded.push(...files.map((entry) => entry.id)) });
+  const outbox = createOutboxRuntime(setup.dependencies);
+  await outbox.enqueue({ ...first, attachments: [file] });
+  await outbox.enqueue({ ...first, id: 'other', agentId: 'other-agent' });
+  await outbox.forgetAgent(first.agentId);
+  assert.deepEqual(discarded, [file.id]);
+  assert.deepEqual(decodeOutbox(setup.stored()).map((entry) => entry.id), ['other']);
+  await outbox.dispose();
+});
+
 function fixture(overrides: Partial<OutboxDependencies> = {}) {
   let stored: string | null = null;
   let now = 1000;

@@ -226,7 +226,11 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
       yield* mutate((items) => items.filter((item) => item.id !== id));
       if (item) dependencies.discardAttachments(item.attachments);
     })),
-    forgetAgent: (agentId: string) => run(mutate((items) => items.filter((item) => item.agentId !== agentId))),
+    forgetAgent: (agentId: string) => run(Effect.gen(function* () {
+      const removed = snapshot.items.filter((item) => item.agentId === agentId);
+      yield* mutate((items) => items.filter((item) => item.agentId !== agentId));
+      removed.forEach((item) => dependencies.discardAttachments(item.attachments));
+    })),
     dispose: async () => {
       disposed = true;
       if (worker) await Effect.runPromise(Fiber.interrupt(worker));

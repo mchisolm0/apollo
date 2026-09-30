@@ -15,6 +15,24 @@ function memory(initial: Record<string, string> = {}) {
 }
 
 const wait = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+test('a failed source cleanup keeps a moved draft retryable', async () => {
+  const storage = memory();
+  const store = new SessionDraftStore('cleanup', 'new', { storage, uuid: () => 'delivery' });
+  await store.load();
+  store.setDraft('keep me');
+  await wait();
+  const prepared = await store.prepareSend();
+  const remove = storage.removeItem;
+  storage.removeItem = async () => { throw new Error('cleanup failed'); };
+  await assert.rejects(store.move('thread', '', []), /cleanup failed/);
+  assert.equal(store.getSnapshot().draft, 'keep me');
+  assert.deepEqual(await store.prepareSend(), prepared);
+  storage.removeItem = remove;
+  await store.move('thread', '', []);
+  assert.equal(storage.values[store.key], undefined);
+  assert.equal(store.getSnapshot().draft, '');
+});
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => { resolve = done; });
