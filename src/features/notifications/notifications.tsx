@@ -77,17 +77,19 @@ export function useNotificationRegistration({ client, projectId, onError }: {
 }) {
   const [state, setState] = useState<NotificationRegistrationState>('loading');
   const [preferences, setPreferences] = useState(defaults);
+  const revision = useRef(0);
   const visibleState = client ? state : 'disabled';
 
   useEffect(() => {
     let current = true;
     if (!client) return;
+    const requestRevision = ++revision.current;
     void client.status().then((result) => {
-      if (!current) return;
+      if (!current || requestRevision !== revision.current) return;
       if (result.preferences) setPreferences(result.preferences);
       setState(result.registered ? 'enabled' : 'disabled');
     }).catch((cause: unknown) => {
-      if (!current) return;
+      if (!current || requestRevision !== revision.current) return;
       const error = cause instanceof Error ? cause : new Error('Could not load notification settings');
       setState('error');
       onError?.(error);
@@ -96,6 +98,7 @@ export function useNotificationRegistration({ client, projectId, onError }: {
   }, [client, onError]);
 
   const enable = useCallback(async (next = preferences) => {
+    revision.current += 1;
     if (!client || !projectId || Platform.OS === 'web') {
       setState('unsupported');
       return false;
@@ -122,6 +125,7 @@ export function useNotificationRegistration({ client, projectId, onError }: {
   }, [client, onError, preferences, projectId]);
 
   const disable = useCallback(async () => {
+    revision.current += 1;
     if (!client) return;
     try {
       await client.unregister();
