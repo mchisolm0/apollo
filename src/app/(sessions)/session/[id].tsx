@@ -170,6 +170,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   };
 
   const send = (text: string) => void act(async () => {
+    if (pickerLock.current) return;
     // Skill instructions need a live catalog lookup. Offline, send the raw text.
     // A send racing the initial catalog load refetches once so $skill refs still resolve.
     let catalog = skills;
