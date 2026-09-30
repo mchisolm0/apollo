@@ -1,3 +1,4 @@
+import { HAS_MAIL_TOOLBAR, MAIL_TOOLBAR_INSET, MailToolbar } from './mail-toolbar';
 import { memo, useCallback, useMemo, useRef, useState } from 'react';
 import { Alert, Keyboard, Pressable, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
@@ -88,7 +89,7 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
       ListEmptyComponent={<View style={styles.empty}><Text style={styles.emptyTitle}>{connection !== 'connected' && !sessions.length ? 'Threads are unavailable' : query ? 'No matching threads' : attentionOnly ? 'All caught up' : 'Start a thread'}</Text><Text style={styles.emptyText}>{connection !== 'connected' && !sessions.length ? 'Reconnect to load your threads.' : query ? 'Try a different search.' : attentionOnly ? 'No threads need your attention.' : 'Choose New thread to get started.'}</Text></View>}
     />
     </View>
-    <View style={styles.dock} pointerEvents="box-none">
+    {HAS_MAIL_TOOLBAR ? <MailToolbar searchText={query} attentionOnly={attentionOnly} onFilter={() => setAttentionOnly((current) => !current)} onCompose={() => { Keyboard.dismiss(); onNewSession?.(); }} onSearch={setQuery} /> : <View style={styles.dock} pointerEvents="box-none">
       <View style={styles.dockCircle}>
         <Pressable accessibilityRole="button" accessibilityLabel={attentionOnly ? 'Show all threads' : 'Show threads needing attention'} accessibilityState={{ selected: attentionOnly }} onPress={() => setAttentionOnly(!attentionOnly)} style={styles.dockButton}>
           <SymbolView name={{ ios: attentionOnly ? 'line.3.horizontal.decrease.circle.fill' : 'line.3.horizontal.decrease', android: 'filter_list', web: 'filter_list' }} size={24} tintColor={attentionOnly ? colors.cyan : colors.primary} />
@@ -103,7 +104,7 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
           <SymbolView name={{ ios: 'square.and.pencil', android: 'edit_square', web: 'edit_square' }} size={24} tintColor={colors.primary} />
         </Pressable>
       </View>
-    </View>
+    </View>}
   </KeyboardFrame>;
 }
 
@@ -170,7 +171,7 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
 });
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background }, list: { flex: 1 }, content: { paddingBottom: 20 },
+  container: { flex: 1, backgroundColor: colors.background }, list: { flex: 1 }, content: { paddingBottom: HAS_MAIL_TOOLBAR ? MAIL_TOOLBAR_INSET + 20 : 20 },
   search: { flex: 1, minWidth: 0, height: 44, borderRadius: 8, backgroundColor: '#17171c', paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 10 },
   searchInput: { color: colors.primary, fontSize: 16, flex: 1, height: 44, paddingVertical: 8 },
   section: { marginHorizontal: 12, paddingHorizontal: 8, minHeight: 48, borderRadius: 6, flexDirection: 'row', alignItems: 'center', gap: 12 },

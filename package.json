@@ -94,5 +94,12 @@
       "css",
       "html"
     ]
+  },
+  "expo": {
+    "autolinking": {
+      "buildFromSource": [
+        "react-native-screens"
+      ]
+    }
   }
 }

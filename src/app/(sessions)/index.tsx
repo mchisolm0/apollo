@@ -1,7 +1,8 @@
+import { HAS_MAIL_TOOLBAR } from '@/features/relay/mail-toolbar';
 import { useOutbox } from '@/lib/outbox-context';
 import { useIncomingShares } from '@/features/sharing';
 import type { InboxSession } from '@/features/relay/session-inbox';
-import { Redirect, useLocalSearchParams, useRouter } from 'expo-router';
+import { Redirect, Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -31,8 +32,22 @@ export default function SessionsRoute() {
   }
   const queuedIds = new Set(outbox.items.filter((item) => item.agentId === agent.id).map((item) => item.sessionId));
   const sessions = [...inbox.sessions.map((session) => queuedIds.has(session.id) ? { ...session, queued: true } : session), ...pendingSessions.values()];
-  return <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
-    <View style={styles.header}>
+  const picker = <AgentPicker agents={agents} selected={agent} runtime={runtime}
+    onSelect={(agentId) => router.setParams({ agentId })}
+    onDetails={(agentId) => router.push({ pathname: '/settings/[agentId]', params: { agentId } })}
+    onPair={() => router.push('/connect')} />;
+  return <SafeAreaView style={styles.screen} edges={HAS_MAIL_TOOLBAR ? ['bottom'] : ['top', 'bottom']}>
+    {HAS_MAIL_TOOLBAR ? <Stack.Screen options={{
+      headerShown: true,
+      headerTitle: () => picker,
+      headerStyle: { backgroundColor: colors.background },
+      headerTintColor: colors.primary,
+      headerShadowVisible: false,
+      headerRight: () => <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+        <ConnectionAction state={connection} onReconnect={() => void retryAgent(agent.id)} onDetails={() => router.push({ pathname: '/settings/[agentId]', params: { agentId: agent.id } })} />
+        <IconButton name="gearshape" label="Settings" onPress={() => router.push('/settings')} />
+      </View>,
+    }} /> : <View style={styles.header}>
       <View style={styles.identity}>
         <AgentPicker agents={agents} selected={agent} runtime={runtime}
           onSelect={(agentId) => router.setParams({ agentId })}
@@ -41,7 +56,7 @@ export default function SessionsRoute() {
       </View>
       <ConnectionAction state={connection} onReconnect={() => void retryAgent(agent.id)} onDetails={() => router.push({ pathname: '/settings/[agentId]', params: { agentId: agent.id } })} />
       <IconButton name="gearshape" label="Settings" onPress={() => router.push('/settings')} />
-    </View>
+    </View>}
     {pendingShares.length > 0 ? <Pressable accessibilityRole="button" onPress={() => router.push("/share")} style={{ minHeight: 44, paddingHorizontal: 20, justifyContent: "center" }}><Text style={{ color: colors.cyan }}>Open shared content ({pendingShares.length})</Text></Pressable> : null}
     {inbox.error ? <Text style={styles.error} accessibilityRole="alert">{inbox.error}</Text> : null}
     <SessionList connection={connection} sessions={sessions} onSessionPress={(session) => open(session.id)} onSettle={(id) => { void inbox.settle(id); }} onReopen={(id) => { void inbox.reopen(id); }} onNewSession={() => open('new')} onForked={(id) => open(id)} />
