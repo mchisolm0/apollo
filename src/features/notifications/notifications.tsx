@@ -182,7 +182,9 @@ export function useNotificationResponseNavigation({ ready, isKnownAgent, isKnown
       })
       .catch((cause: unknown) => onError?.(cause instanceof Error ? cause : new Error('Could not read the notification response')));
     const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
-      void handle(response).catch((cause: unknown) => onError?.(cause instanceof Error ? cause : new Error('Could not open the notification')));
+      void handle(response).then(async (result) => {
+        if (result !== 'pending') await Notifications.clearLastNotificationResponseAsync();
+      }).catch((cause: unknown) => onError?.(cause instanceof Error ? cause : new Error('Could not open the notification')));
     });
     return () => subscription.remove();
   }, [handle, onError, ready]);

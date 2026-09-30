@@ -197,6 +197,7 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
 
   async function start(runId) {
     if (closed || !sendPush || active.has(runId) || !(await registeredDevices()).length) return;
+    if (closed || active.has(runId)) return;
     active.set(runId, null);
     const operation = watch(runId).catch(() => {
       // A storage outage must not crash the connector. The next registration/run refresh retries.
@@ -210,7 +211,7 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
       if (!run || typeof run.run_id !== "string" || !ID.test(run.run_id)) return;
       const tracked = await store.update((state) => {
         if (!state.devices.some((device) => !device.revoked_at && device.notifications)) return false;
-        state.notification_runs ??= {};
+        state.notification_runs = Object.assign(Object.create(null), state.notification_runs ?? {});
         state.notification_runs[run.run_id] ??= {
           run_id: run.run_id,
           session_id: typeof run.session_id === "string" && ID.test(run.session_id) ? run.session_id : null,
