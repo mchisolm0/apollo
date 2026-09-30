@@ -1,3 +1,4 @@
+import { createNotificationRegistrationClient, type NotificationRegistrationClient } from '@/features/notifications/notifications';
 import { attachmentMessage, type Attachment, type AttachmentSource } from './attachments';
 import {
   createContext,
@@ -61,6 +62,8 @@ export interface EkhoContextValue {
     options?: ApprovalOptions,
   ): Promise<HermesApprovalResponse>;
   removeAgent(agentId: string): Promise<void>;
+  hasSession(agentId: string, sessionId: string): boolean;
+  notificationClient(agentId: string): Promise<NotificationRegistrationClient>;
 }
 
 // Several missed keepalives: long enough that a quiet but healthy run rarely pays for a status request.
@@ -549,7 +552,21 @@ export function EkhoProvider({
 
   const retryAgent = useCallback((agentId: string) => refreshAgent(agentId), [refreshAgent]);
 
+  const notificationClient = useCallback(async (agentId: string) => {
+    const agent = catalog.get(agentId);
+    if (!agent) throw new Error('Agent is no longer paired.');
+    const accessToken = await catalog.credentials.get(agentId);
+    if (!accessToken) throw new Error('Pair this device again to manage notifications.');
+    return createNotificationRegistrationClient({ endpoint: agent.endpoint.url, accessToken });
+  }, [catalog]);
+
   const removeAgent = useCallback(async (agentId: string) => {
+    const client = await notificationClient(agentId);
+    try { await client.unregister(); }
+    catch (error) {
+      // Revoked credentials and older connectors have no registration to remove.
+      if (!(error && typeof error === 'object' && 'status' in error && [401, 404].includes(Number(error.status)))) throw error;
+    }
     closeSubscription(agentId);
     clients.current.delete(agentId);
     await catalog.remove(agentId);
@@ -564,7 +581,9 @@ export function EkhoProvider({
       for (const key of Object.keys(next)) if (key.startsWith(`${agentId}:`)) delete next[key];
       return next;
     });
-  }, [catalog, closeSubscription, setRuntime]);
+  }, [catalog, closeSubscription, notificationClient, setRuntime]);
+
+  const hasSession = useCallback((agentId: string, sessionId: string) => runtimeRef.current[agentId]?.sessions.some((session) => session.id === sessionId) ?? false, []);
 
   const value = useMemo<EkhoContextValue>(() => ({
     agents,
@@ -590,7 +609,9 @@ export function EkhoProvider({
     stopRun,
     approveRun,
     removeAgent,
-  }), [saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, deleteSession, setPinned, forkSession, regenerateTitle, models, error, loading, messages, pair, refreshAgent, removeAgent, retryAgent, runtime, sessionMessages, skills, startRun, stopRun]);
+    notificationClient,
+    hasSession,
+  }), [notificationClient, hasSession, saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, deleteSession, setPinned, forkSession, regenerateTitle, models, error, loading, messages, pair, refreshAgent, removeAgent, retryAgent, runtime, sessionMessages, skills, startRun, stopRun]);
 
   return <EkhoContext.Provider value={value}>{children}</EkhoContext.Provider>;
 }

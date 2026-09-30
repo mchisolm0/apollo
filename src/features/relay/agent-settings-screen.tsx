@@ -13,10 +13,11 @@ export type AgentSettingsScreenProps = {
   onEditEndpoint?: () => void;
   onRevokeDevice?: () => void;
   onForgetAgent?: () => void;
+  onNotifications?: () => void;
 };
 
 /** One agent's connection and pairing details, opened from the agent picker. App-wide preferences live in AppSettingsScreen. */
-export function AgentSettingsScreen({ agent, deviceName = 'This device', pairedAt, onBack, onTestConnection, onEditEndpoint, onRevokeDevice, onForgetAgent }: AgentSettingsScreenProps) {
+export function AgentSettingsScreen({ agent, deviceName = 'This device', pairedAt, onBack, onTestConnection, onEditEndpoint, onRevokeDevice, onForgetAgent, onNotifications }: AgentSettingsScreenProps) {
   const colors = useColors();
   return (
     <View style={uiStyles.screen}>
@@ -40,6 +41,7 @@ export function AgentSettingsScreen({ agent, deviceName = 'This device', pairedA
 
         <SettingSection label="This device">
           <SettingRow label="Name" value={deviceName} />
+          <SettingRow label="Notifications" value="Configure" onPress={onNotifications} />
           {pairedAt ? <SettingRow label="Paired" value={pairedAt} /> : null}
         </SettingSection>
         <View style={styles.dangerSection}>

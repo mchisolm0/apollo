@@ -16,6 +16,7 @@ export default function configure({ config }: ConfigContext): ExpoConfig {
       ...config.updates,
       requestHeaders: { 'expo-channel-name': variant === 'development' ? 'ekho-dev' : variant },
     },
+    plugins: [...(config.plugins ?? []), 'expo-notifications'],
     ios: { ...config.ios, bundleIdentifier: `com.matthewchisolm.ekho${suffix}` },
     android: { ...config.android, package: `com.matthewchisolm.ekho${suffix}` },
   };

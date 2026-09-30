@@ -4,6 +4,55 @@ import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StateStore, createConnectorServer } from "./index.mjs";
+import { createRunNotificationMonitor } from "./notifications.mjs";
+
+test("terminal notification retries stop and stale push results preserve a newer token", async () => {
+  for (const scenario of ["unroutable", "replaced-token", "push-failure"]) {
+    const state = { devices: [{ id: "phone", notifications: { expo_push_token: "old", notify_on_completion: true } }] };
+    let pushes = 0;
+    let writes = 0;
+    const monitor = createRunNotificationMonitor({
+      store: { read: async () => structuredClone(state), update: async (change) => { writes++; return change(state); } },
+      agentId: "agent", pollInterval: 1,
+      fetchRun: async () => ({ status: "completed", session_id: scenario === "unroutable" ? null : "thread" }),
+      sendPush: async () => {
+        pushes++;
+        if (scenario === "push-failure") throw new Error("Unavailable");
+        state.devices[0].notifications.expo_push_token = "new";
+        return { status: "unregistered" };
+      },
+    });
+    try {
+      await Promise.all([monitor.trackRun({ run_id: "run", status: "running" }), monitor.trackRun({ run_id: "run", status: "running" })]);
+      await waitFor(() => scenario === "push-failure" ? pushes === 5 : state.notification_runs?.run?.events?.completed?.delivered.includes("phone"));
+      const settledWrites = writes;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(writes, settledWrites);
+      if (scenario === "replaced-token") assert.equal(state.devices[0].notifications.expo_push_token, "new");
+      if (scenario === "replaced-token") assert.equal(pushes, 1);
+      if (scenario === "unroutable") assert.equal(pushes, 0);
+    } finally { monitor.close(); }
+  }
+});
+
+test("notification history compaction retains active and undelivered runs", async () => {
+  const state = { devices: [{ notifications: {} }], notification_runs: {} };
+  for (let i = 0; i < 260; i++) {
+    state.notification_runs[`active-${i}`] = { status: "running" };
+    state.notification_runs[`done-${i}`] = { status: "completed", updated_at: new Date(i).toISOString(), events: { completed: { targets: ["phone"], delivered: ["phone"] } } };
+  }
+  state.notification_runs.retry = { status: "completed", events: { completed: { targets: ["phone"], delivered: [] } } };
+  const monitor = createRunNotificationMonitor({ store: { read: async () => state, update: async (change) => change(state) } });
+  await monitor.trackRun({ run_id: "new", status: "running" });
+  assert.equal(state.notification_runs["active-0"].status, "running");
+  assert.ok(state.notification_runs.retry);
+  assert.equal(Object.keys(state.notification_runs).length, 262 + 256);
+  await monitor.trackRun({ run_id: "__proto__", status: "running" });
+  assert.equal(Object.hasOwn(state.notification_runs, "__proto__"), true);
+  assert.equal(state.notification_runs.__proto__.status, "running");
+  assert.equal(Object.prototype.status, undefined);
+  monitor.close();
+});
 
 async function fixture(options = {}) {
   const directory = await mkdtemp(join(tmpdir(), "ekho-connector-"));
@@ -16,15 +65,18 @@ async function fixture(options = {}) {
 
 async function startHermesStub() {
   const seen = [];
+  const runStatuses = new Map();
   const server = (await import("node:http")).createServer(async (req, res) => {
     seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization, cookie: req.headers.cookie, forwarded: req.headers["x-forwarded-for"], device: req.headers["x-ekho-device-id"] });
     if (req.url === "/v1/capabilities") return send(res, 200, { object: "hermes.api_server.capabilities", features: ["runs"] });
     if (req.url === "/v1/health") return send(res, 200, { status: "ok" });
+    if (req.method === "POST" && req.url === "/v1/runs") return send(res, 202, { run_id: "run_test", status: "started" });
+    if (req.method === "GET" && req.url === "/v1/runs/run_test") return send(res, 200, runStatuses.get("run_test") ?? { run_id: "run_test", status: "running", session_id: "session_test" });
     if (req.url === "/v1/runs/demo/events") { res.writeHead(200, { "content-type": "text/event-stream" }); res.write("event: run.completed\ndata: {}\n\n"); return res.end(); }
     return send(res, 200, { ok: true });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { server, seen, url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((resolve) => server.close(resolve)) };
+  return { server, seen, runStatuses, url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((resolve) => server.close(resolve)) };
 }
 
 function send(res, status, value) { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(value)); }
@@ -180,3 +232,81 @@ test("inbox config stores per-session auto-settle opt-outs and rejects malformed
     assert.equal((await patch(first, { settled: {}, config })).response.status, 400);
   }
 });
+
+test("notification registration is device-authenticated and validates its boundary", async (t) => {
+  const f = await fixture({ sendPush: async () => ({ status: "ok" }) }); t.after(async () => { await f.connector.close(); await f.hermes.close(); });
+  const path = "/v1/ekho/notifications";
+  assert.equal((await req(f.base, path)).response.status, 401);
+  const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
+  const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
+  const headers = { authorization: `Bearer ${exchange.body.access_token}`, "content-type": "application/json" };
+  const put = (body) => req(f.base, path, { method: "PUT", headers, body: JSON.stringify(body) });
+  assert.equal((await put({ expo_push_token: "nope" })).response.status, 400);
+  assert.equal((await put({ expo_push_token: "ExpoPushToken[valid_123]", notify_on_failure: "yes" })).response.status, 400);
+  assert.equal((await put({ expo_push_token: "ExpoPushToken[valid_123]", secret: true })).response.status, 400);
+  assert.equal((await put({ expo_push_token: "ExpoPushToken[valid_123]", notify_on_approval: false })).response.status, 200);
+  assert.deepEqual((await req(f.base, path, { headers })).body, { registered: true, notify_on_approval: false, notify_on_completion: true, notify_on_failure: true });
+  const devices = await req(f.base, "/admin/devices", admin());
+  assert.equal(JSON.stringify(devices.body).includes("valid_123"), false);
+  assert.equal(devices.body.devices[0].notifications_registered, true);
+  assert.equal((await req(f.base, path, { method: "DELETE", headers })).body.registered, false);
+  assert.equal((await req(f.base, path, { headers })).body.registered, false);
+  await put({ expo_push_token: "ExpoPushToken[valid_123]" });
+  await req(f.base, `/admin/devices/${exchange.body.device_id}/revoke`, admin({ method: "POST", body: "{}" }));
+  const state = JSON.parse(await readFile(f.statePath, "utf8"));
+  assert.equal("notifications" in state.devices[0], false);
+  assert.equal((await req(f.base, path, { headers })).response.status, 401);
+});
+
+test("run notifications are deduplicated and invalid push tokens are removed", async (t) => {
+  const sent = [];
+  let approvalAttempts = 0;
+  const sendPush = async (pushToken, notification) => {
+    if (notification.data.kind === "approval" && approvalAttempts++ === 0) throw new Error("temporary outage");
+    sent.push({ pushToken, notification });
+    return notification.data.kind === "completed" ? { status: "unregistered" } : { status: "ok" };
+  };
+  const f = await fixture({ sendPush, notificationPollInterval: 5 });
+  t.after(async () => { await f.connector.close(); await f.hermes.close(); });
+  const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
+  const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
+  const headers = { authorization: `Bearer ${exchange.body.access_token}`, "content-type": "application/json" };
+  await req(f.base, "/v1/ekho/notifications", { method: "PUT", headers, body: JSON.stringify({ expo_push_token: "ExpoPushToken[device_123]" }) });
+  f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "waiting_for_approval", session_id: "session_test", updated_at: 10, approval: { request_id: "approval_1", command: "private command" } });
+  assert.equal((await req(f.base, "/v1/runs", { method: "POST", headers, body: JSON.stringify({ input: "private input", session_id: "session_test" }) })).response.status, 202);
+  await waitFor(() => sent.length === 1);
+  assert.equal(approvalAttempts, 2);
+  assert.equal(sent[0].notification.data.kind, "approval");
+  assert.equal(JSON.stringify(sent[0].notification).includes("private"), false);
+  await req(f.base, "/v1/runs", { method: "POST", headers, body: JSON.stringify({ input: "private input", session_id: "session_test" }) });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(sent.length, 1);
+  f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "completed", session_id: "session_test", updated_at: 20, output: "private output" });
+  await waitFor(() => sent.length === 2);
+  assert.equal(sent[1].notification.data.kind, "completed");
+  await waitFor(async () => (await req(f.base, "/v1/ekho/notifications", { headers })).body.registered === false);
+  const state = JSON.parse(await readFile(f.statePath, "utf8"));
+  assert.deepEqual(state.notification_runs.run_test.events.completed.delivered, [exchange.body.device_id]);
+  assert.equal(JSON.stringify(state.notification_runs).includes("private"), false);
+});
+
+test("run status is not polled without a notification subscriber", async (t) => {
+  const f = await fixture({ sendPush: async () => ({ status: "ok" }), notificationPollInterval: 5 });
+  t.after(async () => { await f.connector.close(); await f.hermes.close(); });
+  const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
+  const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
+  const headers = { authorization: `Bearer ${exchange.body.access_token}`, "content-type": "application/json" };
+  await req(f.base, "/v1/runs", { method: "POST", headers, body: JSON.stringify({ input: "private input", session_id: "session_test" }) });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(f.hermes.seen.some((request) => request.method === "GET" && request.url === "/v1/runs/run_test"), false);
+  assert.equal((await f.connector.store.read()).notification_runs, undefined);
+});
+
+async function waitFor(predicate, timeout = 1_000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail("condition was not met before timeout");
+}
