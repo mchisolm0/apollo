@@ -1,7 +1,7 @@
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { ConnectionAction, ConnectionMark, connectionLabels, RelayButton, useColors, useRelayStyles, useThemedStyles, type RelayPalette } from './relay-ui';
-import { SettingRow, SettingSection, SettingsHeader } from './settings-ui';
+import { SettingRow, SettingSection, SettingsHeader, useSettingStyles } from './settings-ui';
 import type { RelayAgent } from './types';
 
 export type AgentSettingsScreenProps = {
@@ -23,6 +23,7 @@ export type AgentSettingsScreenProps = {
 export function AgentSettingsScreen({ agent, deviceName = 'This device', pairedAt, onBack, onTestConnection, onEditEndpoint, onRevokeDevice, onForgetAgent, onNotifications, onToolsets, defaultModel, platform }: AgentSettingsScreenProps) {
   const styles = useThemedStyles(createStyles);
   const uiStyles = useRelayStyles();
+  const settingStyles = useSettingStyles();
   const colors = useColors();
   const agentPlatform = platform ?? agent.platform;
   return (
@@ -42,7 +43,10 @@ export function AgentSettingsScreen({ agent, deviceName = 'This device', pairedA
           <SettingRow label="Last seen" value={agent.lastSeen ?? 'Not yet'} />
           {agentPlatform ? <SettingRow label="Platform" value={agentPlatform} /> : null}
           {defaultModel ? <SettingRow label="Default model" value={defaultModel} /> : null}
-          {onToolsets ? <SettingRow label="Toolsets" value="View" onPress={onToolsets} /> : null}
+          {onToolsets ? <Pressable accessibilityRole="button" accessibilityLabel="View toolsets" onPress={onToolsets} style={settingStyles.row}>
+            <Text style={settingStyles.rowLabel}>Toolsets</Text>
+            <Text style={[settingStyles.rowValue, { color: colors.cyan }]}>View</Text>
+          </Pressable> : null}
         </SettingSection>
         {onTestConnection ? <ConnectionAction state={agent.connection} onReconnect={onTestConnection} /> : null}
         {onTestConnection ? <View style={styles.primaryAction}><Pressable accessibilityRole="button" onPress={onTestConnection} style={styles.testConnection}><Text style={[styles.testConnectionText, { color: colors.cyan }]}>Test connection</Text></Pressable></View> : null}
