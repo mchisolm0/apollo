@@ -1,7 +1,7 @@
 import * as Application from 'expo-application';
 import * as Updates from 'expo-updates';
 import { useEffect, useState } from 'react';
-import { AccessibilityInfo, Keyboard, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { AccessibilityInfo, Keyboard, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useColors } from '@/features/relay/relay-ui';
@@ -53,8 +53,8 @@ export function UpdateReadyNotice() {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [keyboardVisible, setKeyboardVisible] = useState(() => Keyboard.isVisible());
   useEffect(() => {
-    const show = Keyboard.addListener('keyboardWillShow', () => setKeyboardVisible(true));
-    const hide = Keyboard.addListener('keyboardWillHide', () => setKeyboardVisible(false));
+    const show = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', () => setKeyboardVisible(true));
+    const hide = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => setKeyboardVisible(false));
     return () => { show.remove(); hide.remove(); };
   }, []);
   useEffect(() => {
