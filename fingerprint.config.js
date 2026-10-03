@@ -1,6 +1,6 @@
 /** @type {import('expo/fingerprint').Config} */
 module.exports = {
-  sourceSkips: ['PackageJsonScriptsAll', 'GitIgnore'],
+  sourceSkips: ['PackageJsonScriptsAll', 'GitIgnore', 'ExpoConfigExtraSection'],
   // pnpm launchers contain machine-specific paths, including in local modules.
   ignorePaths: ['**/node_modules/.bin/**'],
   // These package.json options configure the native markdown library at build time.

@@ -48,7 +48,8 @@
     "expo-clipboard": "~57.0.1",
     "react-native-nitro-markdown": "0.5.8",
     "react-native-nitro-modules": "0.35.9",
-    "posthog-react-native": "4.67.1"
+    "posthog-react-native": "4.67.1",
+    "expo-application": "~57.0.3"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",
@@ -71,7 +72,7 @@
     "typecheck": "tsc --noEmit",
     "test:connector": "node --test connector/**/*.test.mjs",
     "install:macos-services": "./scripts/install-macos-services.sh",
-    "test:mobile": "node --experimental-strip-types --test src/features/relay/*.test.ts src/lib/*.test.ts src/features/notifications/*.test.ts src/features/content/*.test.ts",
+    "test:mobile": "node --experimental-strip-types --test src/features/relay/*.test.ts src/lib/*.test.ts src/features/notifications/*.test.ts src/features/content/*.test.ts src/features/updates/*.test.ts",
     "start:dev": "EKHO_APP_VARIANT=development expo start --dev-client --port 8085",
     "ios:dev": "EKHO_APP_VARIANT=development expo run:ios --port 8085",
     "build:ios:preview": "eas build --profile preview:device --platform ios",
