@@ -87,10 +87,10 @@ export function OutboxProvider({ children }: PropsWithChildren) {
         await checkpoint({ acceptedRunId: run.runId });
         return run.runId;
       },
-      steer: (message, runId) => {
+      steer: (message, runId, signal) => {
         const run = api.current.runtime[message.agentId]?.runs[runId];
-        if (!run || run.sessionId !== message.sessionId || !isRunActive(run.status) || run.status === 'stopping' || run.status === 'waiting_for_approval') throw new Error('The run is no longer accepting steer messages.');
-        return api.current.steerRun(message.agentId, runId, message.text);
+        if (!run || run.sessionId !== message.sessionId || !isRunActive(run.status) || run.status === 'stopping' || run.status === 'waiting_for_approval') throw Object.assign(new Error('The run is no longer accepting steer messages.'), { status: 409 });
+        return api.current.steerRun(message.agentId, runId, message.text, signal);
       },
       discardAttachments: (attachments) => attachments.forEach(discardAttachment),
     });

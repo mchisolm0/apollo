@@ -18,6 +18,7 @@ export type QueuedMessage = Readonly<{
   firstAttemptAt?: number;
   nextAttemptAt?: number;
   acceptedRunId?: string;
+  steeringRunId?: string;
   error?: string;
 }>;
 
@@ -27,7 +28,7 @@ export type OutboxDependencies = {
   storage: { getItem(key: string): Promise<string | null>; setItem(key: string, value: string): Promise<void> };
   canSend(message: QueuedMessage): boolean;
   deliver(message: QueuedMessage, checkpoint: (patch: Checkpoint) => Promise<void>, signal: AbortSignal): Promise<string>;
-  steer?(message: QueuedMessage, runId: string): Promise<void>;
+  steer?(message: QueuedMessage, runId: string, signal: AbortSignal): Promise<void>;
   discardAttachments(attachments: readonly DraftAttachment[]): void;
   referencedMessageIds?(): Promise<readonly string[]>;
   now?: () => number;
@@ -62,12 +63,15 @@ export function decodeOutbox(saved: string | null): readonly QueuedMessage[] {
       || (entry.firstAttemptAt !== undefined && (typeof entry.firstAttemptAt !== 'number' || !Number.isFinite(entry.firstAttemptAt)))
       || (entry.nextAttemptAt !== undefined && (typeof entry.nextAttemptAt !== 'number' || !Number.isFinite(entry.nextAttemptAt)))
       || (entry.acceptedRunId !== undefined && !isId(entry.acceptedRunId))
+      || (entry.steeringRunId !== undefined && !isId(entry.steeringRunId))
       || (entry.model !== undefined && !isId(entry.model))
       || (entry.provider !== undefined && !isId(entry.provider))
       || (entry.instructions !== undefined && (typeof entry.instructions !== 'string' || entry.instructions.length > 32000))
       || (entry.error !== undefined && typeof entry.error !== 'string')) throw new Error('Saved outbox is invalid.');
     ids.add(entry.id);
-    return { ...entry, state: entry.state === 'sending' ? 'queued' : entry.state } as QueuedMessage;
+    const uncertainSteer = entry.steeringRunId !== undefined && entry.acceptedRunId === undefined;
+    return { ...entry, state: uncertainSteer ? 'failed' : entry.state === 'sending' ? 'queued' : entry.state,
+      ...(uncertainSteer ? { error: NEEDS_REVIEW } : {}) } as QueuedMessage;
   });
 }
 
@@ -83,7 +87,7 @@ export function readyMessages(items: readonly QueuedMessage[], now: number): rea
 }
 
 export function canReplayMessage(item: QueuedMessage, now: number): boolean {
-  return item.acceptedRunId !== undefined || item.firstAttemptAt === undefined || (now >= item.firstAttemptAt && now - item.firstAttemptAt < SAFE_REPLAY_AGE);
+  return item.acceptedRunId !== undefined || (item.steeringRunId === undefined && (item.firstAttemptAt === undefined || (now >= item.firstAttemptAt && now - item.firstAttemptAt < SAFE_REPLAY_AGE)));
 }
 
 function retryable(error: unknown): boolean {
@@ -247,23 +251,41 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
     steer: (id: string, runId: string) => run(Effect.gen(function* () {
       const steer = dependencies.steer;
       if (!steer) return yield* Effect.fail(new Error('Steering is unavailable.'));
-      const message = yield* mutex.withPermits(1)(Effect.gen(function* () {
+      const { message, controller } = yield* mutex.withPermits(1)(Effect.gen(function* () {
         const item = snapshot.items.find((entry) => entry.id === id);
         if (!item || inFlight.has(id) || item.state === 'sending' || item.acceptedRunId || item.createsSession
           || item.attachments.length || item.instructions || !item.text.trim()) {
           return yield* Effect.fail(new Error('Only queued text messages can steer a run.'));
         }
-        inFlight.set(id, new AbortController());
-        yield* save(snapshot.items.map((entry) => entry.id === id ? { ...entry, state: 'sending' } : entry)).pipe(
+        if (!canReplayMessage(item, now())) return yield* Effect.fail(new Error(NEEDS_REVIEW));
+        const controller = new AbortController();
+        inFlight.set(id, controller);
+        // Steering has no idempotency key. Persist the attempt before sending it.
+        yield* save(snapshot.items.map((entry) => entry.id === id ? { ...entry, state: 'sending', steeringRunId: runId } : entry)).pipe(
           Effect.tapError(() => Effect.sync(() => { inFlight.delete(id); })),
         );
-        return item;
+        return { message: item, controller };
       }));
       yield* Effect.gen(function* () {
-        const result = yield* Effect.either(Effect.tryPromise(() => steer(message, runId)));
+        if (controller.signal.aborted) return;
+        const result = yield* Effect.either(Effect.tryPromise({
+          try: (signal) => {
+            signal.addEventListener('abort', () => controller.abort(), { once: true });
+            if (signal.aborted) controller.abort();
+            return steer(message, runId, controller.signal);
+          },
+          catch: (cause) => cause,
+        }));
+        if (controller.signal.aborted) return;
         if (result._tag === 'Left') {
-          yield* mutate((items) => items.map((item) => item.id === id ? { ...message, error: 'Could not steer. Message kept queued.' } : item));
-          return yield* Effect.fail(new Error('Could not steer. Message kept queued.'));
+          const cause = result.left;
+          const rejected = cause !== null && typeof cause === 'object' && 'status' in cause && typeof cause.status === 'number'
+            && cause.status >= 400 && cause.status < 500 && cause.status !== 408;
+          const error = rejected ? 'Could not steer. Message kept queued.' : 'Could not confirm steer. Check this thread before resending.';
+          yield* mutate((items) => items.map((item) => item.id === id ? {
+            ...message, state: rejected ? message.state : 'failed', steeringRunId: rejected ? undefined : runId, error,
+          } : item));
+          return yield* Effect.fail(new Error(error));
         }
         // Reuse the accepted-run receipt so failed cleanup cannot deliver another turn.
         publish({ ...snapshot, items: snapshot.items.map((item) => item.id === id ? { ...item, acceptedRunId: runId } : item) });

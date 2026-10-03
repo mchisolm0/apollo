@@ -113,7 +113,10 @@ test('toolsets parses read-only state and concrete tool names', async () => {
 
 test('session detail reads the persisted model and verifies the session identity', async () => {
   const seen: { url?: string; init?: RequestInit }[] = [];
-  assert.equal((await clientWith({ session: { id: 'a/b', model: 'locked' } }, seen).session('a/b')).model, 'locked');
+  const session = await clientWith({ session: { id: 'a/b', model: 'locked' } }, seen).session('a/b');
+  assert.equal(session.model, 'locked');
+  assert.equal(Object.hasOwn(session, 'settledAt'), false);
+  assert.equal(Object.hasOwn(session, 'autoSettleDisabled'), false);
   assert.equal(seen[0]?.url, 'https://agent.example.ts.net/api/sessions/a%2Fb');
   await assert.rejects(clientWith({ session: { id: 'other' } }).session('a'), /different thread/);
 });
@@ -128,6 +131,8 @@ test('model locks send model and provider and require backend acceptance', async
   assert.deepEqual(JSON.parse(String(seen[0]?.init?.body)), { model: 'shared', provider: 'alpha' });
   await client.setSessionModel('a/b', { id: 'alias', provider: 'hermes' });
   assert.deepEqual(JSON.parse(String(seen[1]?.init?.body)), { model: 'alias' });
+  const missingProvider = clientWith({ ...response, runtime: { model: 'shared', model_lock: 'accepted' } });
+  assert.equal((await missingProvider.setSessionModel('a/b', { id: 'shared', provider: 'beta' })).provider, 'beta');
   for (const body of [{}, { ...response, session_id: 'other' }, { ...response, runtime: { model: 'shared' } }]) {
     await assert.rejects(clientWith(body).setSessionModel('a/b', { id: 'shared' }), /did not confirm/);
   }
@@ -142,7 +147,9 @@ test('model locks explain why the compatibility gateway alias cannot be locked',
 test('steer posts text to the active run and requires acceptance', async () => {
   const seen: { url?: string; init?: RequestInit }[] = [];
   const client = clientWith({ run_id: 'a/b', accepted: true }, seen);
-  await client.steerRun('a/b', '[QA] stop at 5');
+  const controller = new AbortController();
+  await client.steerRun('a/b', '[QA] stop at 5', controller.signal);
+  assert.equal(seen[0]?.init?.signal, controller.signal);
   assert.equal(seen[0]?.url, 'https://agent.example.ts.net/v1/runs/a%2Fb/steer');
   assert.equal(seen[0]?.init?.method, 'POST');
   assert.deepEqual(JSON.parse(String(seen[0]?.init?.body)), { input: '[QA] stop at 5' });
