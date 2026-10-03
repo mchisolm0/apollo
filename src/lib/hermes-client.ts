@@ -402,13 +402,13 @@ export class HermesClient {
       || body.runtime.model_lock !== 'accepted' || typeof body.runtime.model !== 'string' || !body.runtime.model.trim()) {
       throw new Error('Hermes did not confirm the thread model');
     }
-    return { sessionId, model: body.runtime.model, provider: stringValue(body.runtime.provider) || undefined };
+    return { sessionId, model: body.runtime.model, provider: stringValue(body.runtime.provider) || (model.provider === 'hermes' ? undefined : model.provider) };
   }
 
-  async steerRun(runId: string, input: string): Promise<void> {
+  async steerRun(runId: string, input: string, signal?: AbortSignal): Promise<void> {
     if (!input.trim()) throw new Error('Steer input cannot be empty');
     const body = await this.request(`/v1/runs/${encodeURIComponent(runId)}/steer`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input }),
+      signal, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input }),
     });
     if (!isJsonObject(body) || body.run_id !== runId || body.accepted !== true) throw new Error('Hermes did not accept the steer message');
   }

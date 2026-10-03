@@ -32,6 +32,7 @@ export default function SessionRoute() {
 }
 
 function Session({ id, agentId, shareId }: { id: string; agentId: string; shareId?: string }) {
+  const styles = useThemedStyles(createStyles);
   const { agents, runtime, messages, sessionMessages, skills: loadSkills, models: loadModels, stopRun, approveRun, retryAgent, attachmentSource, deleteSession, regenerateTitle, sessionDetail, setSessionModel } = useEkho();
   const outbox = useOutbox();
   const { getShare, acknowledgeShare } = useIncomingShares();

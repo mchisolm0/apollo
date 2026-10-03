@@ -57,7 +57,7 @@ export interface EkhoContextValue {
   toolsets(agentId: string): Promise<readonly HermesToolset[]>;
   sessionDetail(agentId: string, sessionId: string): Promise<HermesSession>;
   setSessionModel(agentId: string, sessionId: string, model: HermesModel): Promise<HermesModelLock>;
-  steerRun(agentId: string, runId: string, input: string): Promise<void>;
+  steerRun(agentId: string, runId: string, input: string, signal?: AbortSignal): Promise<void>;
   uploadAttachment(agentId: string, file: { name: string; mimeType: string; data: string }, signal?: AbortSignal): Promise<Attachment>;
   attachmentSource(agentId: string, id: string): AttachmentSource | undefined;
   sessionMessages(agentId: string, sessionId: string): Promise<readonly HermesMessage[]>;
@@ -112,6 +112,7 @@ export function EkhoProvider({
   const [error, setError] = useState<string>();
   const startingRuns = useRef(new Set<string>());
   const newSessions = useRef(new Set<string>());
+  const sessionDetailRequests = useRef(new Map<string, object>());
   const clients = useRef(new Map<string, HermesClient>());
   const subscriptions = useRef(new Map<string, RunEventSubscription & { runId: string }>());
 
@@ -377,6 +378,7 @@ export function EkhoProvider({
   }, [catalog, pairingClient, refreshAgent, updateRuntime]);
 
   const updateSessionModel = useCallback((agentId: string, sessionId: string, model: string) => {
+    sessionDetailRequests.current.delete(`${agentId}:${sessionId}`);
     setRuntime((current) => {
       const state = current[agentId];
       return state ? { ...current, [agentId]: { ...state, sessions: state.sessions.map((session) => session.id === sessionId ? { ...session, model } : session) } } : current;
@@ -480,29 +482,37 @@ export function EkhoProvider({
   const sessionDetail = useCallback(async (agentId: string, sessionId: string) => {
     const client = clients.current.get(agentId);
     if (!client) throw new Error('Reconnect to load the thread model.');
-    const previousModel = runtimeRef.current[agentId]?.sessions.find((item) => item.id === sessionId)?.model;
-    const session = await client.session(sessionId);
-    setRuntime((current) => {
-      const state = current[agentId];
-      if (!state) return current;
-      if (state.sessions.find((item) => item.id === sessionId)?.model !== previousModel) return current;
-      const existing = state.sessions.some((item) => item.id === session.id);
-      const sessions = existing ? state.sessions.map((item) => item.id === session.id ? { ...item, ...session } : item) : [session, ...state.sessions];
-      return { ...current, [agentId]: { ...state, sessions } };
-    });
-    return session;
+    const key = `${agentId}:${sessionId}`;
+    const request = {};
+    sessionDetailRequests.current.set(key, request);
+    try {
+      const session = await client.session(sessionId);
+      setRuntime((current) => {
+        if (sessionDetailRequests.current.get(key) !== request) return current;
+        sessionDetailRequests.current.delete(key);
+        const state = current[agentId];
+        if (!state) return current;
+        const existing = state.sessions.some((item) => item.id === session.id);
+        const sessions = existing ? state.sessions.map((item) => item.id === session.id ? { ...item, ...session } : item) : [session, ...state.sessions];
+        return { ...current, [agentId]: { ...state, sessions } };
+      });
+      return session;
+    } finally {
+      if (sessionDetailRequests.current.get(key) === request) sessionDetailRequests.current.delete(key);
+    }
   }, [setRuntime]);
 
-  const steerRun = useCallback(async (agentId: string, runId: string, input: string) => {
+  const steerRun = useCallback(async (agentId: string, runId: string, input: string, signal?: AbortSignal) => {
     const client = clients.current.get(agentId);
     if (!client) throw new Error('Reconnect to steer the run.');
-    await client.steerRun(runId, input);
+    await client.steerRun(runId, input, signal);
   }, []);
 
   const deleteSession = useCallback(async (agentId: string, sessionId: string): Promise<void> => {
     const client = clients.current.get(agentId);
     if (!client) throw new Error('Connect to the agent to update threads.');
     await client.deleteSession(sessionId);
+    sessionDetailRequests.current.delete(`${agentId}:${sessionId}`);
     setRuntime((current) => {
       const state = current[agentId];
       if (!state) return current;

@@ -37,7 +37,7 @@ test('steer reserves a queued message and removes it only after acceptance', asy
 });
 
 test('failed steer keeps text queued with an error', async () => {
-  const setup = fixture({ canSend: () => false, steer: async () => { throw new Error('Run ended'); } });
+  const setup = fixture({ canSend: () => false, steer: async () => { throw Object.assign(new Error('Run ended'), { status: 409 }); } });
   const outbox = createOutboxRuntime(setup.dependencies);
   try {
     await outbox.enqueue(first);
@@ -74,6 +74,83 @@ test('accepted steer survives a failed receipt write without becoming a normal t
     assert.deepEqual(setup.sent, []);
     assert.deepEqual(outbox.getSnapshot().items, []);
   } finally { await outbox.dispose(); }
+});
+
+test('an accepted steer with an unsaved receipt requires review after relaunch', async () => {
+  let stored: string | null = null;
+  let writesFail = false;
+  const setup = fixture({
+    canSend: () => true,
+    storage: { getItem: async () => stored, setItem: async (_, value) => {
+      if (writesFail) throw new Error('Disk full');
+      stored = value;
+    } },
+    steer: async () => { writesFail = true; },
+  });
+  const firstLaunch = createOutboxRuntime(setup.dependencies);
+  await firstLaunch.enqueue(first);
+  await assert.rejects(firstLaunch.steer(first.id, 'accepted-run'));
+  await firstLaunch.dispose();
+  writesFail = false;
+  const relaunched = createOutboxRuntime(setup.dependencies);
+  try {
+    await relaunched.drain();
+    assert.equal(relaunched.getSnapshot().items[0]?.state, 'failed');
+    await assert.rejects(relaunched.retry(first.id), /Check this thread/);
+    await assert.rejects(relaunched.steer(first.id, 'another-run'), /Check this thread/);
+    assert.deepEqual(setup.sent, []);
+  } finally { await relaunched.dispose(); }
+});
+
+test('an ambiguous steer remains in the queue without automatic retry', async () => {
+  const setup = fixture({ canSend: () => true, steer: async () => { throw new Error('Connection lost'); } });
+  const outbox = createOutboxRuntime(setup.dependencies);
+  try {
+    await outbox.enqueue(first);
+    await assert.rejects(outbox.steer(first.id, 'run'), /Could not confirm steer/);
+    assert.equal(outbox.getSnapshot().items[0]?.text, first.text);
+    await outbox.drain();
+    assert.deepEqual(setup.sent, []);
+    await assert.rejects(outbox.retry(first.id), /Check this thread/);
+  } finally { await outbox.dispose(); }
+});
+
+test('steer refuses expired ambiguous messages before posting', async () => {
+  const saved = { ...first, state: 'failed', createdAt: 1, firstAttemptAt: 1, attempts: 1 };
+  let requests = 0;
+  const setup = fixture({ canSend: () => false, storage: { getItem: async () => JSON.stringify([saved]), setItem: async () => {} },
+    steer: async () => { requests++; } });
+  setup.advance(24 * 60 * 60 * 1000);
+  const outbox = createOutboxRuntime(setup.dependencies);
+  try {
+    await outbox.load();
+    await assert.rejects(outbox.steer(first.id, 'run'), /Check this thread/);
+    assert.equal(requests, 0);
+  } finally { await outbox.dispose(); }
+});
+
+test('forgetting an agent aborts steering and a late result cannot restore its queue entry', async () => {
+  let aborted = false;
+  let release!: () => void;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const response = new Promise<void>((resolve) => { release = resolve; });
+  const setup = fixture({ canSend: () => false, steer: async (_, __, signal) => {
+    signal.addEventListener('abort', () => { aborted = true; });
+    entered();
+    await response;
+  } });
+  const outbox = createOutboxRuntime(setup.dependencies);
+  try {
+    await outbox.enqueue(first);
+    const steering = outbox.steer(first.id, 'run');
+    await started;
+    await outbox.forgetAgent(first.agentId);
+    assert.equal(aborted, true);
+    release();
+    await steering;
+    assert.deepEqual(outbox.getSnapshot().items, []);
+  } finally { release(); await outbox.dispose(); }
 });
 
 test('steer refuses attachments, skill instructions, and messages awaiting session creation', async () => {
