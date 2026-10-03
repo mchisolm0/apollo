@@ -34,7 +34,7 @@ function UpdateDetails({ visible, onClose }: { visible: boolean; onClose(): void
           {update.notes.map((note, index) => <Text key={index} style={[styles.note, { color: colors.primary }]}>• {note}</Text>)}
           <Text selectable style={[styles.metadata, { color: colors.secondary }]}>{update.rollback ? 'Restore embedded update' : update.id}</Text>
           {update.createdAt ? <Text style={[styles.metadata, { color: colors.secondary }]}>{update.createdAt.toLocaleString()}</Text> : null}
-          <Text style={[styles.metadata, { color: colors.secondary }]}>Applies when the app goes to the background after drafts and sends are saved.</Text>
+          <Text style={[styles.metadata, { color: colors.secondary }]}>Restart to apply now, or wait for the app to go to the background. Drafts and sends are saved first.</Text>
           {error ? <Text accessibilityRole="alert" style={[styles.note, { color: colors.red }]}>{error}</Text> : null}
         </ScrollView>
         <View style={styles.dialogActions}>
