@@ -134,6 +134,16 @@ export class SessionDraftStore {
     return this.load();
   }
 
+  /** Confirms the latest draft is durable before an update tears down JS. */
+  async flush(): Promise<boolean> {
+    await this.load();
+    if (!this.state.loaded || this.state.error) return false;
+    const revision = this.revision;
+    await this.saveCurrent();
+    await queues.get(this.persistenceKey);
+    return revision === this.revision && !this.saveFailed && !this.state.error;
+  }
+
   private async restore(): Promise<void> {
     try {
       const saved = await this.options.storage.getItem(this.key);
@@ -345,4 +355,13 @@ export function getSessionDraftStore(agentId: string, sessionId: string, options
   const store = new SessionDraftStore(agentId, sessionId, options);
   stores.set(key, store);
   return store;
+}
+
+export async function flushSessionDrafts(): Promise<boolean> {
+  const pending = [...stores.values()];
+  const results = await Promise.allSettled(pending.map(async (store) => await store.flush() ? store.getSnapshot() : undefined));
+  // An edit or a new composer while another draft is saving cancels the reload.
+  return pending.length === stores.size && results.every((result, index) =>
+    result.status === 'fulfilled' && result.value !== undefined
+    && stores.get(pending[index].key) === pending[index] && pending[index].getSnapshot() === result.value);
 }

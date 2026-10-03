@@ -10,6 +10,8 @@ import { EkhoProvider } from '@/lib';
 import { OutboxProvider } from '@/lib/outbox-context';
 import { IncomingShareProvider } from '@/features/sharing';
 import { NotificationNavigation } from '@/features/notifications';
+import { AppUpdateProvider } from '@/features/updates/update-provider';
+import { UpdateReadyNotice } from '@/features/updates/update-ui';
 
 function InnerStack() {
   const colors = useColors();
@@ -49,7 +51,10 @@ export default function RootLayout() {
       <OutboxProvider>
       <IncomingShareProvider>
       <TextScaleProvider>
+        <AppUpdateProvider>
         <InnerStack />
+        <UpdateReadyNotice />
+        </AppUpdateProvider>
       </TextScaleProvider>
       </IncomingShareProvider>
       </OutboxProvider>
