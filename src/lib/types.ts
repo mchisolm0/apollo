@@ -60,12 +60,27 @@ export interface HermesSkill {
   category?: string;
 }
 
-/** A model advertised by Hermes via GET /v1/models. Rendered as returned; never hardcoded. */
+/** A model from Hermes's provider inventory or compatibility model list. */
 export interface HermesModel {
   id: string;
   label?: string;
   provider?: string;
   default?: boolean;
+}
+
+export interface HermesToolset {
+  name: string;
+  label?: string;
+  description?: string;
+  enabled: boolean;
+  configured: boolean;
+  tools: readonly string[];
+}
+
+export interface HermesModelLock {
+  sessionId: string;
+  model: string;
+  provider?: string;
 }
 
 export interface HermesSession {
@@ -76,6 +91,8 @@ export interface HermesSession {
   source?: string;
   model?: string;
   title?: string;
+  /** This device's acknowledged picker choice, separate from the last model used. */
+  selectedModel?: HermesModel;
   startedAt?: number;
   endedAt?: number;
   endReason?: string;
@@ -156,6 +173,7 @@ export interface StartRunOptions {
   previousResponseId?: string;
   model?: string;
   // No reasoning/tier/runtime params: the /v1/runs payload contract has no such fields.
+  provider?: string;
   sessionKey?: string;
   idempotencyKey?: string;
 }

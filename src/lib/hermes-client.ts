@@ -17,6 +17,8 @@ import type {
   HermesCapabilities,
   HermesMessage,
   HermesModel,
+  HermesModelLock,
+  HermesToolset,
   HermesRunEvent,
   HermesRunState,
   HermesRunStatus,
@@ -126,6 +128,31 @@ export function parseModels(value: unknown): readonly HermesModel[] {
       provider: stringValue(entry.provider) ?? stringValue(entry.owned_by),
       default: booleanValue(entry.default) ?? booleanValue(entry.is_default),
     });
+  }
+  return [...models.values()];
+}
+
+export function parseSelectedModel(value: unknown): HermesModel | undefined {
+  if (value === null) return undefined;
+  if (!isJsonObject(value) || typeof value.id !== 'string' || !value.id.trim()
+    || (value.provider !== undefined && typeof value.provider !== 'string')) throw new Error('Saved thread model is invalid');
+  return { id: value.id, provider: stringValue(value.provider) || undefined };
+}
+
+function parseModelOptions(value: unknown): readonly HermesModel[] {
+  if (!isJsonObject(value) || !Array.isArray(value.providers)) throw new Error('Hermes model options response was invalid');
+  const models = new Map<string, HermesModel>();
+  for (const entry of value.providers) {
+    if (!isJsonObject(entry) || typeof entry.slug !== 'string' || !entry.slug.trim() || !Array.isArray(entry.models) || entry.authenticated === false) continue;
+    const unavailable = Array.isArray(entry.unavailable_models) ? entry.unavailable_models : [];
+    for (const model of entry.models) {
+      if (typeof model !== 'string' || !model.trim() || unavailable.includes(model)) continue;
+      models.set(JSON.stringify([entry.slug, model]), {
+        id: model,
+        provider: entry.slug,
+        default: model === value.model && (entry.slug === value.provider || (Array.isArray(entry.aliases) && entry.aliases.includes(value.provider))),
+      });
+    }
   }
   return [...models.values()];
 }
@@ -340,7 +367,57 @@ export class HermesClient {
   }
 
   async models(): Promise<readonly HermesModel[]> {
-    return parseModels(await this.request('/v1/models'));
+    try { return parseModelOptions(await this.request('/api/model/options')); }
+    catch (error) {
+      if (!(error instanceof HermesRequestError) || ![403, 404].includes(error.status)) throw error;
+      return parseModels(await this.request('/v1/models'));
+    }
+  }
+
+  async toolsets(): Promise<readonly HermesToolset[]> {
+    const body = await this.request('/v1/toolsets');
+    if (!isJsonObject(body) || !Array.isArray(body.data)) throw new Error('Hermes toolsets response was invalid');
+    return body.data.flatMap((entry): HermesToolset[] => {
+      if (!isJsonObject(entry) || typeof entry.name !== 'string' || !entry.name.trim()
+        || typeof entry.enabled !== 'boolean' || typeof entry.configured !== 'boolean' || !Array.isArray(entry.tools)) return [];
+      return [{ name: entry.name, label: stringValue(entry.label), description: stringValue(entry.description),
+        enabled: entry.enabled, configured: entry.configured, tools: entry.tools.filter((tool): tool is string => typeof tool === 'string') }];
+    });
+  }
+
+  async session(sessionId: string): Promise<HermesSession> {
+    const body = await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`);
+    if (!isJsonObject(body)) throw new Error('Hermes session response was invalid');
+    const session = parseSession(body.session);
+    if (session.id !== sessionId) throw new Error('Hermes returned a different thread than requested');
+    return session;
+  }
+
+  async setSessionModel(sessionId: string, model: HermesModel, signal?: AbortSignal): Promise<HermesModelLock> {
+    let body: unknown;
+    try {
+      body = await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/model`, {
+        signal, method: 'POST', headers: { 'Content-Type': 'application/json' },
+        // The compatibility list's owned_by=hermes is an owner, not a provider slug.
+        body: JSON.stringify({ model: model.id, provider: model.provider === 'hermes' ? undefined : model.provider }),
+      });
+    } catch (error) {
+      if (error instanceof HermesRequestError && error.code === 'missing_model') throw new Error('Hermes cannot lock its gateway default. Choose a provider model.');
+      throw error;
+    }
+    if (!isJsonObject(body) || body.session_id !== sessionId || !isJsonObject(body.runtime)
+      || body.runtime.model_lock !== 'accepted' || typeof body.runtime.model !== 'string' || !body.runtime.model.trim()) {
+      throw new Error('Hermes did not confirm the thread model');
+    }
+    return { sessionId, model: body.runtime.model, provider: stringValue(body.runtime.provider) || (model.provider === 'hermes' ? undefined : model.provider) };
+  }
+
+  async steerRun(runId: string, input: string, signal?: AbortSignal): Promise<void> {
+    if (!input.trim()) throw new Error('Steer input cannot be empty');
+    const body = await this.request(`/v1/runs/${encodeURIComponent(runId)}/steer`, {
+      signal, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input }),
+    });
+    if (!isJsonObject(body) || body.run_id !== runId || body.accepted !== true) throw new Error('Hermes did not accept the steer message');
   }
 
   /** POST /api/sessions/:id/fork is proxied by the connector (index.mjs); surfaces the branched session. */
@@ -350,14 +427,17 @@ export class HermesClient {
     return parseSession(isJsonObject(body.session) ? body.session : body);
   }
 
-  async startRun(input: string, options: StartRunOptions = {}): Promise<HermesRunStatus> {
+  async startRun(input: string, options: StartRunOptions = {}, selectedModel?: HermesModel): Promise<HermesRunStatus> {
     if (!input.trim() && !options.attachments?.length) throw new Error('Run input cannot be empty');
     const payload: Record<string, unknown> = { input: attachmentMessage(input, options.attachments) };
     if (options.sessionId) payload.session_id = options.sessionId;
     if (options.instructions) payload.instructions = options.instructions;
     if (options.conversationHistory) payload.conversation_history = options.conversationHistory;
     if (options.previousResponseId) payload.previous_response_id = options.previousResponseId;
-    if (options.model) payload.model = options.model;
+    const model = selectedModel?.id ?? options.model;
+    const provider = selectedModel ? selectedModel.provider : options.provider;
+    if (model) payload.model = model;
+    if (provider && provider !== 'hermes') payload.provider = provider;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'Idempotency-Key': options.idempotencyKey ?? createIdempotencyKey(),
