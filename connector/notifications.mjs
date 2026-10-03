@@ -39,6 +39,7 @@ export function createExpoPushSender({ url = "https://exp.host/--/api/v2/push/se
         to: token,
         sound: "default",
         channelId: "runs",
+        threadId: notification.data.session_id,
         title: notification.title,
         body: notification.body,
         data: notification.data,

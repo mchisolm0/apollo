@@ -3,6 +3,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 
 import { notificationDestination, type NotificationDestination } from './navigation';
+import { foregroundNotificationBehavior } from './foreground';
+
+Notifications.setNotificationHandler({
+  handleNotification: async (notification) => foregroundNotificationBehavior(notification.request.content.data),
+});
 
 export type NotificationPreferences = {
   notifyOnApproval: boolean;
