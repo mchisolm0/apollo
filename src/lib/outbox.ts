@@ -102,6 +102,7 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
   let snapshot: OutboxSnapshot = { loaded: false, items: [] };
   let worker: Fiber.RuntimeFiber<never, never> | undefined;
   let disposed = false;
+  let reloading = false;
   // Receipts protect stale prepared drafts after failed cleanup or a crash.
   let completed = new Set<string>();
   const now = dependencies.now ?? Date.now;
@@ -152,7 +153,7 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
 
   const deliver = (message: QueuedMessage) => Effect.gen(function* () {
     const env = yield* OutboxEnvironment;
-    if (inFlight.has(message.id) || (!message.acceptedRunId && !env.canSend(message))) return;
+    if (reloading || inFlight.has(message.id) || (!message.acceptedRunId && !env.canSend(message))) return;
     const controller = new AbortController();
     inFlight.set(message.id, controller);
     yield* Effect.gen(function* () {
@@ -212,6 +213,23 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
     getSnapshot: () => snapshot,
     subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     load: () => run(load.pipe(Effect.tapError(recordError))),
+    /** Holds delivery and mutations while confirming storage and restarting. */
+    withReloadSafety: async (apply: () => Promise<boolean>): Promise<boolean> => {
+      if (reloading || inFlight.size || !snapshot.loaded || snapshot.error) return false;
+      reloading = true;
+      let applied = false;
+      try {
+        applied = await run(mutex.withPermits(1)(Effect.gen(function* () {
+          if (inFlight.size || !snapshot.loaded || snapshot.error) return false;
+          yield* save(snapshot.items);
+          return yield* Effect.tryPromise(apply);
+        }).pipe(Effect.uninterruptible)));
+        return applied;
+      } finally {
+        // reloadAsync resolves just before native teardown. Keep sends paused.
+        if (!applied) reloading = false;
+      }
+    },
     start: () => {
       if (!worker && !disposed) worker = runtime.runFork(Effect.forever(drain.pipe(Effect.andThen(Effect.sleep('1 second')))));
     },
