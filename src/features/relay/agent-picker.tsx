@@ -158,7 +158,7 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   modal: { flex: 1 },
   trigger: { alignSelf: 'flex-start', maxWidth: '100%', flexShrink: 1, minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 8 },
   name: { color: colors.primary, fontSize: 15, fontWeight: '600', flexShrink: 1 },
-  backdrop: { backgroundColor: colors.background },
+  backdrop: { backgroundColor: colors.backdrop },
   menu: { position: 'absolute', backgroundColor: colors.background, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.lineStrong, borderRadius: 12, overflow: 'hidden', transformOrigin: 'top left', boxShadow: `0 12px 32px ${colors.shadow}` },
   menuContent: { padding: 4 },
   row: { flexDirection: 'row', alignItems: 'stretch', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
