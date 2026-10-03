@@ -4,7 +4,7 @@ import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState
 import { AppState, type AppStateStatus } from 'react-native';
 
 import { useOutbox } from '@/lib/outbox-context';
-import { flushSessionDrafts } from '@/lib/session-draft';
+import { withSessionDraftReloadSafety } from '@/lib/session-draft';
 import { createUpdateController, shouldNoticeUpdate, updateState, type UpdateState } from './update-state';
 
 const NOTICED_KEY = 'ekho.update-noticed.v1';
@@ -42,7 +42,7 @@ export function AppUpdateProvider({ children }: PropsWithChildren) {
       state: () => latest.current.state,
       check: Updates.checkForUpdateAsync,
       fetch: Updates.fetchUpdateAsync,
-      flushDrafts: flushSessionDrafts,
+      withDraftReloadSafety: withSessionDraftReloadSafety,
       withReloadSafety: (apply) => latest.current.outbox.withReloadSafety(apply),
       reload: () => Updates.reloadAsync(),
     });

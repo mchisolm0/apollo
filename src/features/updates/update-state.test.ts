@@ -23,7 +23,7 @@ function environment() {
     state: () => state,
     check: async () => { events.push('check'); return { isAvailable: true, isRollBackToEmbedded: false }; },
     fetch: async () => { events.push('fetch'); },
-    flushDrafts: async () => { events.push('drafts'); return true; },
+    withDraftReloadSafety: async (apply: () => Promise<boolean>) => { events.push('drafts'); return apply(); },
     withReloadSafety: async (apply: () => Promise<boolean>) => { events.push('outbox'); return apply(); },
     reload: async () => { events.push('reload'); },
   };
@@ -84,7 +84,7 @@ test('quiet apply waits for both storage barriers, ignores inactive, and reloads
   const setup = environment();
   setup.setState(ready);
   const flushed = deferred<boolean>();
-  setup.env.flushDrafts = () => flushed.promise;
+  setup.env.withDraftReloadSafety = async (apply) => await flushed.promise ? apply() : false;
   const controller = createUpdateController(setup.env);
   await controller.onAppState('inactive');
   assert.deepEqual(setup.events, []);
@@ -103,13 +103,13 @@ test('failed flushes and in-flight sends defer until the next background transit
     const setup = environment();
     setup.setState(ready);
     setup.setAppState('background');
-    if (failure === 'draft') setup.env.flushDrafts = async () => false;
+    if (failure === 'draft') setup.env.withDraftReloadSafety = async () => false;
     if (failure === 'outbox') setup.env.withReloadSafety = async () => false;
     if (failure === 'throw') setup.env.withReloadSafety = async () => { throw new Error('storage'); };
     const controller = createUpdateController(setup.env);
     await controller.onAppState('background');
     assert.equal(setup.events.includes('reload'), false);
-    setup.env.flushDrafts = async () => true;
+    setup.env.withDraftReloadSafety = async (apply) => apply();
     setup.env.withReloadSafety = async (apply) => apply();
     await controller.onAppState('background');
     assert.equal(setup.events.includes('reload'), true);
@@ -121,7 +121,7 @@ test('returning to foreground during a flush cancels quiet apply, even if backgr
   setup.setState(ready);
   setup.setAppState('background');
   const flushed = deferred<boolean>();
-  setup.env.flushDrafts = () => flushed.promise;
+  setup.env.withDraftReloadSafety = async (apply) => await flushed.promise ? apply() : false;
   const controller = createUpdateController(setup.env);
   const applying = controller.onAppState('background');
   setup.setAppState('active');

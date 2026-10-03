@@ -1,7 +1,7 @@
 import * as Application from 'expo-application';
 import * as Updates from 'expo-updates';
 import { useEffect, useState } from 'react';
-import { AccessibilityInfo, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { AccessibilityInfo, Keyboard, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useColors } from '@/features/relay/relay-ui';
@@ -51,13 +51,19 @@ export function UpdateReadyNotice() {
   const insets = useSafeAreaInsets();
   const { state, noticeVisible, dismissNotice, error } = useAppUpdate();
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [keyboardVisible, setKeyboardVisible] = useState(() => Keyboard.isVisible());
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardWillShow', () => setKeyboardVisible(true));
+    const hide = Keyboard.addListener('keyboardWillHide', () => setKeyboardVisible(false));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
   useEffect(() => {
     if (noticeVisible) AccessibilityInfo.announceForAccessibility('Update ready');
   }, [noticeVisible]);
   if (state.status !== 'ready') return null;
   return <>
-    {noticeVisible ? <View pointerEvents="box-none" style={[styles.noticeLayer, { top: insets.top + 8 }]}>
-      <View accessibilityLiveRegion="polite" style={[styles.notice, { backgroundColor: colors.surface, borderColor: colors.line }]}>
+    {noticeVisible && !keyboardVisible ? <View style={[styles.noticeLayer, { paddingBottom: insets.bottom + 8, backgroundColor: colors.background }]}>
+      <View accessibilityLiveRegion="polite" style={[styles.notice, { backgroundColor: colors.elevated, borderColor: colors.line }]}>
         <Text style={[styles.noticeText, { color: colors.primary }]}>Update ready</Text>
         <UpdateActions onInfo={() => { dismissNotice(); setDetailsOpen(true); }} />
       </View>
@@ -100,7 +106,7 @@ const styles = StyleSheet.create({
   about: { paddingVertical: 12, gap: 8 },
   summary: { fontSize: 14, lineHeight: 20 },
   fingerprint: { fontSize: 12, lineHeight: 17 },
-  noticeLayer: { position: 'absolute', left: 16, right: 16, alignItems: 'center', zIndex: 90 },
+  noticeLayer: { paddingTop: 8, paddingHorizontal: 16, alignItems: 'center' },
   notice: { flexDirection: 'row', alignItems: 'center', paddingLeft: 14, paddingRight: 4, borderWidth: StyleSheet.hairlineWidth, borderRadius: 4, maxWidth: 420 },
   noticeText: { flexShrink: 1, fontSize: 15, lineHeight: 21 },
   action: { minHeight: 44, minWidth: 44, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 12 },

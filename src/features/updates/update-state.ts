@@ -53,7 +53,7 @@ type UpdateEnvironment = {
   state(): UpdateState;
   check(): Promise<{ isAvailable: boolean; isRollBackToEmbedded: boolean }>;
   fetch(): Promise<unknown>;
-  flushDrafts(): Promise<boolean>;
+  withDraftReloadSafety(apply: () => Promise<boolean>): Promise<boolean>;
   withReloadSafety(apply: () => Promise<boolean>): Promise<boolean>;
   reload(): Promise<void>;
 };
@@ -72,14 +72,13 @@ export function createUpdateController(env: UpdateEnvironment) {
     const pending = env.state();
     let applied = false;
     try {
-      applied = await env.withReloadSafety(async () => {
-        if (!await env.flushDrafts()) return false;
+      applied = await env.withReloadSafety(() => env.withDraftReloadSafety(async () => {
         const current = env.state();
         if (current.status !== 'ready' || pending.status !== 'ready' || current.update.id !== pending.update.id) return false;
         if (quiet && (env.appState() !== 'background' || startedAtTransition !== transition)) return false;
         await env.reload();
         return true;
-      });
+      }));
       return applied;
     } catch {
       return false;

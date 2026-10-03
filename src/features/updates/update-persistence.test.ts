@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { createUpdateController } from './update-state.ts';
 import { createOutboxRuntime } from '../../lib/outbox.ts';
-import { flushSessionDrafts, getSessionDraftStore, SessionDraftStore } from '../../lib/session-draft.ts';
+import { flushSessionDrafts, withSessionDraftReloadSafety, getSessionDraftStore, SessionDraftStore } from '../../lib/session-draft.ts';
 
 test('draft flush waits for storage and refuses a failed write', async () => {
   let fail = false;
@@ -194,4 +195,68 @@ test('outbox mutations queued behind a successful reload cannot write after auth
     assert.equal(writes, storedWrites);
     assert.equal(queue.getSnapshot().items[0]?.id, 'keep');
   } finally { await queue.dispose(); }
+});
+
+
+test('late attachment completion cannot change drafts during authorized reload', async () => {
+  let saved = '';
+  let writes = 0;
+  const draft = getSessionDraftStore('update-late-edit', 'thread', {
+    storage: {
+      getItem: async () => null,
+      setItem: async (_key, value) => { writes += 1; saved = value; },
+      removeItem: async () => {},
+    },
+    uuid: () => 'id',
+  });
+  draft.setDraft('Durable draft');
+  let duringReload: { draft: string; attachments: number; writes: number; before: number; saved: string } | undefined;
+  const controller = createUpdateController({
+    enabled: true,
+    now: () => 0,
+    appState: () => 'background',
+    state: () => ({ status: 'ready', update: { id: 'next', notes: [], rollback: false } }),
+    check: async () => ({ isAvailable: false, isRollBackToEmbedded: false }),
+    fetch: async () => {},
+    withDraftReloadSafety: withSessionDraftReloadSafety,
+    withReloadSafety: async (apply) => apply(),
+    reload: async () => {
+      const before = writes;
+      await Promise.resolve();
+      draft.setDraft('Late image paste');
+      draft.setAttachments([{ id: 'late', name: 'paste.png', mimeType: 'image/png', size: 2, uri: 'file:///paste.png' }]);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      duringReload = { draft: draft.getSnapshot().draft, attachments: draft.getSnapshot().attachments.length, writes, before, saved };
+      // A native failure must release the draft hold for retry.
+      throw new Error('native reload failed');
+    },
+  });
+  await controller.onAppState('background');
+  assert.ok(duringReload);
+  assert.equal(duringReload.draft, 'Durable draft');
+  assert.equal(duringReload.attachments, 0);
+  assert.equal(duringReload.writes, duringReload.before);
+  assert.equal(JSON.parse(duringReload.saved).draft, 'Durable draft');
+  draft.setDraft('Editable after failure');
+  assert.equal(await draft.flush(), true);
+  assert.equal(JSON.parse(saved).draft, 'Editable after failure');
+});
+
+
+test('successful draft reload keeps async persistence mutations held through teardown', async () => {
+  let writes = 0;
+  const draft = getSessionDraftStore('update-teardown', 'thread', {
+    storage: { getItem: async () => null, setItem: async () => { writes += 1; }, removeItem: async () => {} },
+    uuid: () => 'id',
+  });
+  draft.setDraft('Keep this');
+  assert.equal(await withSessionDraftReloadSafety(async () => true), true);
+  const before = writes;
+  draft.setDraft('Too late');
+  await assert.rejects(draft.appendShare('late-share', 'Late share', []), /restarting/);
+  await assert.rejects(draft.prepareSend(), /restarting/);
+  await assert.rejects(draft.clear(), /restarting/);
+  await assert.rejects(draft.move('next', 'Late move', []), /restarting/);
+  assert.equal(writes, before);
+  assert.equal(draft.getSnapshot().draft, 'Keep this');
 });
