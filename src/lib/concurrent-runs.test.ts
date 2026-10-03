@@ -6,7 +6,7 @@ import { runInNewContext } from 'node:vm';
 import { createElement } from 'react';
 import ts from 'typescript';
 import type { EkhoContextValue } from './ekho-context';
-import type { HermesRunEvent, HermesRunStatus } from './types';
+import type { HermesModel, HermesRunEvent, HermesRunStatus } from './types';
 import * as runState from './run-state.ts';
 import * as attachments from './attachments.ts';
 import * as messageHistory from './message-history.ts';
@@ -25,6 +25,8 @@ test('concurrent threads retain independent streams, controls, and saved run IDs
   let count = 0;
   const removal: string[] = [];
   let registrationError: Error | undefined;
+  const storage = new Map<string, string>();
+  const selections: (HermesModel | undefined)[] = [];
   const catalog = {
     get: () => record,
     list: () => [record],
@@ -36,7 +38,9 @@ test('concurrent threads retain independent streams, controls, and saved run IDs
     async capabilities() { return { features: {} }; }
     async sessions() { return []; }
     async sessionMessages() { return []; }
-    async startRun(_input: string, options: { sessionId: string }) {
+    async setSessionModel(sessionId: string, model: HermesModel) { return { sessionId, model: model.id, provider: model.provider }; }
+    async startRun(_input: string, options: { sessionId: string }, selected?: HermesModel) {
+      selections.push(selected);
       await Promise.resolve();
       const run: HermesRunStatus = { runId: `run-${++count}`, sessionId: options.sessionId, status: 'running' };
       statuses.set(run.runId, run);
@@ -73,12 +77,18 @@ test('concurrent threads retain independent streams, controls, and saved run IDs
         } }),
       };
       if (id === 'react-native') return { AppState: {} };
+      if (id === '@react-native-async-storage/async-storage') return { __esModule: true, default: {
+        getItem: async (key: string) => storage.get(key) ?? null,
+        setItem: async (key: string, value: string) => { storage.set(key, value); },
+        getAllKeys: async () => [...storage.keys()],
+        multiRemove: async (keys: readonly string[]) => keys.forEach((key) => storage.delete(key)),
+      } };
       if (id === './catalog') return {};
       if (id === './pairing') return { PairingClient: class {} };
       if (id === './run-state') return runState;
       if (id === './attachments') return attachments;
       if (id === './message-history') return messageHistory;
-      if (id === './hermes-client') return { HermesClient: Client, HermesRequestError: class extends Error {} };
+      if (id === './hermes-client') return { HermesClient: Client, HermesRequestError: class extends Error {}, parseSelectedModel: (value: HermesModel | null) => value ?? undefined };
       return nativeRequire(id);
     },
   });
@@ -94,6 +104,7 @@ test('concurrent threads retain independent streams, controls, and saved run IDs
   await assert.rejects(api.startRun('agent', 'Duplicate', { sessionId: 'first' }), /current run/);
   const [first, second] = await Promise.all([firstStart, api.startRun('agent', 'Second', { sessionId: 'second' })]);
   assert.equal(streams.size, 2);
+  assert.deepEqual(selections, [undefined, undefined]);
   assert.deepEqual(Array.from(record.activeRunIds), [first.runId, second.runId]);
   await assert.rejects(api.startRun('agent', 'Duplicate after start', { sessionId: 'first' }), /current run/);
   await api.approveRun('agent', second.runId, 'once');
@@ -104,16 +115,22 @@ test('concurrent threads retain independent streams, controls, and saved run IDs
   assert.deepEqual(stopped, [first.runId]);
   assert.equal(streams.has(first.runId), false);
   assert.equal(streams.has(second.runId), true);
+  await api.setSessionModel('agent', 'first', { id: 'chosen', provider: 'alpha' });
   const third = await api.startRun('agent', 'Continue', { sessionId: 'first' });
+  assert.deepEqual(JSON.parse(JSON.stringify(selections.at(-1))), { id: 'chosen', provider: 'alpha' });
   assert.deepEqual(Array.from(record.activeRunIds), [second.runId, third.runId]);
   streams.clear();
-  await mount().refreshAgent('agent');
+  const restored = mount();
+  await restored.refreshAgent('agent');
   assert.deepEqual([...streams.keys()], [second.runId, third.runId]);
+  await restored.stopRun('agent', third.runId);
+  await restored.startRun('agent', 'After relaunch', { sessionId: 'first' });
+  assert.deepEqual(JSON.parse(JSON.stringify(selections.at(-1))), { id: 'chosen', provider: 'alpha' });
   registrationError = new Error('Offline');
-  await assert.rejects(api.removeAgent('agent'), /Offline/);
+  await assert.rejects(restored.removeAgent('agent'), /Offline/);
   assert.deepEqual(removal, []);
   registrationError = undefined;
-  await api.removeAgent('agent');
+  await restored.removeAgent('agent');
   assert.deepEqual(removal, ['notification', 'credential']);
   assert.equal(streams.size, 0);
 });

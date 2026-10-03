@@ -12,12 +12,13 @@ import {
   type PropsWithChildren,
 } from 'react';
 import { AppState } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { reconcileHistory } from './message-history';
 import { AgentCatalog } from './catalog';
 import { eventTransportIdentity, isRunActive, statusAfterEvent } from './run-state';
 import { PairingClient, parsePairingLink } from './pairing';
-import { HermesClient, HermesRequestError, type RunEventSubscription } from './hermes-client';
+import { HermesClient, HermesRequestError, parseSelectedModel, type RunEventSubscription } from './hermes-client';
 import type {
   AgentRecord,
   InboxConfig,
@@ -76,6 +77,15 @@ export interface EkhoContextValue {
 
 // Several missed keepalives: long enough that a quiet but healthy run rarely pays for a status request.
 const QUIET_STREAM_MS = 45_000;
+
+function modelSelectionKey(agentId: string, sessionId: string) {
+  return `ekho.thread-model.${JSON.stringify([agentId, sessionId])}`;
+}
+
+async function loadModelSelection(agentId: string, sessionId: string) {
+  const saved = await AsyncStorage.getItem(modelSelectionKey(agentId, sessionId));
+  return parseSelectedModel(saved === null ? null : JSON.parse(saved));
+}
 
 const EkhoContext = createContext<EkhoContextValue | undefined>(undefined);
 
@@ -377,11 +387,11 @@ export function EkhoProvider({
     }
   }, [catalog, pairingClient, refreshAgent, updateRuntime]);
 
-  const updateSessionModel = useCallback((agentId: string, sessionId: string, model: string) => {
+  const updateSessionModel = useCallback((agentId: string, sessionId: string, selectedModel: HermesModel) => {
     sessionDetailRequests.current.delete(`${agentId}:${sessionId}`);
     setRuntime((current) => {
       const state = current[agentId];
-      return state ? { ...current, [agentId]: { ...state, sessions: state.sessions.map((session) => session.id === sessionId ? { ...session, model } : session) } } : current;
+      return state ? { ...current, [agentId]: { ...state, sessions: state.sessions.map((session) => session.id === sessionId ? { ...session, model: selectedModel.id, selectedModel } : session) } } : current;
     });
   }, [setRuntime]);
 
@@ -389,7 +399,9 @@ export function EkhoProvider({
     const client = clients.current.get(agentId);
     if (!client) throw new Error('Reconnect to change the thread model.');
     const lock = await client.setSessionModel(sessionId, model);
-    updateSessionModel(agentId, sessionId, lock.model);
+    const selected = { id: lock.model, provider: lock.provider };
+    await AsyncStorage.setItem(modelSelectionKey(agentId, sessionId), JSON.stringify(selected));
+    updateSessionModel(agentId, sessionId, selected);
     return lock;
   }, [updateSessionModel]);
 
@@ -408,15 +420,17 @@ export function EkhoProvider({
         client = clients.current.get(agentId);
       }
       if (!client) throw new Error('Agent is offline');
-      let runOptions = options;
-      const gatewayDefault = options?.provider === 'hermes' && options.model === agent.capabilities?.model;
-      if (gatewayDefault) runOptions = { ...options, model: undefined, provider: undefined };
-      else if (options?.sessionId && options.model) {
+      let selected = options?.sessionId ? await loadModelSelection(agentId, options.sessionId) : undefined;
+      // A newly queued thread has a picker choice before its session exists.
+      if (options?.sessionId && options.model && (options.model !== selected?.id || options.provider !== selected?.provider)
+        && !(options.provider === 'hermes' && options.model === agent.capabilities?.model)) {
         const lock = await client.setSessionModel(options.sessionId, { id: options.model, provider: options.provider }, options.signal);
-        updateSessionModel(agentId, options.sessionId, lock.model);
-        runOptions = { ...options, model: undefined, provider: undefined };
+        selected = { id: lock.model, provider: lock.provider };
+        await AsyncStorage.setItem(modelSelectionKey(agentId, options.sessionId), JSON.stringify(selected));
+        updateSessionModel(agentId, options.sessionId, selected);
       }
-      const result = await client.startRun(input, runOptions);
+      // /v1/runs does not apply Hermes's persisted Browser model lock.
+      const result = await client.startRun(input, options, selected);
       const status = { ...result, sessionId: result.sessionId ?? options?.sessionId };
       const previousRuns = runtimeRef.current[agentId]?.runs ?? {};
       updateRun(agentId, status);
@@ -486,14 +500,15 @@ export function EkhoProvider({
     const request = {};
     sessionDetailRequests.current.set(key, request);
     try {
-      const session = await client.session(sessionId);
+      const [session, selectedModel] = await Promise.all([client.session(sessionId), loadModelSelection(agentId, sessionId)]);
       setRuntime((current) => {
         if (sessionDetailRequests.current.get(key) !== request) return current;
         sessionDetailRequests.current.delete(key);
         const state = current[agentId];
         if (!state) return current;
         const existing = state.sessions.some((item) => item.id === session.id);
-        const sessions = existing ? state.sessions.map((item) => item.id === session.id ? { ...item, ...session } : item) : [session, ...state.sessions];
+        const detail = { ...session, selectedModel };
+        const sessions = existing ? state.sessions.map((item) => item.id === session.id ? { ...item, ...detail } : item) : [detail, ...state.sessions];
         return { ...current, [agentId]: { ...state, sessions } };
       });
       return session;
@@ -512,6 +527,7 @@ export function EkhoProvider({
     const client = clients.current.get(agentId);
     if (!client) throw new Error('Connect to the agent to update threads.');
     await client.deleteSession(sessionId);
+    await AsyncStorage.removeItem(modelSelectionKey(agentId, sessionId));
     sessionDetailRequests.current.delete(`${agentId}:${sessionId}`);
     setRuntime((current) => {
       const state = current[agentId];
@@ -657,6 +673,8 @@ export function EkhoProvider({
     closeSubscription(agentId);
     clients.current.delete(agentId);
     await catalog.remove(agentId);
+    const modelKeys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith(`ekho.thread-model.[${JSON.stringify(agentId)},`));
+    await AsyncStorage.multiRemove(modelKeys);
     posthog.capture('agent_removed', { agent_id: agentId });
     setAgents(catalog.list());
     setRuntime((current) => {

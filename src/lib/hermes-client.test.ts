@@ -18,6 +18,7 @@ function loadClient() {
   const exports: {
     HermesClient?: typeof import('./hermes-client').HermesClient;
     parseModels?: (value: unknown) => readonly HermesModel[];
+    parseSelectedModel?: typeof import('./hermes-client').parseSelectedModel;
   } = {};
   runInNewContext(source, {
     exports,
@@ -40,7 +41,7 @@ function stubFetch(body: unknown, seen: { url?: string; init?: RequestInit }[] =
   }) as unknown as typeof fetch;
 }
 
-const { HermesClient, parseModels } = loadClient();
+const { HermesClient, parseModels, parseSelectedModel } = loadClient();
 // Values cross the vm boundary with foreign prototypes; compare their plain JSON shape.
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
 const clientWith = (body: unknown, seen: { url?: string; init?: RequestInit }[] = []) =>
@@ -142,6 +143,35 @@ test('model locks explain why the compatibility gateway alias cannot be locked',
   const client = new HermesClient({ endpoint: 'https://agent.example.ts.net', token: 'token', fetchImpl: (async () =>
     new Response(JSON.stringify({ error: { code: 'missing_model' } }), { status: 400 })) as typeof fetch });
   await assert.rejects(client.setSessionModel('a', { id: 'hermes-agent', provider: 'hermes' }), /cannot lock its gateway default/);
+});
+
+test('a restored thread model lock remains in every run request', async () => {
+  const seen: { url?: string; init?: RequestInit }[] = [];
+  const client = new HermesClient({ endpoint: 'https://agent.example.ts.net', token: 'token', fetchImpl: (async (url: string, init?: RequestInit) => {
+    seen.push({ url, init });
+    return new Response(JSON.stringify(url.endsWith('/model')
+      ? { session_id: 'thread', runtime: { model: 'chosen', provider: 'alpha', model_lock: 'accepted' } }
+      : { run_id: 'run', status: 'started', session_id: 'thread' }));
+  }) as typeof fetch });
+  const lock = await client.setSessionModel('thread', { id: 'chosen', provider: 'alpha' });
+  const restored = parseSelectedModel(JSON.parse(JSON.stringify({ id: lock.model, provider: lock.provider })));
+  await client.startRun('[QA] first', { sessionId: 'thread' }, restored);
+  await client.startRun('[QA] next', { sessionId: 'thread' }, restored);
+  for (const request of seen.slice(1)) {
+    assert.equal(request.url, 'https://agent.example.ts.net/v1/runs');
+    assert.deepEqual(JSON.parse(String(request.init?.body)), { input: request === seen[1] ? '[QA] first' : '[QA] next', session_id: 'thread', model: 'chosen', provider: 'alpha' });
+  }
+  await client.startRun('[QA] default', { sessionId: 'untouched' }, parseSelectedModel(null));
+  assert.deepEqual(JSON.parse(String(seen[3]?.init?.body)), { input: '[QA] default', session_id: 'untouched' });
+  await client.startRun('[QA] provider unknown', { sessionId: 'thread' }, { id: 'chosen' });
+  assert.deepEqual(JSON.parse(String(seen[4]?.init?.body)), { input: '[QA] provider unknown', session_id: 'thread', model: 'chosen' });
+});
+
+test('saved thread selections reject malformed data and the compatibility owner is omitted from runs', async () => {
+  for (const value of [{}, { id: '' }, { id: 'chosen', provider: 3 }]) assert.throws(() => parseSelectedModel(value), /Saved thread model is invalid/);
+  const seen: { url?: string; init?: RequestInit }[] = [];
+  await clientWith({ run_id: 'run', status: 'started' }, seen).startRun('[QA] default', { model: 'hermes-agent', provider: 'hermes' });
+  assert.deepEqual(JSON.parse(String(seen[0]?.init?.body)), { input: '[QA] default', model: 'hermes-agent' });
 });
 
 test('steer posts text to the active run and requires acceptance', async () => {

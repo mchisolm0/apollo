@@ -91,6 +91,8 @@ export interface HermesSession {
   source?: string;
   model?: string;
   title?: string;
+  /** This device's acknowledged picker choice, separate from the last model used. */
+  selectedModel?: HermesModel;
   startedAt?: number;
   endedAt?: number;
   endReason?: string;

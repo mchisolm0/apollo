@@ -203,7 +203,8 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
       ? `The user explicitly selected these installed skills: ${JSON.stringify(requestedSkills)}. Before responding, call skill_view for each exact name and follow its instructions. The $name references in the message identify these selections. If a skill cannot be loaded, tell the user.`
       : undefined;
     const prepared = await prepareSend();
-    await outbox.enqueue({ ...prepared, agentId, createsSession: !resolvedId || awaitingCreation, instructions, model: !resolvedId || awaitingCreation ? model?.id : undefined, provider: !resolvedId || awaitingCreation ? model?.provider : undefined });
+    const selected = model ?? session?.selectedModel;
+    await outbox.enqueue({ ...prepared, agentId, createsSession: !resolvedId || awaitingCreation, instructions, model: selected?.id, provider: selected?.provider });
     if (!resolvedId) {
       await moveDraft(prepared.sessionId, '', []);
       setResolvedId(prepared.sessionId);
@@ -233,8 +234,8 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
         models={models}
         modelsLoading={modelsLoading}
         defaultModel={state?.capabilities?.model}
-        selectedModel={awaitingCreation || !resolvedId ? model?.id : session?.model}
-        selectedProvider={model?.id === session?.model || !resolvedId || awaitingCreation ? model?.provider : undefined}
+        selectedModel={model?.id ?? session?.selectedModel?.id ?? session?.model}
+        selectedProvider={model?.provider ?? session?.selectedModel?.provider}
         onSelectModel={(choice) => {
           if (!resolvedId || awaitingCreation) setModel(choice);
           else void act(async () => {

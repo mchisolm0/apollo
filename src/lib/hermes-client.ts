@@ -132,6 +132,13 @@ export function parseModels(value: unknown): readonly HermesModel[] {
   return [...models.values()];
 }
 
+export function parseSelectedModel(value: unknown): HermesModel | undefined {
+  if (value === null) return undefined;
+  if (!isJsonObject(value) || typeof value.id !== 'string' || !value.id.trim()
+    || (value.provider !== undefined && typeof value.provider !== 'string')) throw new Error('Saved thread model is invalid');
+  return { id: value.id, provider: stringValue(value.provider) || undefined };
+}
+
 function parseModelOptions(value: unknown): readonly HermesModel[] {
   if (!isJsonObject(value) || !Array.isArray(value.providers)) throw new Error('Hermes model options response was invalid');
   const models = new Map<string, HermesModel>();
@@ -420,15 +427,17 @@ export class HermesClient {
     return parseSession(isJsonObject(body.session) ? body.session : body);
   }
 
-  async startRun(input: string, options: StartRunOptions = {}): Promise<HermesRunStatus> {
+  async startRun(input: string, options: StartRunOptions = {}, selectedModel?: HermesModel): Promise<HermesRunStatus> {
     if (!input.trim() && !options.attachments?.length) throw new Error('Run input cannot be empty');
     const payload: Record<string, unknown> = { input: attachmentMessage(input, options.attachments) };
     if (options.sessionId) payload.session_id = options.sessionId;
     if (options.instructions) payload.instructions = options.instructions;
     if (options.conversationHistory) payload.conversation_history = options.conversationHistory;
     if (options.previousResponseId) payload.previous_response_id = options.previousResponseId;
-    if (options.model) payload.model = options.model;
-    if (options.provider) payload.provider = options.provider;
+    const model = selectedModel?.id ?? options.model;
+    const provider = selectedModel ? selectedModel.provider : options.provider;
+    if (model) payload.model = model;
+    if (provider && provider !== 'hermes') payload.provider = provider;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'Idempotency-Key': options.idempotencyKey ?? createIdempotencyKey(),
