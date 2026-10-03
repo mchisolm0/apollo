@@ -1,12 +1,14 @@
+import { useThemedStyles, type RelayPalette } from '@/features/relay/relay-ui';
 import { Redirect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Alert, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { AgentSettingsScreen, relayColors } from '@/features/relay';
+import { AgentSettingsScreen } from '@/features/relay';
 import type { RelayAgent } from '@/features/relay';
 import { useEkho } from '@/lib';
 
 export default function SettingsRoute() {
+  const styles = useThemedStyles(createStyles);
   const { agentId } = useLocalSearchParams<{ agentId: string }>();
   const router = useRouter();
   const { agents, runtime, refreshAgent, removeAgent } = useEkho();
@@ -54,6 +56,6 @@ export default function SettingsRoute() {
   );
 }
 
-const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: relayColors.background },
+const createStyles = (colors: RelayPalette) => StyleSheet.create({
+  safeArea: { flex: 1, backgroundColor: colors.background },
 });

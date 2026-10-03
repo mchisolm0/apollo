@@ -21,9 +21,8 @@ function openLink({ url }: { url: string }) {
 }
 
 export const MessageContent = memo(function MessageContent({ text }: { text: string }) {
-  const baseColors = useColors();
+  const colors = useColors();
   const { factor, codePt } = useTextScale();
-  const colors = useMemo(() => ({ ...baseColors, codeText: '#e8e8ed', codeBackground: '#151517' }), [baseColors]);
   const markdownStyle = useMemo<MarkdownStyle>(() => {
     const paragraph = { color: colors.primary, fontSize: 16 * factor, lineHeight: 24 * factor, marginTop: 0, marginBottom: 10 };
     return {
@@ -41,9 +40,9 @@ export const MessageContent = memo(function MessageContent({ text }: { text: str
         fontSize: codePt, lineHeight: Math.round(codePt * 21 / 13), padding: 14, borderRadius: 8,
         borderColor: colors.line, borderWidth: 1, marginBottom: 24,
         syntaxColors: {
-          keyword: '#b8abdc', string: '#a3c9a8', number: '#d5b58b', constant: '#d5b58b',
-          comment: colors.muted, function: '#a5c4df', type: '#a5c4df', property: colors.codeText,
-          tag: '#b8abdc', attribute: '#d5b58b', operator: colors.codeText, punctuation: colors.secondary,
+          keyword: colors.cyan, string: colors.green, number: colors.amber, constant: colors.amber,
+          comment: colors.muted, function: colors.cyan, type: colors.cyan, property: colors.codeText,
+          tag: colors.cyan, attribute: colors.amber, operator: colors.codeText, punctuation: colors.secondary,
           variable: colors.codeText, embedded: colors.codeText,
         },
       },

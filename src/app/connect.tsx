@@ -1,3 +1,4 @@
+import { useThemedStyles, type RelayPalette } from '@/features/relay/relay-ui';
 import { posthog } from '@/config/posthog';
 import * as Device from 'expo-device';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -6,7 +7,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { PairingScreen, RelayButton, relayColors } from '@/features/relay';
+import { PairingScreen, RelayButton } from '@/features/relay';
 import type { PairingPayload, PairingState } from '@/features/relay';
 import { PairingClient, parsePairingLink, useEkho } from '@/lib';
 
@@ -17,6 +18,7 @@ const idlePairing: PairingPayload = {
 };
 
 export default function ConnectRoute() {
+  const styles = useThemedStyles(createStyles);
   const { link } = useLocalSearchParams<{ link?: string }>();
   const router = useRouter();
   const { pair } = useEkho();
@@ -130,11 +132,11 @@ export default function ConnectRoute() {
   );
 }
 
-const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: relayColors.background },
+const createStyles = (colors: RelayPalette) => StyleSheet.create({
+  safeArea: { flex: 1, backgroundColor: colors.background },
   camera: { width: '100%', height: '100%' },
-  cameraPaused: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: relayColors.surface },
-  cameraPausedText: { color: relayColors.muted, fontSize: 13 },
-  permission: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14, padding: 16, backgroundColor: relayColors.background },
-  permissionText: { color: relayColors.secondary, textAlign: 'center', fontSize: 12, lineHeight: 17 },
+  cameraPaused: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surface },
+  cameraPausedText: { color: colors.muted, fontSize: 13 },
+  permission: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14, padding: 16, backgroundColor: colors.background },
+  permissionText: { color: colors.secondary, textAlign: 'center', fontSize: 12, lineHeight: 17 },
 });

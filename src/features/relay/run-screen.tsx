@@ -11,7 +11,7 @@ import { SymbolView } from 'expo-symbols';
 import { MenuView } from '@expo/ui/community/menu';
 import { LegendList, useRecyclingState, type LegendListRef } from '@legendapp/list/react-native';
 
-import { ConnectionAction, ConnectionMark, IconButton, relayColors as colors, useTextScale } from './relay-ui';
+import { ConnectionAction, ConnectionMark, IconButton, useTextScale, useThemedStyles, useColors, type RelayPalette } from './relay-ui';
 import { KeyboardFrame } from './keyboard-frame';
 import { RingSpinner } from './ring-spinner';
 import { insertSkill, matchingSkills, selectedSkillNames, skillTrigger, type SkillTrigger } from './composer-skills';
@@ -68,6 +68,8 @@ export type RunScreenProps = {
 };
 
 export function RunScreen({ session, events, connection, approval, draft = '', attachments = [], isPicking = false, onAddAttachments, onPasteImages, queuedMessages = [], onRetryQueued, onRemoveQueued, sendDisabled = false, onRetryError, onPickAttachments, onRemoveAttachment, attachmentSource, agentName, isSending = false, isLoading = false, isActing = false, statusLabel, error, skills = [], skillsLoading = false, skillsError, onRefreshSkills, models = [], modelsLoading = false, defaultModel, selectedModel, onSelectModel, onBack, onSessionActions, onDraftChange, onSend, onStop, onReconnect, onAgentDetails, onApprove, onDeny }: RunScreenProps) {
+  const styles = useThemedStyles(createStyles);
+  const colors = useColors();
   const { fontScale } = useWindowDimensions();
   const { factor } = useTextScale();
   const list = useRef<LegendListRef>(null);
@@ -271,6 +273,8 @@ function shortModelName(modelId: string): string {
 }
 
 function ComposerIcon({ name, label, disabled = false, selected = false, onPress }: { name: 'plus' | 'shippingbox'; label: string; disabled?: boolean; selected?: boolean; onPress?: () => void }) {
+  const styles = useThemedStyles(createStyles);
+  const colors = useColors();
   return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled, selected }} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.composerIcon, selected && styles.composerIconSelected, { opacity: disabled ? 0.4 : pressed ? 0.6 : 1 }]}>
     <SymbolView name={{ ios: name, android: name === 'plus' ? 'add' : 'deployed_code', web: name === 'plus' ? 'add' : 'deployed_code' }} size={20} tintColor={selected ? colors.primary : colors.secondary} />
   </Pressable>;
@@ -284,6 +288,8 @@ const COLLAPSED_ACTION = (COMPOSER_RADIUS - PILL_INSET) * 2;
 const EXPANDED_ACTION = (COMPOSER_RADIUS - FIELD_INSET) * 2;
 
 function ComposerAction({ kind, size, label, disabled, onPress }: { kind: 'send' | 'stop'; size: number; label?: string; disabled: boolean; onPress: () => void }) {
+  const styles = useThemedStyles(createStyles);
+  const colors = useColors();
   const stop = kind === 'stop';
   const slop = Math.max(0, (44 - size) / 2);
   return <Pressable
@@ -300,10 +306,13 @@ function ComposerAction({ kind, size, label, disabled, onPress }: { kind: 'send'
 }
 
 function NewThreadEmpty() {
+  const styles = useThemedStyles(createStyles);
   return <View style={styles.empty}><Text style={styles.emptyTitle}>How can I help?</Text></View>;
 }
 
 function SkillMenu({ skills, loading, error, onRetry, onSelect }: { skills: readonly HermesSkill[]; loading: boolean; error?: string; onRetry?: () => void; onSelect: (skill: HermesSkill) => void }) {
+  const styles = useThemedStyles(createStyles);
+  const colors = useColors();
   return <View style={styles.skillMenu}>
     {loading ? <View style={styles.skillLoading}><ActivityIndicator size="small" color={colors.secondary} accessibilityLabel="Loading skills" /></View> : null}
     {error ? <Pressable accessibilityRole="button" onPress={onRetry} style={styles.skillStatus}><Text style={styles.skillError}>{error}</Text><Text style={styles.skillRetry}>Retry</Text></Pressable>
@@ -317,14 +326,16 @@ function SkillMenu({ skills, loading, error, onRetry, onSelect }: { skills: read
 }
 
 const TranscriptEntry = memo(function TranscriptEntry({ row, agentName, attachmentSource }: { row: Exclude<TranscriptRow, TranscriptActivityRow>; agentName: string; attachmentSource?: (id: string) => AttachmentSource | undefined }) {
+  const styles = useThemedStyles(createStyles);
   const { factor } = useTextScale();
+  const colors = useColors();
   if (row.kind === 'error') return <View style={styles.error} accessibilityRole="alert"><Text selectable style={styles.errorText}>{row.text}</Text></View>;
   const user = row.kind === 'user';
   // An agent row without content has nothing to show and only eats vertical space.
   if (!user && !row.text.trim()) return null;
   const message = user ? splitAttachmentMessage(row.text) : undefined;
   return <View style={styles.message}>
-    <View accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[styles.avatar, user && styles.userAvatar]}><Text style={styles.avatarText}>{user ? 'Y' : agentName.charAt(0).toUpperCase()}</Text></View>
+    <View accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[styles.avatar, user && styles.userAvatar]}><Text style={[styles.avatarText, user && { color: colors.primary }]}>{user ? 'Y' : agentName.charAt(0).toUpperCase()}</Text></View>
     <View style={styles.messageBody}>
       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}><Text style={[styles.author, { fontSize: 14 * factor }]}>{user ? 'You' : agentName}</Text>{user ? <CopyButton text={message?.text ?? row.text} /> : null}</View>
       {message ? <>{message.text ? <Text selectable style={[styles.userText, { fontSize: 16 * factor, lineHeight: 24 * factor }]}>{message.text}</Text> : null}<AttachmentStrip files={message.attachments.map((file) => ({ ...file, source: attachmentSource?.(file.id) }))} /></> : <MessageContent text={row.text} />}
@@ -347,6 +358,8 @@ function useNow(active: boolean): number {
 
 // One row per turn: a live status while running, then a fold like "Worked for 42s · 6 steps".
 const ActivityEntry = memo(function ActivityEntry({ row, connection, onDisclosure }: { row: TranscriptActivityRow; connection: ConnectionState; onDisclosure: () => void }) {
+  const styles = useThemedStyles(createStyles);
+  const colors = useColors();
   const [expanded, setExpanded] = useRecyclingState(false);
   const running = row.status === 'running';
   const now = useNow(running);
@@ -380,6 +393,8 @@ function clip(text: string): string {
 
 // A flat timeline line: verb, target, and duration or failure. Tapping shows the full input and output.
 const StepEntry = memo(function StepEntry({ step, onDisclosure }: { step: TranscriptStep; onDisclosure: () => void }) {
+  const styles = useThemedStyles(createStyles);
+  const colors = useColors();
   const [open, setOpen] = useState(false);
   if (step.kind === 'note') return <Text selectable style={styles.note}>{step.text.trim()}</Text>;
   const tool = step.kind === 'tool' ? step : undefined;
@@ -412,7 +427,7 @@ const StepEntry = memo(function StepEntry({ step, onDisclosure }: { step: Transc
   </View>;
 });
 
-const styles = StyleSheet.create({
+const createStyles = (colors: RelayPalette) => StyleSheet.create({
   queue: { flexGrow: 0, maxHeight: 160, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
   queueRow: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 12, paddingVertical: 8 },
   queueLabel: { color: colors.secondary, fontSize: 12, marginBottom: 3 },
@@ -421,7 +436,7 @@ const styles = StyleSheet.create({
   queueAction: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 8 },
   queueSend: { minHeight: 44, minWidth: 58, backgroundColor: colors.primary, borderRadius: 12, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 10 },
 
-  navigation: { minHeight: 64, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, gap: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  navigation: { backgroundColor: colors.chrome, minHeight: 64, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, gap: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
   back: { minHeight: 44, width: 32, justifyContent: 'center', alignItems: 'center' },
   heading: { flex: 1, paddingVertical: 8, gap: 4 },
   threadTitle: { color: colors.primary, fontSize: 16, fontWeight: '600' },
@@ -430,9 +445,9 @@ const styles = StyleSheet.create({
   listContent: { paddingHorizontal: 12, paddingTop: 20, paddingBottom: 16 },
   userText: { color: colors.primary, fontSize: 16, lineHeight: 24 },
   message: { flexDirection: 'row', gap: 10, marginBottom: 20 },
-  avatar: { width: 30, height: 30, borderRadius: 15, backgroundColor: '#5865f2', alignItems: 'center', justifyContent: 'center', marginTop: 2 },
-  userAvatar: { backgroundColor: '#3d414b' },
-  avatarText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  avatar: { width: 30, height: 30, borderRadius: 15, backgroundColor: colors.cyan, alignItems: 'center', justifyContent: 'center', marginTop: 2 },
+  userAvatar: { backgroundColor: colors.userBubble },
+  avatarText: { color: colors.accentForeground, fontSize: 13, fontWeight: '700' },
   messageBody: { flex: 1, minWidth: 0, gap: 4 },
   author: { color: colors.primary, fontSize: 14, fontWeight: '600' },
   activity: { marginLeft: 40, marginTop: -8, marginBottom: 12 },
@@ -440,10 +455,10 @@ const styles = StyleSheet.create({
   activityLabel: { flexShrink: 1, color: colors.secondary, fontSize: 13 },
   activityTime: { color: colors.muted, fontSize: 13, fontVariant: ['tabular-nums'] },
   attentionText: { color: colors.amber },
-  failedText: { color: '#f18c94' },
+  failedText: { color: colors.red },
   step: { minHeight: 36, flexDirection: 'row', alignItems: 'center', gap: 8 },
   stepVerb: { color: colors.muted, fontSize: 13 },
-  stepTarget: { flex: 1, color: '#d5d5d5', fontSize: 13 },
+  stepTarget: { flex: 1, color: colors.secondary, fontSize: 13 },
   stepTime: { color: colors.muted, fontSize: 12, fontVariant: ['tabular-nums'] },
   stepDetail: { marginBottom: 10, paddingLeft: 12, paddingVertical: 4, borderLeftWidth: 1, borderLeftColor: colors.lineStrong, gap: 8 },
   stepInput: { color: colors.primary, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 12, lineHeight: 18 },
@@ -465,8 +480,8 @@ const styles = StyleSheet.create({
   buttonText: { color: colors.primary, fontSize: 15, fontWeight: '600' },
   disabled: { opacity: 0.4 },
   composer: { paddingHorizontal: 12, paddingVertical: 8, gap: 8 },
-  composerField: { backgroundColor: '#1c1d22', borderRadius: COMPOSER_RADIUS, paddingHorizontal: FIELD_INSET, paddingTop: 10, paddingBottom: FIELD_INSET },
-  composerPill: { backgroundColor: '#1c1d22', borderRadius: COMPOSER_RADIUS, padding: PILL_INSET, paddingLeft: 14, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  composerField: { backgroundColor: colors.composer, borderRadius: COMPOSER_RADIUS, paddingHorizontal: FIELD_INSET, paddingTop: 10, paddingBottom: FIELD_INSET },
+  composerPill: { backgroundColor: colors.composer, borderRadius: COMPOSER_RADIUS, padding: PILL_INSET, paddingLeft: 14, flexDirection: 'row', alignItems: 'center', gap: 8 },
   pillInput: { color: colors.primary, flex: 1, paddingHorizontal: 0 },
   composerAction: { alignItems: 'center', justifyContent: 'center' },
   input: { color: colors.primary, fontSize: 17, lineHeight: 23, minHeight: 44, paddingVertical: 6, paddingHorizontal: 8, textAlignVertical: 'top' },

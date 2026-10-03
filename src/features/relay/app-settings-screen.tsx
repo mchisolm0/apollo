@@ -2,12 +2,15 @@ import Constants from 'expo-constants';
 import * as Updates from 'expo-updates';
 import { Platform, Pressable, ScrollView, StyleSheet, Switch, Text, useWindowDimensions, View } from 'react-native';
 
-import { relayColors, useColors, useRelayTheme, RelaySlider, CODE_SIZE_MAX, CODE_SIZE_MIN, TEXT_SIZE_MAX, TEXT_SIZE_MIN, useTextScale, styles as uiStyles } from './relay-ui';
-import { SettingRow, SettingSection, SettingsHeader, settingStyles } from './settings-ui';
-import { THEMES, type ThemeId } from './theme';
+import { useColors, useRelayTheme, RelaySlider, CODE_SIZE_MAX, CODE_SIZE_MIN, TEXT_SIZE_MAX, TEXT_SIZE_MIN, useTextScale, useRelayStyles, useThemedStyles, type RelayPalette } from './relay-ui';
+import { SettingRow, SettingSection, SettingsHeader, useSettingStyles } from './settings-ui';
+import { THEMES, THEME_PALETTES } from './theme';
 
 /** App-wide, local-only preferences: theme, text and code size, plus build info. Agent details live on the agent screen. */
 export function AppSettingsScreen({ onBack }: { onBack?: () => void }) {
+  const styles = useThemedStyles(createStyles);
+  const uiStyles = useRelayStyles();
+  const settingStyles = useSettingStyles();
   const { pt, factor, setSize, codeSize, codeCustom, setCodeCustom, setCodeSize } = useTextScale();
   const { id: themeId, setTheme } = useRelayTheme();
   const colors = useColors();
@@ -26,11 +29,15 @@ export function AppSettingsScreen({ onBack }: { onBack?: () => void }) {
                 accessibilityRole="button"
                 accessibilityLabel={`${theme.label} theme`}
                 accessibilityState={{ selected: themeId === theme.id }}
-                onPress={() => void setTheme(theme.id as ThemeId)}
-                style={[styles.themeChip, themeId === theme.id && { borderColor: colors.cyan, borderWidth: 2, padding: 5 }]}
+                onPress={() => void setTheme(theme.id)}
+                style={styles.themeSwatch}
               >
-                <View style={[styles.themeDot, { backgroundColor: theme.accent }]} />
-                <Text style={styles.themeChipLabel}>{theme.label}</Text>
+                <View style={[styles.swatchPreview, { backgroundColor: THEME_PALETTES[theme.id].background, borderColor: themeId === theme.id ? colors.cyan : colors.lineStrong }]}>
+                  <View style={[styles.swatchSurface, { backgroundColor: THEME_PALETTES[theme.id].surface }]}>
+                    <View style={[styles.swatchAccent, { backgroundColor: THEME_PALETTES[theme.id].cyan }]} />
+                  </View>
+                </View>
+                <Text style={styles.themeSwatchLabel}>{themeId === theme.id ? '✓ ' : ''}{theme.label}</Text>
               </Pressable>
             ))}
           </View>
@@ -63,7 +70,7 @@ export function AppSettingsScreen({ onBack }: { onBack?: () => void }) {
             <Switch
               value={codeCustom}
               onValueChange={(next) => void setCodeCustom(next)}
-              trackColor={{ true: colors.cyan, false: relayColors.lineStrong }}
+              trackColor={{ true: colors.cyan, false: colors.lineStrong }}
               thumbColor={colors.primary}
             />
           </View>
@@ -87,21 +94,23 @@ export function AppSettingsScreen({ onBack }: { onBack?: () => void }) {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (colors: RelayPalette) => StyleSheet.create({
   rowLarge: { flexWrap: 'wrap' },
   spacer: { flex: 1 },
-  sizeGlyphSmall: { color: relayColors.secondary, fontSize: 13, fontWeight: '600' },
-  sizeGlyphLarge: { color: relayColors.primary, fontSize: 22, fontWeight: '600' },
+  sizeGlyphSmall: { color: colors.secondary, fontSize: 13, fontWeight: '600' },
+  sizeGlyphLarge: { color: colors.primary, fontSize: 22, fontWeight: '600' },
   themeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingVertical: 10 },
-  themeChip: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, minHeight: 36, borderRadius: 10, borderWidth: 1, borderColor: relayColors.line, backgroundColor: relayColors.surface },
-  themeChipLabel: { color: relayColors.primary, fontSize: 14 },
-  themeDot: { width: 12, height: 12, borderRadius: 6 },
+  themeSwatch: { minWidth: 72, minHeight: 64, gap: 6, alignItems: 'center', paddingVertical: 4 },
+  themeSwatchLabel: { color: colors.primary, fontSize: 13 },
+  swatchPreview: { width: 64, height: 32, borderWidth: 2, padding: 4 },
+  swatchSurface: { flex: 1, alignItems: 'flex-end', justifyContent: 'center', paddingHorizontal: 4 },
+  swatchAccent: { width: 16, height: 8 },
   preview: { paddingTop: 14, gap: 10 },
-  previewBody: { color: relayColors.primary },
-  previewSecondary: { color: relayColors.secondary },
+  previewBody: { color: colors.primary },
+  previewSecondary: { color: colors.secondary },
   // Mirrors the message-content codeBlock so the preview matches thread text.
-  previewCode: { backgroundColor: '#151517', borderRadius: 8, padding: 14 },
-  previewCodeText: { color: '#e8e8ed', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-  terminal: { backgroundColor: '#151517', borderRadius: 8, padding: 14, gap: 6 },
+  previewCode: { backgroundColor: colors.codeBackground, borderRadius: 8, padding: 14 },
+  previewCodeText: { color: colors.codeText, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  terminal: { backgroundColor: colors.codeBackground, borderRadius: 8, padding: 14, gap: 6 },
   terminalLine: { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 13, lineHeight: 19 },
 });

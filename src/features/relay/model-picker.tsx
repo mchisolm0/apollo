@@ -1,8 +1,9 @@
+import { useThemedStyles, useColors, type RelayPalette } from './relay-ui';
 import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { LegendList } from '@legendapp/list/react-native';
 
-import { relayColors as colors } from './relay-ui';
+
 import type { HermesModel } from '../../lib/types';
 
 export interface ModelPickerProps {
@@ -18,6 +19,8 @@ type Row = { kind: 'group'; id: string; title: string } | { kind: 'model'; id: s
 
 /** Bottom-sheet-friendly model list. Renders only what the server returns; empty state when none. */
 export function ModelPicker({ models, defaultModel, selected, loading = false, onSelect }: ModelPickerProps) {
+  const styles = useThemedStyles(createStyles);
+  const colors = useColors();
   const [query, setQuery] = useState('');
   const rows = useMemo<Row[]>(() => {
     const search = query.trim().toLocaleLowerCase();
@@ -77,6 +80,7 @@ export function ModelPicker({ models, defaultModel, selected, loading = false, o
 function ModelRow({ model, isDefault, isSelected, onSelect }: {
   model: HermesModel; isDefault: boolean; isSelected: boolean; onSelect: (id: string) => void;
 }) {
+  const styles = useThemedStyles(createStyles);
   return (
     <Pressable
       accessibilityRole="button"
@@ -95,7 +99,7 @@ function ModelRow({ model, isDefault, isSelected, onSelect }: {
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (colors: RelayPalette) => StyleSheet.create({
   container: { maxHeight: 420 },
   search: {
     backgroundColor: colors.surface,

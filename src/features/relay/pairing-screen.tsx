@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { relayColors as colors, RelayButton, RelayHeader, RelayInput, styles as uiStyles } from './relay-ui';
+import { RelayButton, RelayHeader, RelayInput, useRelayStyles, useThemedStyles, type RelayPalette } from './relay-ui';
 import type { PairingMode, PairingPayload, PairingState, QrContent } from './types';
 
 export type PairingScreenProps = {
@@ -21,6 +21,8 @@ export type PairingScreenProps = {
 
 /** Identity confirmation stays separate from exchanging the one-time pairing link. */
 export function PairingScreen({ pairing, initialMode = 'qr', state = 'ready', isBusy = false, errorMessage, qrContent, onBack, onCancel, onModeChange, onManualSubmit, onConfirm, onRetry }: PairingScreenProps) {
+  const styles = useThemedStyles(createStyles);
+  const uiStyles = useRelayStyles();
   const scroll = useRef<ScrollView>(null);
   const failed = state === 'expired' || state === 'error' || state === 'confirm' && !pairing;
   useEffect(() => {
@@ -72,10 +74,11 @@ export function PairingScreen({ pairing, initialMode = 'qr', state = 'ready', is
 }
 
 function DetailRow({ label, value }: { label: string; value: string }) {
+  const styles = useThemedStyles(createStyles);
   return <View style={styles.detailRow}><Text style={styles.detailLabel}>{label}</Text><Text selectable style={styles.detailValue}>{value}</Text></View>;
 }
 
-const styles = StyleSheet.create({
+const createStyles = (colors: RelayPalette) => StyleSheet.create({
   content: { paddingHorizontal: 20, paddingTop: 24, paddingBottom: 28, gap: 16 },
   title: { color: colors.primary, fontSize: 32, lineHeight: 38, fontWeight: '600', letterSpacing: -0.8 },
   intro: { color: colors.primary, fontSize: 16, lineHeight: 24 },

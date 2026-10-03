@@ -1,10 +1,12 @@
+import { useThemedStyles, type RelayPalette } from '@/features/relay/relay-ui';
 import { useRouter } from 'expo-router';
 import { StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { AppSettingsScreen, relayColors } from '@/features/relay';
+import { AppSettingsScreen } from '@/features/relay';
 
 export default function AppSettingsRoute() {
+  const styles = useThemedStyles(createStyles);
   const router = useRouter();
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
@@ -14,6 +16,6 @@ export default function AppSettingsRoute() {
   );
 }
 
-const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: relayColors.background },
+const createStyles = (colors: RelayPalette) => StyleSheet.create({
+  safeArea: { flex: 1, backgroundColor: colors.background },
 });

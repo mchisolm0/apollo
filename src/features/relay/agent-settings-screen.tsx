@@ -1,6 +1,6 @@
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { ConnectionAction, ConnectionMark, connectionLabels, RelayButton, relayColors, useColors, styles as uiStyles } from './relay-ui';
+import { ConnectionAction, ConnectionMark, connectionLabels, RelayButton, useColors, useRelayStyles, useThemedStyles, type RelayPalette } from './relay-ui';
 import { SettingRow, SettingSection, SettingsHeader } from './settings-ui';
 import type { RelayAgent } from './types';
 
@@ -18,6 +18,8 @@ export type AgentSettingsScreenProps = {
 
 /** One agent's connection and pairing details, opened from the agent picker. App-wide preferences live in AppSettingsScreen. */
 export function AgentSettingsScreen({ agent, deviceName = 'This device', pairedAt, onBack, onTestConnection, onEditEndpoint, onRevokeDevice, onForgetAgent, onNotifications }: AgentSettingsScreenProps) {
+  const styles = useThemedStyles(createStyles);
+  const uiStyles = useRelayStyles();
   const colors = useColors();
   return (
     <View style={uiStyles.screen}>
@@ -58,11 +60,11 @@ export function AgentSettingsScreen({ agent, deviceName = 'This device', pairedA
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (colors: RelayPalette) => StyleSheet.create({
   identity: { paddingTop: 24, paddingBottom: 18, gap: 7 },
-  agentName: { color: relayColors.primary, fontSize: 30, lineHeight: 36, fontWeight: '600', paddingTop: 6 },
+  agentName: { color: colors.primary, fontSize: 30, lineHeight: 36, fontWeight: '600', paddingTop: 6 },
   primaryAction: { paddingTop: 8 },
   testConnection: { minHeight: 44, justifyContent: 'center' }, testConnectionText: { fontSize: 15 },
   dangerSection: { paddingTop: 28, gap: 10 },
-  dangerHelp: { color: relayColors.muted, fontSize: 12, lineHeight: 17, paddingTop: 2, maxWidth: 330 },
+  dangerHelp: { color: colors.muted, fontSize: 12, lineHeight: 17, paddingTop: 2, maxWidth: 330 },
 });

@@ -20,22 +20,9 @@ import {
   parseEnabled,
   parseTextSize,
 } from './text-size';
-import { applyTheme, parseTheme, THEME_STORAGE_KEY, type ThemeId } from './theme';
+import { THEME_PALETTES, parseTheme, THEME_STORAGE_KEY, type ThemeId, type RelayPalette } from './theme';
 
-export const relayColors = {
-  background: '#000000',
-  surface: '#1c1c1e',
-  elevated: '#222224',
-  line: '#292929',
-  lineStrong: '#38383a',
-  primary: '#ffffff',
-  secondary: '#aaaaaa',
-  muted: '#929298',
-  cyan: '#a7c8ff',
-  amber: '#f3b842',
-  red: '#ff5363',
-  green: '#69d391',
-} as const;
+export const relayColors: RelayPalette = THEME_PALETTES.code;
 
 export const relaySpacing = {
   page: 16,
@@ -183,7 +170,7 @@ export function RelayThemeProvider({ children }: { children: ReactNode }) {
       // Keep the in-memory value; storage stays on best effort.
     }
   }, []);
-  const colors = useMemo(() => applyTheme(relayColors, id), [id]);
+  const colors = THEME_PALETTES[id];
   const value = useMemo(() => ({ id, colors, setTheme }), [id, colors, setTheme]);
   return <ThemeStateContext.Provider value={value}>{children}</ThemeStateContext.Provider>;
 }
@@ -192,7 +179,7 @@ export function useRelayTheme(): ThemeValue {
   return useContext(ThemeStateContext);
 }
 
-/** Resolved color set for the active accent theme; same keys as relayColors. */
+/** Resolved color set for the active theme. */
 export function useColors(): typeof relayColors {
   return useContext(ThemeStateContext).colors;
 }
@@ -202,6 +189,7 @@ export function useColors(): typeof relayColors {
  * accent fill and a 28pt knob; steps are whole points between min and max.
  */
 export function RelaySlider({ value, min, max, label, onChange }: { value: number; min: number; max: number; label: string; onChange: (next: number) => void }) {
+  const styles = useThemedStyles(createStyles);
   const [trackWidth, setTrackWidth] = useState(0);
   const cyan = useColors().cyan;
   const ratio = (value - min) / (max - min);
@@ -248,6 +236,7 @@ export function RelayButton({
   compact = false,
   ...props
 }: ComponentProps<typeof Pressable> & { children: ReactNode; tone?: ButtonTone; compact?: boolean }) {
+  const styles = useThemedStyles(createStyles);
   const colors = useColors();
   const color = props.disabled ? colors.muted : tone === 'route' || tone === 'primary' ? colors.background : tone === 'amber' ? colors.amber : tone === 'destructive' ? colors.red : colors.primary;
   const backgroundColor = props.disabled
@@ -255,9 +244,9 @@ export function RelayButton({
     : tone === 'route' || tone === 'primary'
       ? colors.primary
       : tone === 'amber'
-        ? '#2c2412'
+        ? colors.warningSurface
         : tone === 'destructive'
-          ? '#2c1619'
+          ? colors.dangerSurface
           : colors.surface;
   return (
     <Pressable
@@ -315,6 +304,7 @@ export type IconButtonProps = {
 
 /** A native symbol with a 44pt touch target and a Material Symbols fallback. */
 export function IconButton({ name, label, onPress, disabled = false, selected = false, size = 44, tone = 'default' }: IconButtonProps) {
+  const styles = useThemedStyles(createStyles);
   const iconSize = Math.min(22, Math.max(16, size * 0.5));
   const materialName = androidSymbols[name];
   const colors = useColors();
@@ -339,6 +329,7 @@ export function IconButton({ name, label, onPress, disabled = false, selected = 
 }
 
 export function RelayHeader({ title, detail, onBack, action, backLabel = 'Go back', backIcon = 'chevron.left' }: { title: string; detail?: string; onBack?: () => void; action?: ReactNode; backLabel?: string; backIcon?: string }) {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.header}>
       <View style={styles.headerLead}>
@@ -354,6 +345,7 @@ export function RelayHeader({ title, detail, onBack, action, backLabel = 'Go bac
 }
 
 export function ConnectionMark({ state, label }: { state: ConnectionState; label?: boolean }) {
+  const styles = useThemedStyles(createStyles);
   const colors = useColors();
   const color = state === 'connected' ? colors.green : state === 'connecting' ? colors.amber : state === 'revoked' ? colors.red : colors.muted;
   const copy = connectionLabels[state];
@@ -374,6 +366,7 @@ export const connectionLabels = {
 
 /** Connection trouble occupies the existing header instead of inserting a banner. */
 export function ConnectionAction({ state, onReconnect, onDetails }: { state: ConnectionState; onReconnect?: () => void; onDetails?: () => void }) {
+  const styles = useThemedStyles(createStyles);
   const colors = useColors();
   if (state === 'connected') return null;
   const label = state === 'offline' ? 'Offline · Retry' : connectionLabels[state];
@@ -396,10 +389,12 @@ export function ConnectionAction({ state, onReconnect, onDetails }: { state: Con
 }
 
 export function Hairline() {
+  const styles = useThemedStyles(createStyles);
   return <View style={styles.hairline} />;
 }
 
 export function SectionLabel({ children, detail }: { children: string; detail?: string }) {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.sectionLabel}>
       <Text style={styles.sectionLabelText}>{children}</Text>
@@ -409,11 +404,13 @@ export function SectionLabel({ children, detail }: { children: string; detail?: 
 }
 
 export function RelayInput(props: ComponentProps<typeof TextInput>) {
+  const styles = useThemedStyles(createStyles);
   const colors = useColors();
   return <TextInput {...props} placeholderTextColor={colors.muted} selectionColor={colors.cyan} style={[styles.input, props.style]} />;
 }
 
 export function StatusGlyph({ kind }: { kind: RunEventKind }) {
+  const styles = useThemedStyles(createStyles);
   const colors = useColors();
   const config: Record<RunEventKind, { glyph: string; color: string }> = {
     user: { glyph: '→', color: colors.cyan },
@@ -426,18 +423,18 @@ export function StatusGlyph({ kind }: { kind: RunEventKind }) {
   return <Text style={[styles.statusGlyph, { color: item.color }]} accessibilityLabel={`${kind} event`}>{item.glyph}</Text>;
 }
 
-export const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: relayColors.background },
+const createStyles = (colors: RelayPalette) => StyleSheet.create({
+  screen: { flex: 1, backgroundColor: colors.background },
   content: { flexGrow: 1, paddingHorizontal: relaySpacing.page, paddingBottom: 28 },
-  header: { minHeight: 62, paddingHorizontal: 12, paddingTop: 6, paddingBottom: 6, gap: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  header: { backgroundColor: colors.chrome, minHeight: 62, paddingHorizontal: 12, paddingTop: 6, paddingBottom: 6, gap: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   headerLead: { flexDirection: 'row', alignItems: 'center', gap: relaySpacing.compact, flex: 1 },
-  title: { color: relayColors.primary, ...relayTypography.title, letterSpacing: -0.25 },
-  headerDetail: { color: relayColors.secondary, ...relayTypography.caption, marginTop: 2 },
-  iconButton: { alignItems: 'center', justifyContent: 'center', backgroundColor: relayColors.background },
-  iconButtonPrimary: { backgroundColor: relayColors.primary },
-  iconButtonDestructive: { backgroundColor: '#2c1619' },
-  iconButtonSelected: { borderWidth: 1, borderColor: relayColors.primary },
-  iconFallback: { color: relayColors.primary, lineHeight: 22, textAlign: 'center' },
+  title: { color: colors.primary, ...relayTypography.title, letterSpacing: -0.25 },
+  headerDetail: { color: colors.secondary, ...relayTypography.caption, marginTop: 2 },
+  iconButton: { alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
+  iconButtonPrimary: { backgroundColor: colors.primary },
+  iconButtonDestructive: { backgroundColor: colors.dangerSurface },
+  iconButtonSelected: { borderWidth: 1, borderColor: colors.primary },
+  iconFallback: { color: colors.primary, lineHeight: 22, textAlign: 'center' },
   button: { minHeight: 44, paddingHorizontal: 16, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   buttonCompact: { minHeight: 44, paddingHorizontal: 13, borderRadius: 10 },
   buttonText: { fontSize: 15, fontWeight: '600', letterSpacing: 0.1 },
@@ -445,14 +442,26 @@ export const styles = StyleSheet.create({
   connectionDot: { width: 7, height: 7, borderRadius: 4 },
   connectionAction: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 4, flexShrink: 1 },
   connectionText: { fontSize: 12, fontWeight: '600' },
-  hairline: { height: StyleSheet.hairlineWidth, backgroundColor: relayColors.line },
+  hairline: { height: StyleSheet.hairlineWidth, backgroundColor: colors.line },
   sectionLabel: { paddingTop: 24, paddingBottom: 9, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
-  sectionLabelText: { color: relayColors.secondary, fontSize: 12, fontWeight: '600', letterSpacing: 0.4 },
-  sectionLabelDetail: { color: relayColors.muted, fontSize: 11 },
-  input: { minHeight: 48, borderRadius: 12, color: relayColors.primary, backgroundColor: relayColors.surface, paddingHorizontal: 13, paddingVertical: 10, fontSize: 16 },
+  sectionLabelText: { color: colors.secondary, fontSize: 12, fontWeight: '600', letterSpacing: 0.4 },
+  sectionLabelDetail: { color: colors.muted, fontSize: 11 },
+  input: { minHeight: 48, borderRadius: 12, color: colors.primary, backgroundColor: colors.surface, paddingHorizontal: 13, paddingVertical: 10, fontSize: 16 },
   statusGlyph: { width: 24, fontSize: 17, lineHeight: 22, fontWeight: '600', textAlign: 'center' },
   slider: { height: 44, justifyContent: 'center' },
-  sliderTrack: { alignSelf: 'stretch', height: 4, borderRadius: 2, backgroundColor: relayColors.lineStrong },
-  sliderFill: { height: 4, borderRadius: 2, backgroundColor: relayColors.cyan },
-  sliderKnob: { position: 'absolute', top: (44 - 4) / 2 - 14 + 2, width: 28, height: 28, borderRadius: 14, backgroundColor: relayColors.primary, transform: [{ translateX: -14 }] },
+  sliderTrack: { alignSelf: 'stretch', height: 4, borderRadius: 2, backgroundColor: colors.lineStrong },
+  sliderFill: { height: 4, borderRadius: 2, backgroundColor: colors.cyan },
+  sliderKnob: { position: 'absolute', top: (44 - 4) / 2 - 14 + 2, width: 28, height: 28, borderRadius: 14, backgroundColor: colors.primary, transform: [{ translateX: -14 }] },
 });
+
+/** Memoize a style factory against the active palette. */
+export function useThemedStyles<T>(factory: (colors: RelayPalette) => T): T {
+  const colors = useColors();
+  return useMemo(() => factory(colors), [factory, colors]);
+}
+
+export function useRelayStyles() {
+  return useThemedStyles(createStyles);
+}
+
+export type { RelayPalette } from './theme';
