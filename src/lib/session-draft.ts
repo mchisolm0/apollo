@@ -38,6 +38,8 @@ const VERSION = 2;
 const MAX_RECEIPTS = 1000;
 const stores = new Map<string, SessionDraftStore>();
 const queues = new Map<string, Promise<void>>();
+let reloadPending = false;
+let draftsHeld = false;
 
 export function draftKey(agentId: string, sessionId: string): string {
   return `ekho.draft.v2.${encodeURIComponent(agentId)}.${encodeURIComponent(sessionId)}`;
@@ -80,7 +82,10 @@ function sameAttachments(a: readonly DraftAttachment[], b: readonly DraftAttachm
 function enqueueKeys<T>(keys: readonly string[], task: () => Promise<T>): Promise<T> {
   const unique = [...new Set(keys)].sort();
   const prior = unique.map((key) => queues.get(key) ?? Promise.resolve());
-  const next = Promise.all(prior).then(task);
+  const next = Promise.all(prior).then(() => {
+    if (draftsHeld) throw new Error('The app is restarting.');
+    return task();
+  });
   const settled = next.then(() => undefined, () => undefined);
   unique.forEach((key) => queues.set(key, settled));
   return next;
@@ -163,6 +168,7 @@ export class SessionDraftStore {
           const attachments: DraftAttachment[] = oldFiles ? JSON.parse(oldFiles) : [];
           validateDraft(oldDraft ?? '', attachments);
           const migrated: DraftRecord = { version: VERSION, draft: oldDraft ?? '', attachments, receipts: [] };
+          if (draftsHeld) throw new Error('The app is restarting.');
           await this.options.storage.setItem(this.key, JSON.stringify(migrated));
           await this.options.storage.removeItem(this.legacyKey);
           await this.options.storage.removeItem(`${this.legacyKey}:attachments`);
@@ -179,6 +185,7 @@ export class SessionDraftStore {
   }
 
   setDraft(value: string): void {
+    if (draftsHeld) return;
     try {
       validateDraft(value, this.state.attachments);
     } catch (reason) {
@@ -194,6 +201,7 @@ export class SessionDraftStore {
   }
 
   setAttachments(files: readonly DraftAttachment[]): void {
+    if (draftsHeld) return;
     try {
       validateDraft(this.state.draft, files);
     } catch (reason) {
@@ -358,14 +366,37 @@ export function getSessionDraftStore(agentId: string, sessionId: string, options
   return store;
 }
 
-export async function flushSessionDrafts(): Promise<boolean> {
+async function flushDrafts(holdForReload: boolean): Promise<boolean> {
   const pending = [...stores.values()];
   const results = await Promise.allSettled(pending.map(async (store) => await store.flush() ? store.getSnapshot() : undefined));
   const barriers = [...queues.entries()];
   await Promise.all(barriers.map(([, barrier]) => barrier));
   // An edit or a new composer while another draft is saving cancels the reload.
-  return barriers.length === queues.size && barriers.every(([key, barrier]) => queues.get(key) === barrier)
+  const flushed = barriers.length === queues.size && barriers.every(([key, barrier]) => queues.get(key) === barrier)
     && pending.length === stores.size && results.every((result, index) =>
     result.status === 'fulfilled' && result.value !== undefined
     && stores.get(pending[index].key) === pending[index] && pending[index].getSnapshot() === result.value);
+  if (flushed && holdForReload) draftsHeld = true;
+  return flushed;
+}
+
+export async function flushSessionDrafts(): Promise<boolean> {
+  return flushDrafts(false);
+}
+
+/** Holds late async draft mutations until JS teardown, or releases them on failure. */
+export async function withSessionDraftReloadSafety(apply: () => Promise<boolean>): Promise<boolean> {
+  if (reloadPending) return false;
+  reloadPending = true;
+  let applied = false;
+  try {
+    if (!await flushDrafts(true)) return false;
+    applied = await apply();
+    return applied;
+  } finally {
+    if (!applied) {
+      draftsHeld = false;
+      reloadPending = false;
+    }
+  }
 }
