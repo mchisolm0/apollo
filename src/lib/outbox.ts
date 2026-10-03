@@ -9,6 +9,7 @@ export type QueuedMessage = Readonly<{
   createsSession: boolean;
   text: string;
   model?: string;
+  provider?: string;
   instructions?: string;
   attachments: readonly DraftAttachment[];
   createdAt: number;
@@ -26,6 +27,7 @@ export type OutboxDependencies = {
   storage: { getItem(key: string): Promise<string | null>; setItem(key: string, value: string): Promise<void> };
   canSend(message: QueuedMessage): boolean;
   deliver(message: QueuedMessage, checkpoint: (patch: Checkpoint) => Promise<void>, signal: AbortSignal): Promise<string>;
+  steer?(message: QueuedMessage, runId: string): Promise<void>;
   discardAttachments(attachments: readonly DraftAttachment[]): void;
   referencedMessageIds?(): Promise<readonly string[]>;
   now?: () => number;
@@ -61,6 +63,7 @@ export function decodeOutbox(saved: string | null): readonly QueuedMessage[] {
       || (entry.nextAttemptAt !== undefined && (typeof entry.nextAttemptAt !== 'number' || !Number.isFinite(entry.nextAttemptAt)))
       || (entry.acceptedRunId !== undefined && !isId(entry.acceptedRunId))
       || (entry.model !== undefined && !isId(entry.model))
+      || (entry.provider !== undefined && !isId(entry.provider))
       || (entry.instructions !== undefined && (typeof entry.instructions !== 'string' || entry.instructions.length > 32000))
       || (entry.error !== undefined && typeof entry.error !== 'string')) throw new Error('Saved outbox is invalid.');
     ids.add(entry.id);
@@ -216,7 +219,7 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
       if (!worker && !disposed) worker = runtime.runFork(Effect.forever(drain.pipe(Effect.andThen(Effect.sleep('1 second')))));
     },
     drain: () => run(drain),
-    enqueue: (input: Pick<QueuedMessage, 'id' | 'agentId' | 'sessionId' | 'createsSession' | 'text' | 'attachments' | 'model' | 'instructions'>) => run(Effect.gen(function* () {
+    enqueue: (input: Pick<QueuedMessage, 'id' | 'agentId' | 'sessionId' | 'createsSession' | 'text' | 'attachments' | 'model' | 'provider' | 'instructions'>) => run(Effect.gen(function* () {
       yield* load;
       const message: QueuedMessage = { ...input, createdAt: now(), attempts: 0, state: 'queued' };
       // Apply the same trust-boundary validation to new and restored messages.
@@ -225,7 +228,7 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
         if (completed.has(message.id)) return items;
         const existing = items.find((item) => item.id === message.id);
         if (existing) {
-          if (existing.agentId !== message.agentId || existing.sessionId !== message.sessionId || existing.text !== message.text || existing.model !== message.model || existing.instructions !== message.instructions
+          if (existing.agentId !== message.agentId || existing.sessionId !== message.sessionId || existing.text !== message.text || existing.model !== message.model || existing.provider !== message.provider || existing.instructions !== message.instructions
             || JSON.stringify(existing.attachments.map((file) => file.id)) !== JSON.stringify(message.attachments.map((file) => file.id))) {
             throw new Error('A different message already uses this delivery identity. Edit the draft before sending.');
           }
@@ -241,6 +244,33 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
       if (!canReplayMessage(item, now())) throw new Error(NEEDS_REVIEW);
       return { ...item, state: 'queued', attempts: 0, nextAttemptAt: undefined, error: undefined };
     }))),
+    steer: (id: string, runId: string) => run(Effect.gen(function* () {
+      const steer = dependencies.steer;
+      if (!steer) return yield* Effect.fail(new Error('Steering is unavailable.'));
+      const message = yield* mutex.withPermits(1)(Effect.gen(function* () {
+        const item = snapshot.items.find((entry) => entry.id === id);
+        if (!item || inFlight.has(id) || item.state === 'sending' || item.acceptedRunId || item.createsSession
+          || item.attachments.length || item.instructions || !item.text.trim()) {
+          return yield* Effect.fail(new Error('Only queued text messages can steer a run.'));
+        }
+        inFlight.set(id, new AbortController());
+        yield* save(snapshot.items.map((entry) => entry.id === id ? { ...entry, state: 'sending' } : entry)).pipe(
+          Effect.tapError(() => Effect.sync(() => { inFlight.delete(id); })),
+        );
+        return item;
+      }));
+      yield* Effect.gen(function* () {
+        const result = yield* Effect.either(Effect.tryPromise(() => steer(message, runId)));
+        if (result._tag === 'Left') {
+          yield* mutate((items) => items.map((item) => item.id === id ? { ...message, error: 'Could not steer. Message kept queued.' } : item));
+          return yield* Effect.fail(new Error('Could not steer. Message kept queued.'));
+        }
+        // Reuse the accepted-run receipt so failed cleanup cannot deliver another turn.
+        publish({ ...snapshot, items: snapshot.items.map((item) => item.id === id ? { ...item, acceptedRunId: runId } : item) });
+        yield* mutate((items) => items.map((item) => item.id === id ? { ...item, acceptedRunId: runId } : item));
+        yield* mutex.withPermits(1)(Effect.suspend(() => save(snapshot.items.filter((item) => item.id !== id), new Set([...completed, id]))).pipe(Effect.uninterruptible));
+      }).pipe(Effect.ensuring(Effect.sync(() => { inFlight.delete(id); })));
+    }).pipe(Effect.tapError(recordError))),
     remove: (id: string) => run(Effect.gen(function* () {
       if (inFlight.has(id)) return yield* Effect.fail(new Error('This message is being sent. Wait for delivery before removing it.'));
       const item = snapshot.items.find((item) => item.id === id);

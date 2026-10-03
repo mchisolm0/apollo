@@ -11,33 +11,40 @@ export interface ModelPickerProps {
   /** Hermes-advertised default (capabilities.model). Rendered as a Default badge; never hardcoded. */
   defaultModel?: string;
   selected?: string;
+  selectedProvider?: string;
+  disabled?: boolean;
   loading?: boolean;
-  onSelect(modelId: string): void;
+  onSelect(model: HermesModel): void;
 }
 
 type Row = { kind: 'group'; id: string; title: string } | { kind: 'model'; id: string; model: HermesModel };
 
 /** Bottom-sheet-friendly model list. Renders only what the server returns; empty state when none. */
-export function ModelPicker({ models, defaultModel, selected, loading = false, onSelect }: ModelPickerProps) {
+export function ModelPicker({ models, defaultModel, selected, selectedProvider, disabled = false, loading = false, onSelect }: ModelPickerProps) {
   const styles = useThemedStyles(createStyles);
   const colors = useColors();
   const [query, setQuery] = useState('');
+  const matches = models.filter((model) => model.id === selected && (!selectedProvider || model.provider === selectedProvider));
+  const currentProvider = selectedProvider ?? (matches.length === 1 ? matches[0].provider : undefined);
   const rows = useMemo<Row[]>(() => {
     const search = query.trim().toLocaleLowerCase();
     const groups = new Map<string, HermesModel[]>();
-    for (const model of models) {
+    const choices = selected && !models.some((model) => model.id === selected && model.provider === currentProvider)
+      ? [{ id: selected, provider: currentProvider }, ...models] : models;
+    for (const model of choices) {
       if (search && !`${model.id} ${model.label ?? ''} ${model.provider ?? ''}`.toLocaleLowerCase().includes(search)) continue;
       const group = model.provider?.trim() || 'Other';
       groups.set(group, [...(groups.get(group) ?? []), model]);
     }
     return [...[...groups.entries()].sort(([a], [b]) => a.localeCompare(b))].flatMap(([title, items]): Row[] => [
       { kind: 'group', id: title, title },
-      ...items.map((model): Row => ({ kind: 'model', id: model.id, model })),
+      ...items.map((model): Row => ({ kind: 'model', id: JSON.stringify([model.provider, model.id]), model })),
     ]);
-  }, [models, query]);
+  }, [models, query, selected, currentProvider]);
 
   return (
     <View style={styles.container}>
+      {selected ? <Text style={{ color: colors.primary, fontSize: 13, paddingHorizontal: 16, paddingTop: 12 }}>Thread model: {selected}</Text> : null}
       <TextInput
         accessibilityLabel="Find a model"
         placeholder="Find a model"
@@ -62,8 +69,9 @@ export function ModelPicker({ models, defaultModel, selected, loading = false, o
           ? <Text style={styles.group}>{item.title}</Text>
           : <ModelRow
             model={item.model}
-            isDefault={item.model.id === defaultModel || item.model.default === true}
-            isSelected={item.model.id === (selected ?? defaultModel)}
+            isDefault={item.model.default ?? item.model.id === defaultModel}
+            isSelected={selected ? item.model.id === selected && item.model.provider === currentProvider : (item.model.default ?? item.model.id === defaultModel)}
+            disabled={disabled}
             onSelect={onSelect}
           />}
         ListEmptyComponent={
@@ -77,16 +85,17 @@ export function ModelPicker({ models, defaultModel, selected, loading = false, o
   );
 }
 
-function ModelRow({ model, isDefault, isSelected, onSelect }: {
-  model: HermesModel; isDefault: boolean; isSelected: boolean; onSelect: (id: string) => void;
+function ModelRow({ model, isDefault, isSelected, disabled, onSelect }: {
+  model: HermesModel; isDefault: boolean; isSelected: boolean; disabled: boolean; onSelect: (model: HermesModel) => void;
 }) {
   const styles = useThemedStyles(createStyles);
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`Use model ${model.label ?? model.id}${isDefault ? ', default' : ''}`}
-      accessibilityState={{ selected: isSelected }}
-      onPress={() => onSelect(model.id)}
+      accessibilityState={{ selected: isSelected, disabled }}
+      disabled={disabled}
+      onPress={() => onSelect(model)}
       style={({ pressed }) => [styles.row, pressed && styles.pressed]}
     >
       <View style={styles.rowText}>

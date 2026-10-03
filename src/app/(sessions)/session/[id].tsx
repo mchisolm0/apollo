@@ -32,8 +32,7 @@ export default function SessionRoute() {
 }
 
 function Session({ id, agentId, shareId }: { id: string; agentId: string; shareId?: string }) {
-  const styles = useThemedStyles(createStyles);
-  const { agents, runtime, messages, sessionMessages, skills: loadSkills, models: loadModels, stopRun, approveRun, retryAgent, attachmentSource, deleteSession, regenerateTitle } = useEkho();
+  const { agents, runtime, messages, sessionMessages, skills: loadSkills, models: loadModels, stopRun, approveRun, retryAgent, attachmentSource, deleteSession, regenerateTitle, sessionDetail, setSessionModel } = useEkho();
   const outbox = useOutbox();
   const { getShare, acknowledgeShare } = useIncomingShares();
   const [retryRevision, setRetryRevision] = useState(0);
@@ -58,7 +57,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   const [skillsError, setSkillsError] = useState<string>();
   const [models, setModels] = useState<readonly HermesModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
-  const [model, setModel] = useState<string>();
+  const [model, setModel] = useState<HermesModel>();
   const skillRequest = useRef(0);
   const skillsReady = useRef(false);
   const refreshSkills = useCallback(() => {
@@ -119,6 +118,15 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
     }).finally(() => { if (mounted) setLoading(false); });
     return () => { mounted = false; };
   }, [agentId, resolvedId, sessionMessages, awaitingCreation, outbox.loaded]);
+
+  useFocusEffect(useCallback(() => {
+    if (!resolvedId || awaitingCreation || state?.status !== 'connected') return;
+    let current = true;
+    void sessionDetail(agentId, resolvedId).catch((cause: unknown) => {
+      if (current) setLocalError(cause instanceof Error ? cause.message : 'Could not load the thread model.');
+    });
+    return () => { current = false; };
+  }, [agentId, resolvedId, awaitingCreation, state?.status, sessionDetail]));
 
   const session = state?.sessions.find((candidate) => candidate.id === resolvedId);
   const run = sessionRun(state?.runs ?? {}, resolvedId);
@@ -194,7 +202,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
       ? `The user explicitly selected these installed skills: ${JSON.stringify(requestedSkills)}. Before responding, call skill_view for each exact name and follow its instructions. The $name references in the message identify these selections. If a skill cannot be loaded, tell the user.`
       : undefined;
     const prepared = await prepareSend();
-    await outbox.enqueue({ ...prepared, agentId, createsSession: !resolvedId || awaitingCreation, instructions, model });
+    await outbox.enqueue({ ...prepared, agentId, createsSession: !resolvedId || awaitingCreation, instructions, model: !resolvedId || awaitingCreation ? model?.id : undefined, provider: !resolvedId || awaitingCreation ? model?.provider : undefined });
     if (!resolvedId) {
       await moveDraft(prepared.sessionId, '', []);
       setResolvedId(prepared.sessionId);
@@ -224,14 +232,22 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
         models={models}
         modelsLoading={modelsLoading}
         defaultModel={state?.capabilities?.model}
-        selectedModel={model}
-        onSelectModel={setModel}
+        selectedModel={awaitingCreation || !resolvedId ? model?.id : session?.model}
+        selectedProvider={model?.id === session?.model || !resolvedId || awaitingCreation ? model?.provider : undefined}
+        onSelectModel={(choice) => {
+          if (!resolvedId || awaitingCreation) setModel(choice);
+          else void act(async () => {
+            const lock = await setSessionModel(agentId, resolvedId, choice);
+            setModel({ id: lock.model, provider: lock.provider });
+          });
+        }}
         attachments={attachments}
         isPicking={picking}
         onAddAttachments={addAttachments}
         onPasteImages={(uris) => void pasteImages(uris)}
         queuedMessages={queuedMessages}
         onRetryQueued={(messageId) => void act(() => outbox.retry(messageId))}
+        onSteerQueued={run && running && run.status !== 'stopping' && !approval ? (messageId) => void act(() => outbox.steer(messageId, run.runId)) : undefined}
         onRemoveQueued={(messageId) => void act(() => outbox.remove(messageId))}
         sendDisabled={!draftLoaded || !outbox.loaded || Boolean(incoming)}
         onPickAttachments={(kind) => { void pick(kind); }}
