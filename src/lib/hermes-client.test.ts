@@ -16,15 +16,7 @@ function loadClient() {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText;
   const exports: {
-    HermesClient?: new (options: { endpoint: string; token: string; fetchImpl?: typeof fetch }) => {
-      models(): Promise<readonly HermesModel[]>;
-      createSession(options?: { id?: string; title?: string }): Promise<{ id: string }>;
-      deleteSession(id: string): Promise<void>;
-      setPinned(id: string, pinned: boolean): Promise<void>;
-      forkSession(id: string): Promise<{ id: string }>;
-      inbox(settled?: Record<string, number | null>, importOnly?: boolean, config?: Record<string, { auto_settle?: boolean }>): Promise<{ settled: Record<string, number | null>; config: Record<string, { auto_settle?: boolean }> }>;
-      sessions(): Promise<readonly { id: string; settledAt?: number | null; autoSettleDisabled?: boolean }[]>;
-    };
+    HermesClient?: typeof import('./hermes-client').HermesClient;
     parseModels?: (value: unknown) => readonly HermesModel[];
   } = {};
   runInNewContext(source, {
@@ -66,8 +58,99 @@ test('models parser tolerates unknown shapes and skips malformed entries', () =>
   for (const shape of [{}, { data: {} }, null, undefined, 'models']) assert.deepEqual(plain(parseModels(shape)), []);
 });
 
-test('models() returns [] when the server shape is unknown', async () => {
-  assert.deepEqual(plain(await clientWith({ unexpected: true }).models()), []);
+test('models() rejects an invalid provider inventory', async () => {
+  await assert.rejects(clientWith({ unexpected: true }).models(), /model options response was invalid/);
+});
+
+test('models prefers the provider inventory and retains duplicate IDs across providers', async () => {
+  const seen: { url?: string; init?: RequestInit }[] = [];
+  const models = await clientWith({ model: 'shared', provider: 'alpha', providers: [
+    { slug: 'alpha', models: ['shared', 'shared', 'blocked', null, ''], unavailable_models: ['blocked'] },
+    { slug: 'beta', models: ['shared'] },
+    { slug: 'unconfigured', authenticated: false, models: ['hidden'] },
+    { models: ['invalid'] },
+  ] }, seen).models();
+  assert.deepEqual(plain(models), [
+    { id: 'shared', provider: 'alpha', default: true },
+    { id: 'shared', provider: 'beta', default: false },
+  ]);
+  assert.equal(seen[0]?.url, 'https://agent.example.ts.net/api/model/options');
+});
+
+test('models falls back only on missing or forbidden inventory routes', async () => {
+  for (const status of [403, 404, 401, 500]) {
+    const seen: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      seen.push(url);
+      return new Response(JSON.stringify(url.endsWith('/v1/models') ? { data: [{ id: 'compat', owned_by: 'hermes' }] } : { error: { message: 'Unavailable' } }),
+        { status: url.endsWith('/v1/models') ? 200 : status });
+    }) as typeof fetch;
+    const client = new HermesClient({ endpoint: 'https://agent.example.ts.net', token: 'token', fetchImpl });
+    if ([403, 404].includes(status)) {
+      assert.deepEqual(plain(await client.models()), [{ id: 'compat', provider: 'hermes' }]);
+      assert.equal(seen.length, 2);
+    } else {
+      await assert.rejects(client.models(), /Unavailable/);
+      assert.equal(seen.length, 1);
+    }
+  }
+});
+
+test('toolsets parses read-only state and concrete tool names', async () => {
+  const seen: { url?: string; init?: RequestInit }[] = [];
+  assert.deepEqual(plain(await clientWith({ data: [
+    { name: 'terminal', label: 'Terminal', enabled: true, configured: true, tools: ['terminal', null] },
+    { name: 'browser', enabled: false, configured: false, tools: [] },
+    { name: 'invalid' },
+  ] }, seen).toolsets()), [
+    { name: 'terminal', label: 'Terminal', enabled: true, configured: true, tools: ['terminal'] },
+    { name: 'browser', enabled: false, configured: false, tools: [] },
+  ]);
+  assert.equal(seen[0]?.url, 'https://agent.example.ts.net/v1/toolsets');
+  assert.equal(seen[0]?.init?.method, undefined);
+  await assert.rejects(clientWith({}).toolsets(), /toolsets response was invalid/);
+});
+
+test('session detail reads the persisted model and verifies the session identity', async () => {
+  const seen: { url?: string; init?: RequestInit }[] = [];
+  assert.equal((await clientWith({ session: { id: 'a/b', model: 'locked' } }, seen).session('a/b')).model, 'locked');
+  assert.equal(seen[0]?.url, 'https://agent.example.ts.net/api/sessions/a%2Fb');
+  await assert.rejects(clientWith({ session: { id: 'other' } }).session('a'), /different thread/);
+});
+
+test('model locks send model and provider and require backend acceptance', async () => {
+  const seen: { url?: string; init?: RequestInit }[] = [];
+  const response = { session_id: 'a/b', runtime: { model: 'shared', provider: 'alpha', model_lock: 'accepted' } };
+  const client = clientWith(response, seen);
+  assert.deepEqual(plain(await client.setSessionModel('a/b', { id: 'shared', provider: 'alpha' })), { sessionId: 'a/b', model: 'shared', provider: 'alpha' });
+  assert.equal(seen[0]?.url, 'https://agent.example.ts.net/api/sessions/a%2Fb/model');
+  assert.equal(seen[0]?.init?.method, 'POST');
+  assert.deepEqual(JSON.parse(String(seen[0]?.init?.body)), { model: 'shared', provider: 'alpha' });
+  await client.setSessionModel('a/b', { id: 'alias', provider: 'hermes' });
+  assert.deepEqual(JSON.parse(String(seen[1]?.init?.body)), { model: 'alias' });
+  for (const body of [{}, { ...response, session_id: 'other' }, { ...response, runtime: { model: 'shared' } }]) {
+    await assert.rejects(clientWith(body).setSessionModel('a/b', { id: 'shared' }), /did not confirm/);
+  }
+});
+
+test('model locks explain why the compatibility gateway alias cannot be locked', async () => {
+  const client = new HermesClient({ endpoint: 'https://agent.example.ts.net', token: 'token', fetchImpl: (async () =>
+    new Response(JSON.stringify({ error: { code: 'missing_model' } }), { status: 400 })) as typeof fetch });
+  await assert.rejects(client.setSessionModel('a', { id: 'hermes-agent', provider: 'hermes' }), /cannot lock its gateway default/);
+});
+
+test('steer posts text to the active run and requires acceptance', async () => {
+  const seen: { url?: string; init?: RequestInit }[] = [];
+  const client = clientWith({ run_id: 'a/b', accepted: true }, seen);
+  await client.steerRun('a/b', '[QA] stop at 5');
+  assert.equal(seen[0]?.url, 'https://agent.example.ts.net/v1/runs/a%2Fb/steer');
+  assert.equal(seen[0]?.init?.method, 'POST');
+  assert.deepEqual(JSON.parse(String(seen[0]?.init?.body)), { input: '[QA] stop at 5' });
+  await assert.rejects(client.steerRun('a/b', ' '), /cannot be empty/);
+  assert.equal(seen.length, 1);
+  for (const body of [{ run_id: 'a/b', accepted: false }, { run_id: 'other', accepted: true }, {}]) {
+    await assert.rejects(clientWith(body).steerRun('a/b', 'stop'), /did not accept/);
+  }
 });
 
 test('deleteSession issues DELETE against the session path', async () => {

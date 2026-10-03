@@ -5,6 +5,94 @@ import { canReplayMessage, createOutboxRuntime, decodeOutbox, type OutboxDepende
 
 const first = { id: 'message-one', agentId: 'agent-one', sessionId: 'thread-one', createsSession: false, text: 'Do the work', attachments: [] };
 
+test('steer reserves a queued message and removes it only after acceptance', async () => {
+  let release!: () => void;
+  let entered!: () => void;
+  let canSend = false;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const accepted = new Promise<void>((resolve) => { release = resolve; });
+  const setup = fixture({ canSend: () => canSend, steer: async (message, runId) => {
+    assert.equal(message.id, first.id);
+    assert.equal(runId, 'active-run');
+    entered();
+    await accepted;
+  } });
+  const outbox = createOutboxRuntime(setup.dependencies);
+  try {
+    await outbox.enqueue(first);
+    const steering = outbox.steer(first.id, 'active-run');
+    await started;
+    assert.equal(outbox.getSnapshot().items[0]?.state, 'sending');
+    canSend = true;
+    await outbox.drain();
+    assert.deepEqual(setup.sent, []);
+    await assert.rejects(outbox.steer(first.id, 'active-run'), /Only queued/);
+    release();
+    await steering;
+    assert.deepEqual(outbox.getSnapshot().items, []);
+    await outbox.enqueue(first);
+    await outbox.drain();
+    assert.deepEqual(setup.sent, []);
+  } finally { release(); await outbox.dispose(); }
+});
+
+test('failed steer keeps text queued with an error', async () => {
+  const setup = fixture({ canSend: () => false, steer: async () => { throw new Error('Run ended'); } });
+  const outbox = createOutboxRuntime(setup.dependencies);
+  try {
+    await outbox.enqueue(first);
+    await assert.rejects(outbox.steer(first.id, 'ended-run'), /Message kept queued/);
+    const message = outbox.getSnapshot().items[0];
+    assert.equal(message?.text, first.text);
+    assert.equal(message?.state, 'queued');
+    assert.equal(message?.error, 'Could not steer. Message kept queued.');
+  } finally { await outbox.dispose(); }
+});
+
+test('accepted steer survives a failed receipt write without becoming a normal turn', async () => {
+  let writesFail = false;
+  let stored: string | null = null;
+  let requests = 0;
+  const setup = fixture({
+    canSend: () => false,
+    storage: { getItem: async () => stored, setItem: async (_, value) => {
+      if (writesFail) throw new Error('Disk full');
+      stored = value;
+    } },
+    steer: async () => { requests++; writesFail = true; },
+  });
+  const outbox = createOutboxRuntime(setup.dependencies);
+  try {
+    await outbox.enqueue(first);
+    await assert.rejects(outbox.steer(first.id, 'accepted-run'));
+    assert.equal(outbox.getSnapshot().items[0]?.acceptedRunId, 'accepted-run');
+    assert.equal(outbox.getSnapshot().items[0]?.state, 'queued');
+    writesFail = false;
+    setup.advance(31_000);
+    await outbox.drain();
+    assert.equal(requests, 1);
+    assert.deepEqual(setup.sent, []);
+    assert.deepEqual(outbox.getSnapshot().items, []);
+  } finally { await outbox.dispose(); }
+});
+
+test('steer refuses attachments, skill instructions, and messages awaiting session creation', async () => {
+  let requests = 0;
+  const setup = fixture({ canSend: () => false, steer: async () => { requests++; } });
+  const outbox = createOutboxRuntime(setup.dependencies);
+  try {
+    for (const patch of [
+      { createsSession: true }, { instructions: 'Load skill' },
+      { attachments: [{ id: 'file', name: 'a.txt', mimeType: 'text/plain', size: 1, uri: 'file:///a.txt' }] },
+    ]) {
+      await outbox.enqueue({ ...first, ...patch });
+      await assert.rejects(outbox.steer(first.id, 'run'), /Only queued/);
+      await outbox.remove(first.id);
+    }
+    assert.equal(requests, 0);
+  } finally { await outbox.dispose(); }
+});
+
 test('forgetting aborts delivery and waits for the attachment reader before cleanup', async () => {
   let aborted = false;
   let discarded = false;

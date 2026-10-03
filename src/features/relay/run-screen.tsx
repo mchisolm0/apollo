@@ -36,6 +36,7 @@ export type RunScreenProps = {
   queuedMessages?: readonly QueuedMessage[];
   onRetryQueued?: (id: string) => void;
   onRemoveQueued?: (id: string) => void;
+  onSteerQueued?: (id: string) => void;
   sendDisabled?: boolean;
   onRetryError?: () => void;
   onPickAttachments?: (kind: 'photos' | 'files') => void;
@@ -55,7 +56,8 @@ export type RunScreenProps = {
   modelsLoading?: boolean;
   defaultModel?: string;
   selectedModel?: string;
-  onSelectModel?: (modelId: string) => void;
+  selectedProvider?: string;
+  onSelectModel?: (model: HermesModel) => void;
   onBack?: () => void;
   onSessionActions?: () => void;
   onDraftChange?: (value: string) => void;
@@ -67,7 +69,7 @@ export type RunScreenProps = {
   onDeny?: (approval: ApprovalRequest) => void;
 };
 
-export function RunScreen({ session, events, connection, approval, draft = '', attachments = [], isPicking = false, onAddAttachments, onPasteImages, queuedMessages = [], onRetryQueued, onRemoveQueued, sendDisabled = false, onRetryError, onPickAttachments, onRemoveAttachment, attachmentSource, agentName, isSending = false, isLoading = false, isActing = false, statusLabel, error, skills = [], skillsLoading = false, skillsError, onRefreshSkills, models = [], modelsLoading = false, defaultModel, selectedModel, onSelectModel, onBack, onSessionActions, onDraftChange, onSend, onStop, onReconnect, onAgentDetails, onApprove, onDeny }: RunScreenProps) {
+export function RunScreen({ session, events, connection, approval, draft = '', attachments = [], isPicking = false, onAddAttachments, onPasteImages, queuedMessages = [], onRetryQueued, onRemoveQueued, onSteerQueued, sendDisabled = false, onRetryError, onPickAttachments, onRemoveAttachment, attachmentSource, agentName, isSending = false, isLoading = false, isActing = false, statusLabel, error, skills = [], skillsLoading = false, skillsError, onRefreshSkills, models = [], modelsLoading = false, defaultModel, selectedModel, selectedProvider, onSelectModel, onBack, onSessionActions, onDraftChange, onSend, onStop, onReconnect, onAgentDetails, onApprove, onDeny }: RunScreenProps) {
   const styles = useThemedStyles(createStyles);
   const colors = useColors();
   const { fontScale } = useWindowDimensions();
@@ -169,6 +171,7 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
       {queuedMessages.length > 0 ? <ScrollView style={styles.queue} keyboardShouldPersistTaps="handled">
         {queuedMessages.map((message) => <View key={message.id} style={styles.queueRow}>
           <View style={{ flex: 1 }}><Text style={styles.queueLabel}>{message.state === 'sending' ? 'Sending' : message.state === 'failed' ? 'Not sent' : 'Queued'}</Text><Text selectable numberOfLines={2} style={styles.queueText}>{message.text || message.attachments.map((file) => file.name).join(', ')}</Text>{message.error ? <Text style={styles.queueError}>{message.error}</Text> : null}</View>
+          {onSteerQueued && message.state !== 'sending' && !message.acceptedRunId && !message.createsSession && !message.attachments.length && !message.instructions && message.text.trim() ? <Pressable accessibilityRole="button" accessibilityLabel="Steer now" disabled={isActing || connection !== 'connected'} onPress={() => onSteerQueued(message.id)} style={styles.queueAction}><Text style={{ color: colors.cyan, fontSize: 13 }}>Steer now</Text></Pressable> : null}
           {message.state === 'failed' ? <Pressable accessibilityRole="button" accessibilityLabel="Retry queued message" onPress={() => onRetryQueued?.(message.id)} style={styles.queueAction}><Text style={styles.link}>Retry</Text></Pressable> : null}
           <Pressable accessibilityRole="button" accessibilityLabel="Copy queued message" style={styles.queueAction} onPress={() => { void Clipboard.setStringAsync(message.text).catch(() => Alert.alert("Could not copy", "Try again.")); }}><Text style={styles.link}>Copy</Text></Pressable>
           {message.state !== 'sending' ? <IconButton name="xmark" label="Remove queued message" onPress={() => onRemoveQueued?.(message.id)} /> : null}
@@ -259,7 +262,7 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
             <Text style={styles.modelSheetTitle}>Model</Text>
             <Pressable accessibilityRole="button" accessibilityLabel="Close model picker" onPress={() => setModelOpen(false)} style={styles.modelSheetClose}><Text style={styles.modelSheetCloseText}>Close</Text></Pressable>
           </View>
-          <ModelPicker models={models} defaultModel={defaultModel} selected={selectedModel} loading={modelsLoading} onSelect={(id) => { onSelectModel?.(id); setModelOpen(false); }} />
+          <ModelPicker models={models} defaultModel={defaultModel} selected={selectedModel} selectedProvider={selectedProvider} disabled={isActing} loading={modelsLoading} onSelect={(model) => { onSelectModel?.(model); setModelOpen(false); }} />
         </View>
       </Modal>
     </KeyboardFrame>

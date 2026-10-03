@@ -28,6 +28,9 @@ import type {
   HermesApprovalResponse,
   HermesMessage,
   HermesModel,
+  HermesModelLock,
+  HermesToolset,
+  HermesSession,
   HermesRunEvent,
   HermesRunStatus,
   HermesSkill,
@@ -51,6 +54,10 @@ export interface EkhoContextValue {
   forkSession(agentId: string, sessionId: string): Promise<string>;
   regenerateTitle(agentId: string, sessionId: string, input: string): Promise<string | undefined>;
   models(agentId: string): Promise<readonly HermesModel[]>;
+  toolsets(agentId: string): Promise<readonly HermesToolset[]>;
+  sessionDetail(agentId: string, sessionId: string): Promise<HermesSession>;
+  setSessionModel(agentId: string, sessionId: string, model: HermesModel): Promise<HermesModelLock>;
+  steerRun(agentId: string, runId: string, input: string): Promise<void>;
   uploadAttachment(agentId: string, file: { name: string; mimeType: string; data: string }, signal?: AbortSignal): Promise<Attachment>;
   attachmentSource(agentId: string, id: string): AttachmentSource | undefined;
   sessionMessages(agentId: string, sessionId: string): Promise<readonly HermesMessage[]>;
@@ -369,6 +376,21 @@ export function EkhoProvider({
     }
   }, [catalog, pairingClient, refreshAgent, updateRuntime]);
 
+  const updateSessionModel = useCallback((agentId: string, sessionId: string, model: string) => {
+    setRuntime((current) => {
+      const state = current[agentId];
+      return state ? { ...current, [agentId]: { ...state, sessions: state.sessions.map((session) => session.id === sessionId ? { ...session, model } : session) } } : current;
+    });
+  }, [setRuntime]);
+
+  const setSessionModel = useCallback(async (agentId: string, sessionId: string, model: HermesModel) => {
+    const client = clients.current.get(agentId);
+    if (!client) throw new Error('Reconnect to change the thread model.');
+    const lock = await client.setSessionModel(sessionId, model);
+    updateSessionModel(agentId, sessionId, lock.model);
+    return lock;
+  }, [updateSessionModel]);
+
   const startRun = useCallback(async (agentId: string, input: string, options?: StartRunOptions): Promise<HermesRunStatus> => {
     const key = JSON.stringify([agentId, options?.sessionId]);
     if (startingRuns.current.has(key) || (options?.sessionId && Object.values(runtimeRef.current[agentId]?.runs ?? {}).some((run) => run.sessionId === options.sessionId && isRunActive(run.status)))) {
@@ -384,7 +406,15 @@ export function EkhoProvider({
         client = clients.current.get(agentId);
       }
       if (!client) throw new Error('Agent is offline');
-      const result = await client.startRun(input, options);
+      let runOptions = options;
+      const gatewayDefault = options?.provider === 'hermes' && options.model === agent.capabilities?.model;
+      if (gatewayDefault) runOptions = { ...options, model: undefined, provider: undefined };
+      else if (options?.sessionId && options.model) {
+        const lock = await client.setSessionModel(options.sessionId, { id: options.model, provider: options.provider }, options.signal);
+        updateSessionModel(agentId, options.sessionId, lock.model);
+        runOptions = { ...options, model: undefined, provider: undefined };
+      }
+      const result = await client.startRun(input, runOptions);
       const status = { ...result, sessionId: result.sessionId ?? options?.sessionId };
       const previousRuns = runtimeRef.current[agentId]?.runs ?? {};
       updateRun(agentId, status);
@@ -416,7 +446,7 @@ export function EkhoProvider({
       });
       return status;
     } finally { startingRuns.current.delete(key); }
-  }, [catalog, refreshAgent, subscribe, updateRuntime, updateRun, setRuntime]);
+  }, [catalog, refreshAgent, subscribe, updateRuntime, updateRun, setRuntime, updateSessionModel]);
 
   const uploadAttachment = useCallback(async (agentId: string, file: { name: string; mimeType: string; data: string }, signal?: AbortSignal) => {
     const client = clients.current.get(agentId);
@@ -439,6 +469,34 @@ export function EkhoProvider({
     const client = clients.current.get(agentId);
     if (!client) throw new Error('Reconnect to load models.');
     return client.models();
+  }, []);
+
+  const toolsets = useCallback(async (agentId: string) => {
+    const client = clients.current.get(agentId);
+    if (!client) throw new Error('Reconnect to load toolsets.');
+    return client.toolsets();
+  }, []);
+
+  const sessionDetail = useCallback(async (agentId: string, sessionId: string) => {
+    const client = clients.current.get(agentId);
+    if (!client) throw new Error('Reconnect to load the thread model.');
+    const previousModel = runtimeRef.current[agentId]?.sessions.find((item) => item.id === sessionId)?.model;
+    const session = await client.session(sessionId);
+    setRuntime((current) => {
+      const state = current[agentId];
+      if (!state) return current;
+      if (state.sessions.find((item) => item.id === sessionId)?.model !== previousModel) return current;
+      const existing = state.sessions.some((item) => item.id === session.id);
+      const sessions = existing ? state.sessions.map((item) => item.id === session.id ? { ...item, ...session } : item) : [session, ...state.sessions];
+      return { ...current, [agentId]: { ...state, sessions } };
+    });
+    return session;
+  }, [setRuntime]);
+
+  const steerRun = useCallback(async (agentId: string, runId: string, input: string) => {
+    const client = clients.current.get(agentId);
+    if (!client) throw new Error('Reconnect to steer the run.');
+    await client.steerRun(runId, input);
   }, []);
 
   const deleteSession = useCallback(async (agentId: string, sessionId: string): Promise<void> => {
@@ -621,6 +679,10 @@ export function EkhoProvider({
     forkSession,
     regenerateTitle,
     models,
+    toolsets,
+    sessionDetail,
+    setSessionModel,
+    steerRun,
     sessionMessages,
     skills,
     saveInbox,
@@ -631,7 +693,7 @@ export function EkhoProvider({
     removeAgent,
     notificationClient,
     hasSession,
-  }), [notificationClient, hasSession, saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, deleteSession, setPinned, forkSession, regenerateTitle, models, error, loading, messages, pair, refreshAgent, removeAgent, retryAgent, runtime, sessionMessages, skills, startRun, stopRun]);
+  }), [toolsets, sessionDetail, setSessionModel, steerRun, notificationClient, hasSession, saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, deleteSession, setPinned, forkSession, regenerateTitle, models, error, loading, messages, pair, refreshAgent, removeAgent, retryAgent, runtime, sessionMessages, skills, startRun, stopRun]);
 
   return <EkhoContext.Provider value={value}>{children}</EkhoContext.Provider>;
 }
