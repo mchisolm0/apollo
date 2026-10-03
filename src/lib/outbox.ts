@@ -103,6 +103,7 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
   let worker: Fiber.RuntimeFiber<never, never> | undefined;
   let disposed = false;
   let reloading = false;
+  let reloadApplied = false;
   // Receipts protect stale prepared drafts after failed cleanup or a crash.
   let completed = new Set<string>();
   const now = dependencies.now ?? Date.now;
@@ -126,6 +127,7 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
     publish({ loaded: true, items });
   });
   const mutate = (update: (items: readonly QueuedMessage[]) => readonly QueuedMessage[]) => mutex.withPermits(1)(Effect.gen(function* () {
+    if (reloadApplied) return yield* Effect.fail(new Error('The app is restarting. Try again after the update.'));
     if (!snapshot.loaded) return yield* Effect.fail(new Error('The outbox has not loaded. Try again.'));
     const items = yield* Effect.try(() => update(snapshot.items));
     yield* save(items);
@@ -222,7 +224,9 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
         applied = await run(mutex.withPermits(1)(Effect.gen(function* () {
           if (inFlight.size || !snapshot.loaded || snapshot.error) return false;
           yield* save(snapshot.items);
-          return yield* Effect.tryPromise(apply);
+          const applied = yield* Effect.tryPromise(apply);
+          if (applied) reloadApplied = true;
+          return applied;
         }).pipe(Effect.uninterruptible)));
         return applied;
       } finally {
