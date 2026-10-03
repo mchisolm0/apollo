@@ -15,6 +15,7 @@ import { canSettleSession } from '@/features/relay/session-inbox';
 import { createTranscriptProjector } from '@/features/relay/transcript';
 import { selectedSkillNames } from '@/features/relay/composer-skills';
 import { useSessionDraft } from '@/features/relay/use-session-draft';
+import { setVisibleNotificationSession } from '@/features/notifications/foreground';
 import { useEkho } from '@/lib';
 import { currentApproval, isRunActive, sessionRun } from '@/lib/run-state';
 import type { HermesMessage, HermesModel, HermesRunEvent, HermesSkill } from '@/lib';
@@ -35,6 +36,9 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   const { getShare, acknowledgeShare } = useIncomingShares();
   const [retryRevision, setRetryRevision] = useState(0);
   const [resolvedId, setResolvedId] = useState(id === 'new' ? undefined : id);
+  useFocusEffect(useCallback(() => {
+    if (resolvedId) return setVisibleNotificationSession(agentId, resolvedId);
+  }, [agentId, resolvedId]));
   const router = useRouter();
   const openInbox = () => { Keyboard.dismiss(); router.dismissTo({ pathname: '/', params: { agentId } }); };
   const [localError, setLocalError] = useState<string>();
