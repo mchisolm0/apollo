@@ -157,7 +157,7 @@ export function AttachmentStrip({ files, onRemove, disabled = false }: { files: 
       </View>)}
     </ScrollView>
     <Modal visible={Boolean(selected)} transparent animationType="fade" onRequestClose={close}>
-      <View style={styles.backdrop}>
+      <View style={[styles.backdrop, { backgroundColor: colors.backdrop }]}>
         <View style={[styles.modal, { backgroundColor: colors.elevated, borderColor: colors.line }]}>
           <View style={[styles.modalHeader, { borderBottomColor: colors.line }]}>
             <View style={styles.modalTitle}><Text numberOfLines={1} style={[styles.modalName, { color: colors.primary }]}>{selected?.name}</Text><Text style={[styles.size, { color: colors.secondary }]}>{selected ? `${displaySize(selected.size)} · ${selected.mimeType}` : ''}</Text></View>
@@ -190,7 +190,7 @@ const styles = StyleSheet.create({
   details: { paddingHorizontal: 10, paddingVertical: 8, gap: 4, flexShrink: 1 },
   name: { fontSize: 13, maxWidth: 150 }, size: { fontSize: 12 },
   remove: { width: 44, minHeight: 64, alignItems: 'center', justifyContent: 'center' },
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', padding: 16, alignItems: 'center', justifyContent: 'center' },
+  backdrop: { flex: 1, padding: 16, alignItems: 'center', justifyContent: 'center' },
   modal: { width: '100%', maxWidth: 560, maxHeight: '82%', borderRadius: 12, borderWidth: 1, overflow: 'hidden' },
   modalHeader: { minHeight: 60, paddingLeft: 14, flexDirection: 'row', alignItems: 'center', borderBottomWidth: StyleSheet.hairlineWidth },
   modalTitle: { flex: 1, gap: 3 }, modalName: { fontSize: 15, fontWeight: '600' },

@@ -1,3 +1,4 @@
+import { useThemedStyles, type RelayPalette } from '@/features/relay/relay-ui';
 import { posthog } from '@/config/posthog';
 import { useOutbox } from '@/lib/outbox-context';
 import { useIncomingShares } from '@/features/sharing';
@@ -8,7 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActionSheetIOS, Alert, AppState, Keyboard, Platform, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { RunScreen, relayColors } from '@/features/relay';
+import { RunScreen } from '@/features/relay';
 import { showSessionActions } from '@/features/relay/session-actions';
 import { useSessionInbox } from '@/features/relay/use-session-inbox';
 import { canSettleSession } from '@/features/relay/session-inbox';
@@ -31,6 +32,7 @@ export default function SessionRoute() {
 }
 
 function Session({ id, agentId, shareId }: { id: string; agentId: string; shareId?: string }) {
+  const styles = useThemedStyles(createStyles);
   const { agents, runtime, messages, sessionMessages, skills: loadSkills, models: loadModels, stopRun, approveRun, retryAgent, attachmentSource, deleteSession, regenerateTitle } = useEkho();
   const outbox = useOutbox();
   const { getShare, acknowledgeShare } = useIncomingShares();
@@ -281,4 +283,4 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   );
 }
 
-const styles = StyleSheet.create({ safeArea: { flex: 1, backgroundColor: relayColors.background } });
+const createStyles = (colors: RelayPalette) => StyleSheet.create({ safeArea: { flex: 1, backgroundColor: colors.background } });

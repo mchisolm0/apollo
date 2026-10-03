@@ -31,9 +31,8 @@ function nativeDiffView(): ComponentType<RawProps> | null {
 }
 
 export function NativeDiff({ patch }: { patch: string }) {
-  const baseColors = useColors();
+  const colors = useColors();
   const { codePt } = useTextScale();
-  const colors = { ...baseColors, codeBackground: '#151517', codeText: '#e8e8ed', diffInsert: '#183d2b', diffDelete: '#491e25' };
   const ref = useRef<NativeViewRef>(null);
   const rows = useMemo(() => parseUnifiedDiff(patch), [patch]);
   const rowsJson = useMemo(() => JSON.stringify(rows), [rows]);

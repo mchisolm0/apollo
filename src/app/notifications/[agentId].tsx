@@ -48,14 +48,14 @@ export default function NotificationsRoute() {
     <ScrollView contentContainerStyle={styles.content}>
       {clientError ? <Text accessibilityRole="alert" style={[styles.error, { color: colors.red }]}>{clientError}</Text> : null}
       <Row label="Allow notifications" colors={colors}>
-        {busy ? <ActivityIndicator color={colors.secondary} /> : <Switch accessibilityLabel="Allow notifications" value={enabled} disabled={!client || registration.state === 'unsupported'} onValueChange={(value) => { setClientError(undefined); void (value ? registration.enable() : registration.disable()); }} />}
+        {busy ? <ActivityIndicator color={colors.secondary} /> : <Switch trackColor={{ true: colors.cyan, false: colors.lineStrong }} thumbColor={colors.primary} accessibilityLabel="Allow notifications" value={enabled} disabled={!client || registration.state === 'unsupported'} onValueChange={(value) => { setClientError(undefined); void (value ? registration.enable() : registration.disable()); }} />}
       </Row>
       <Text style={[styles.help, { color: colors.secondary }]}>{registration.state === 'denied' ? 'Notifications are disabled in system settings.' : registration.state === 'unsupported' ? 'Push notifications are unavailable on this device.' : 'Ekho sends short status updates without message or command text.'}</Text>
       <View style={styles.section}>
         <Text style={[styles.sectionLabel, { color: colors.primary }]}>Notify me when</Text>
-        <Row label="Approval is needed" colors={colors}><Switch accessibilityLabel="Notify when approval is needed" disabled={!enabled || busy} value={registration.preferences.notifyOnApproval} onValueChange={(value) => update('notifyOnApproval', value)} /></Row>
-        <Row label="A run finishes" colors={colors}><Switch accessibilityLabel="Notify when a run finishes" disabled={!enabled || busy} value={registration.preferences.notifyOnCompletion} onValueChange={(value) => update('notifyOnCompletion', value)} /></Row>
-        <Row label="A run fails" colors={colors}><Switch accessibilityLabel="Notify when a run fails" disabled={!enabled || busy} value={registration.preferences.notifyOnFailure} onValueChange={(value) => update('notifyOnFailure', value)} /></Row>
+        <Row label="Approval is needed" colors={colors}><Switch trackColor={{ true: colors.cyan, false: colors.lineStrong }} thumbColor={colors.primary} accessibilityLabel="Notify when approval is needed" disabled={!enabled || busy} value={registration.preferences.notifyOnApproval} onValueChange={(value) => update('notifyOnApproval', value)} /></Row>
+        <Row label="A run finishes" colors={colors}><Switch trackColor={{ true: colors.cyan, false: colors.lineStrong }} thumbColor={colors.primary} accessibilityLabel="Notify when a run finishes" disabled={!enabled || busy} value={registration.preferences.notifyOnCompletion} onValueChange={(value) => update('notifyOnCompletion', value)} /></Row>
+        <Row label="A run fails" colors={colors}><Switch trackColor={{ true: colors.cyan, false: colors.lineStrong }} thumbColor={colors.primary} accessibilityLabel="Notify when a run fails" disabled={!enabled || busy} value={registration.preferences.notifyOnFailure} onValueChange={(value) => update('notifyOnFailure', value)} /></Row>
       </View>
     </ScrollView>
   </SafeAreaView>;
@@ -68,10 +68,10 @@ function Row({ label, colors, children }: { label: string; colors: ThemeColors; 
 const styles = StyleSheet.create({
   safe: { flex: 1 },
   content: { paddingHorizontal: 16, paddingBottom: 24 },
-  error: { color: '#ff5363', fontSize: 13, paddingVertical: 12 },
-  help: { color: '#929298', fontSize: 13, lineHeight: 18, paddingTop: 10 },
+  error: { fontSize: 13, paddingVertical: 12 },
+  help: { fontSize: 13, lineHeight: 18, paddingTop: 10 },
   section: { paddingTop: 28 },
-  sectionLabel: { color: '#fff', fontSize: 14, fontWeight: '600', paddingBottom: 8 },
+  sectionLabel: { fontSize: 14, fontWeight: '600', paddingBottom: 8 },
   row: { minHeight: 54, borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', gap: 12 },
   label: { flex: 1, fontSize: 15 },
 });

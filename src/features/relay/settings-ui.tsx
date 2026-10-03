@@ -1,10 +1,11 @@
 import type { ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
-import { IconButton, relayColors, useColors } from './relay-ui';
+import { IconButton, useColors, useThemedStyles, type RelayPalette } from './relay-ui';
 
 /** Pushed-screen header shared by app and agent settings: back chevron, centered title. */
 export function SettingsHeader({ title, onBack }: { title: string; onBack?: () => void }) {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.header}>
       <View style={styles.headerSlot}>{onBack ? <IconButton name="chevron.left" label="Back" onPress={onBack} /> : null}</View>
@@ -15,6 +16,7 @@ export function SettingsHeader({ title, onBack }: { title: string; onBack?: () =
 }
 
 export function SettingSection({ label, children }: { label: string; children: ReactNode }) {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.section}>
       <Text style={styles.sectionLabel}>{label}</Text>
@@ -24,6 +26,8 @@ export function SettingSection({ label, children }: { label: string; children: R
 }
 
 export function SettingRow({ label, value, onPress }: { label: string; value: string; onPress?: () => void }) {
+  const styles = useThemedStyles(createStyles);
+  const settingStyles = useSettingStyles();
   const { fontScale } = useWindowDimensions();
   const cyan = useColors().cyan;
   const large = fontScale > 1.3;
@@ -34,21 +38,25 @@ export function SettingRow({ label, value, onPress }: { label: string; value: st
 }
 
 /** Row styles for custom rows (sliders, switches) that sit alongside SettingRow. */
-export const settingStyles = StyleSheet.create({
-  row: { minHeight: 56, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: relayColors.line, flexDirection: 'row', alignItems: 'center', gap: 12, paddingTop: 12, paddingHorizontal: 0 },
-  rowLabel: { color: relayColors.primary, fontSize: 17, lineHeight: 23, flexShrink: 0 },
-  rowValue: { color: relayColors.secondary, fontSize: 17, lineHeight: 23, flex: 1, textAlign: 'right' },
+const createSettingStyles = (colors: RelayPalette) => StyleSheet.create({
+  row: { minHeight: 56, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line, flexDirection: 'row', alignItems: 'center', gap: 12, paddingTop: 12, paddingHorizontal: 0 },
+  rowLabel: { color: colors.primary, fontSize: 17, lineHeight: 23, flexShrink: 0 },
+  rowValue: { color: colors.secondary, fontSize: 17, lineHeight: 23, flex: 1, textAlign: 'right' },
 });
 
-const styles = StyleSheet.create({
-  header: { minHeight: 62, paddingHorizontal: 12, paddingTop: 6, paddingBottom: 6, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+const createStyles = (colors: RelayPalette) => StyleSheet.create({
+  header: { backgroundColor: colors.chrome, minHeight: 62, paddingHorizontal: 12, paddingTop: 6, paddingBottom: 6, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   headerSlot: { width: 44, alignItems: 'flex-start' },
-  headerTitle: { flex: 1, textAlign: 'center', color: relayColors.primary, fontSize: 17, lineHeight: 22, fontWeight: '600', letterSpacing: -0.25 },
+  headerTitle: { flex: 1, textAlign: 'center', color: colors.primary, fontSize: 17, lineHeight: 22, fontWeight: '600', letterSpacing: -0.25 },
   section: { paddingTop: 22, gap: 8 },
-  sectionLabel: { color: relayColors.primary, fontSize: 14, fontWeight: '600' },
-  rows: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: relayColors.line, gap: 10, paddingBottom: 6 },
+  sectionLabel: { color: colors.primary, fontSize: 14, fontWeight: '600' },
+  rows: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line, gap: 10, paddingBottom: 6 },
   rowLarge: { flexDirection: 'column', alignItems: 'stretch', gap: 6, paddingVertical: 12 },
   rowLabelLarge: { flexShrink: 1 },
   rowValueLarge: { flex: 0, textAlign: 'left', alignSelf: 'stretch' },
   rowAction: { fontSize: 15, lineHeight: 20, fontWeight: '600' },
 });
+
+export function useSettingStyles() {
+  return useThemedStyles(createSettingStyles);
+}

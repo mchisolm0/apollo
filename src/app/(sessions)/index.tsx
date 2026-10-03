@@ -6,13 +6,15 @@ import { Redirect, Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { ConnectionAction, IconButton, relayColors as colors } from '@/features/relay/relay-ui';
+import { ConnectionAction, IconButton, useThemedStyles, useColors, type RelayPalette } from '@/features/relay/relay-ui';
 import { AgentPicker } from '@/features/relay/agent-picker';
 import { SessionList } from '@/features/relay/session-list';
 import { useSessionInbox } from '@/features/relay/use-session-inbox';
 import { useEkho } from '@/lib';
 
 export default function SessionsRoute() {
+  const styles = useThemedStyles(createStyles);
+  const colors = useColors();
   const outbox = useOutbox();
   const { pendingShares } = useIncomingShares();
   const { agentId } = useLocalSearchParams<{ agentId?: string }>();
@@ -63,7 +65,7 @@ export default function SessionsRoute() {
   </SafeAreaView>;
 }
 
-const styles = StyleSheet.create({
+const createStyles = (colors: RelayPalette) => StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   header: { flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 52, paddingHorizontal: 12 },

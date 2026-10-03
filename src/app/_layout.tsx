@@ -19,7 +19,7 @@ function InnerStack() {
       ...DarkTheme.colors,
       primary: colors.cyan,
       background: colors.background,
-      card: colors.background,
+      card: colors.chrome,
       text: colors.primary,
       border: colors.line,
       notification: colors.red,

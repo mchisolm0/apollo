@@ -5,7 +5,7 @@ import { SymbolView } from 'expo-symbols';
 import { LegendList } from '@legendapp/list/react-native';
 import Swipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 
-import { relayColors as colors, useTextScale } from './relay-ui';
+import { useTextScale, useThemedStyles, useColors, type RelayPalette } from './relay-ui';
 import { KeyboardFrame } from './keyboard-frame';
 import { canSettleSession, isSessionSnoozed, type InboxSession } from './session-inbox';
 import { useAutoSettleLedger, useSnoozeLedger } from './use-session-inbox';
@@ -36,6 +36,8 @@ const sections = [
 
 /** A searchable thread inbox with persistent finish/reopen actions. */
 export function SessionList({ sessions, connection = 'connected', onSessionPress, onSettle, onReopen, onNewSession, onForked, refreshing, onRefresh }: Props) {
+  const styles = useThemedStyles(createStyles);
+  const colors = useColors();
   const { fontScale } = useWindowDimensions();
   const [query, setQuery] = useState('');
   const [collapsed, setCollapsed] = useState<Record<SectionId, boolean>>({ open: false, snoozed: true, settled: true });
@@ -111,6 +113,7 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
 const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettle, onReopen, onAutoSettle, onSnooze, onUnsnooze, onForked }: {
   session: InboxSession; snoozed: boolean; onPress: Props['onSessionPress']; onSettle: Props['onSettle']; onReopen: Props['onReopen']; onAutoSettle?: (sessionId: string, enabled: boolean) => void; onSnooze: (sessionId: string) => void; onUnsnooze: (sessionId: string) => void; onForked?: Props['onForked'];
 }) {
+  const styles = useThemedStyles(createStyles);
   const { fontScale } = useWindowDimensions();
   const { factor } = useTextScale();
   const { runtime, deleteSession, setPinned, forkSession, regenerateTitle } = useEkho();
@@ -170,25 +173,25 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
   </Swipeable>;
 });
 
-const styles = StyleSheet.create({
+const createStyles = (colors: RelayPalette) => StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background }, list: { flex: 1 }, content: { paddingBottom: HAS_MAIL_TOOLBAR ? MAIL_TOOLBAR_INSET + 20 : 20 },
-  search: { flex: 1, minWidth: 0, height: 44, borderRadius: 8, backgroundColor: '#17171c', paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  search: { flex: 1, minWidth: 0, height: 44, borderRadius: 8, backgroundColor: colors.surface, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 10 },
   searchInput: { color: colors.primary, fontSize: 16, flex: 1, height: 44, paddingVertical: 8 },
   section: { marginHorizontal: 12, paddingHorizontal: 8, minHeight: 48, borderRadius: 6, flexDirection: 'row', alignItems: 'center', gap: 12 },
   sectionText: { color: colors.secondary, fontSize: 15 },
-  sectionRule: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: '#303036' },
-  rowContainer: { marginHorizontal: 12, backgroundColor: colors.background, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#303036' },
+  sectionRule: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.line },
+  rowContainer: { marginHorizontal: 12, backgroundColor: colors.background, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
   row: { paddingHorizontal: 8, paddingVertical: 12, minHeight: 44, borderRadius: 6, gap: 4, backgroundColor: colors.background, justifyContent: 'center' },
-  pressed: { backgroundColor: '#25262c' },
+  pressed: { backgroundColor: colors.selectedThread },
   approval: { color: colors.amber }, activity: { color: colors.cyan }, failed: { color: colors.red },
   titleLine: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 }, title: { color: colors.primary, fontSize: 17, lineHeight: 23, fontWeight: '500', flex: 1, minWidth: 0 },
   date: { color: colors.secondary, fontSize: 15 },
-  quietTitle: { color: '#808080', fontWeight: '400' },
+  quietTitle: { color: colors.muted, fontWeight: '400' },
   preview: { color: colors.secondary },
   swipeAction: { backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center', minWidth: 84, paddingHorizontal: 16 }, swipeText: { color: colors.background, fontWeight: '600', fontSize: 15 },
 
   dock: { paddingHorizontal: 12, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 10 },
-  dockCircle: { width: 44, height: 44, borderRadius: 8, backgroundColor: '#17171c' },
+  dockCircle: { width: 44, height: 44, borderRadius: 8, backgroundColor: colors.surface },
   dockButton: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   empty: { padding: 20, paddingTop: 40, gap: 8 }, emptyTitle: { color: colors.primary, fontSize: 21, fontWeight: '600' }, emptyText: { color: colors.secondary, fontSize: 15, lineHeight: 22 },
 });

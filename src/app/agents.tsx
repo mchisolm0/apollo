@@ -3,11 +3,12 @@ import { useRouter } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { ConnectionMark, RelayHeader, relayColors } from '@/features/relay';
-import { IconButton } from '@/features/relay/relay-ui';
+import { ConnectionMark, RelayHeader } from '@/features/relay';
+import { IconButton, useThemedStyles, type RelayPalette } from '@/features/relay/relay-ui';
 import { useEkho } from '@/lib';
 
 export default function AgentsRoute() {
+  const styles = useThemedStyles(createStyles);
   const router = useRouter();
   const { agents, runtime } = useEkho();
 
@@ -51,14 +52,14 @@ export default function AgentsRoute() {
   );
 }
 
-const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: relayColors.background },
-  row: { minHeight: 68, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: relayColors.line, paddingHorizontal: 16, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 14 },
+const createStyles = (colors: RelayPalette) => StyleSheet.create({
+  safeArea: { flex: 1, backgroundColor: colors.background },
+  row: { minHeight: 68, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line, paddingHorizontal: 16, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 14 },
   lead: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12 },
   copy: { flex: 1, gap: 4 },
-  name: { color: relayColors.primary, fontSize: 15, fontWeight: '600' },
-  endpoint: { color: relayColors.muted, fontSize: 12 },
-  route: { color: relayColors.secondary, fontSize: 13 },
+  name: { color: colors.primary, fontSize: 15, fontWeight: '600' },
+  endpoint: { color: colors.muted, fontSize: 12 },
+  route: { color: colors.secondary, fontSize: 13 },
   empty: { padding: 20 },
-  emptyText: { color: relayColors.secondary, fontSize: 14 },
+  emptyText: { color: colors.secondary, fontSize: 14 },
 });

@@ -6,7 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { scheduleOnRN } from 'react-native-worklets';
 
 import type { AgentRecord, AgentRuntimeState } from '@/lib/types';
-import { ConnectionMark, connectionLabels, relayColors as colors, useTextScale } from './relay-ui';
+import { ConnectionMark, connectionLabels, useTextScale, useThemedStyles, useColors, type RelayPalette } from './relay-ui';
 
 type Props = {
   agents: readonly AgentRecord[];
@@ -23,6 +23,8 @@ const OPEN_SPRING = { damping: 18, stiffness: 260, mass: 0.6 };
 
 /** An anchored picker that leaves the inbox mounted and closes before navigating. */
 export function AgentPicker({ agents, selected, runtime, onSelect, onDetails, onPair }: Props) {
+  const styles = useThemedStyles(createStyles);
+  const colors = useColors();
   const trigger = useRef<View>(null);
   const afterClose = useRef<(() => void) | undefined>(undefined);
   const closing = useRef(false);
@@ -152,12 +154,12 @@ export function AgentPicker({ agents, selected, runtime, onSelect, onDetails, on
   </>;
 }
 
-const styles = StyleSheet.create({
+const createStyles = (colors: RelayPalette) => StyleSheet.create({
   modal: { flex: 1 },
   trigger: { alignSelf: 'flex-start', maxWidth: '100%', flexShrink: 1, minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 8 },
   name: { color: colors.primary, fontSize: 15, fontWeight: '600', flexShrink: 1 },
-  backdrop: { backgroundColor: '#000' },
-  menu: { position: 'absolute', backgroundColor: colors.background, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.lineStrong, borderRadius: 12, overflow: 'hidden', transformOrigin: 'top left', boxShadow: '0 12px 32px rgba(0, 0, 0, 0.4)' },
+  backdrop: { backgroundColor: colors.backdrop },
+  menu: { position: 'absolute', backgroundColor: colors.background, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.lineStrong, borderRadius: 12, overflow: 'hidden', transformOrigin: 'top left', boxShadow: `0 12px 32px ${colors.shadow}` },
   menuContent: { padding: 4 },
   row: { flexDirection: 'row', alignItems: 'stretch', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
   option: { flex: 1, minWidth: 0, minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingVertical: 12, borderRadius: 8 },
