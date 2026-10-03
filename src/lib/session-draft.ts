@@ -140,8 +140,9 @@ export class SessionDraftStore {
     if (!this.state.loaded || this.state.error) return false;
     const revision = this.revision;
     await this.saveCurrent();
-    await queues.get(this.persistenceKey);
-    return revision === this.revision && !this.saveFailed && !this.state.error;
+    const barrier = queues.get(this.persistenceKey);
+    await barrier;
+    return barrier === queues.get(this.persistenceKey) && revision === this.revision && !this.saveFailed && !this.state.error;
   }
 
   private async restore(): Promise<void> {
@@ -360,8 +361,11 @@ export function getSessionDraftStore(agentId: string, sessionId: string, options
 export async function flushSessionDrafts(): Promise<boolean> {
   const pending = [...stores.values()];
   const results = await Promise.allSettled(pending.map(async (store) => await store.flush() ? store.getSnapshot() : undefined));
+  const barriers = [...queues.entries()];
+  await Promise.all(barriers.map(([, barrier]) => barrier));
   // An edit or a new composer while another draft is saving cancels the reload.
-  return pending.length === stores.size && results.every((result, index) =>
+  return barriers.length === queues.size && barriers.every(([key, barrier]) => queues.get(key) === barrier)
+    && pending.length === stores.size && results.every((result, index) =>
     result.status === 'fulfilled' && result.value !== undefined
     && stores.get(pending[index].key) === pending[index] && pending[index].getSnapshot() === result.value);
 }

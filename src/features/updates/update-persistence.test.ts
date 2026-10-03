@@ -46,6 +46,40 @@ test('an edit after one draft flushes cancels a reload while another draft is sa
   assert.equal(await flushSessionDrafts(), true);
 });
 
+test('a preparation queued during the flush cannot report safety before its identity is stored', async () => {
+  let finishPreparation!: () => void;
+  let startPreparation!: () => void;
+  const preparing = new Promise<void>((resolve) => { startPreparation = resolve; });
+  const pendingPreparation = new Promise<void>((resolve) => { finishPreparation = resolve; });
+  const storage = {
+    getItem: async () => null,
+    setItem: async (_key: string, value: string) => {
+      if (JSON.parse(value).prepared) { startPreparation(); await pendingPreparation; }
+    },
+    removeItem: async () => {},
+  };
+  const draft = getSessionDraftStore('update-prepare-test', 'thread', { storage, uuid: () => 'prepared-id' });
+  draft.setDraft('Message to prepare');
+  await draft.flush();
+  let prepare: Promise<unknown> | undefined;
+  let armed = true;
+  const unsubscribe = draft.subscribe(() => {
+    if (!armed) return;
+    armed = false;
+    queueMicrotask(() => { prepare = draft.prepareSend(); });
+  });
+  let flushed: boolean | undefined;
+  const flushing = flushSessionDrafts().then((result) => { flushed = result; return result; });
+  await preparing;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.notEqual(flushed, true);
+  finishPreparation();
+  await prepare;
+  await flushing;
+  unsubscribe();
+  assert.equal(await flushSessionDrafts(), true);
+});
+
 test('outbox safety blocks new sends and skips in-flight delivery', async () => {
   let finishDelivery!: (id: string) => void;
   let startDelivery!: () => void;
@@ -129,5 +163,35 @@ test('outbox safety refuses failed storage and releases delivery after a skipped
     assert.equal(await queue.withReloadSafety(async () => false), false);
     assert.equal(await queue.withReloadSafety(async () => true), true);
     assert.equal(await queue.withReloadSafety(async () => { assert.fail('duplicate reload'); }), false);
+  } finally { await queue.dispose(); }
+});
+
+test('outbox mutations queued behind a successful reload cannot write after authorization', async () => {
+  let finishApply!: (applied: boolean) => void;
+  let startApply!: () => void;
+  const applying = new Promise<void>((resolve) => { startApply = resolve; });
+  const pendingApply = new Promise<boolean>((resolve) => { finishApply = resolve; });
+  let writes = 0;
+  const queue = createOutboxRuntime({
+    storage: { getItem: async () => null, setItem: async () => { writes += 1; } },
+    canSend: () => false,
+    deliver: async () => 'unused',
+    discardAttachments: () => {},
+  });
+  try {
+    await queue.enqueue({ id: 'keep', agentId: 'agent', sessionId: 'thread', createsSession: false, text: 'Keep me', attachments: [] });
+    const reload = queue.withReloadSafety(async () => { startApply(); return pendingApply; });
+    await applying;
+    const pending = [
+      queue.enqueue({ id: 'late', agentId: 'agent', sessionId: 'thread', createsSession: false, text: 'Late message', attachments: [] }),
+      queue.retry('keep'), queue.remove('keep'), queue.forgetAgent('agent'),
+    ];
+    const rejected = pending.map((operation) => assert.rejects(operation, /restarting/));
+    const storedWrites = writes;
+    finishApply(true);
+    assert.equal(await reload, true);
+    await Promise.all(rejected);
+    assert.equal(writes, storedWrites);
+    assert.equal(queue.getSnapshot().items[0]?.id, 'keep');
   } finally { await queue.dispose(); }
 });
