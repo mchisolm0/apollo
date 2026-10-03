@@ -70,7 +70,7 @@ example `Apollo QA 2`, cloned from a paired `Apollo QA`) and its own Metro
 port. Start Metro with
 `EKHO_APP_VARIANT=development npx expo start --dev-client --port <port>` and
 point the dev client at it with
-`xcrun simctl openurl <udid> "ekho-dev://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A<port>"`.
+`xcrun simctl openurl <udid> "exp+ekho://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A<port>"`.
 Native rebuilds install only into the worktree's own simulator.
 
 ## Agent and backend
