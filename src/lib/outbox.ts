@@ -22,6 +22,12 @@ export type QueuedMessage = Readonly<{
   error?: string;
 }>;
 
+export function canSteerMessage(item: QueuedMessage) {
+  return item.state !== 'sending' && item.attempts === 0 && item.firstAttemptAt === undefined
+    && !item.steeringRunId && !item.acceptedRunId && !item.createsSession
+    && !item.attachments.length && !item.instructions && Boolean(item.text.trim());
+}
+
 export type OutboxSnapshot = Readonly<{ loaded: boolean; items: readonly QueuedMessage[]; error?: string }>;
 type Checkpoint = Partial<Pick<QueuedMessage, 'attachments' | 'createsSession' | 'acceptedRunId'>>;
 export type OutboxDependencies = {
@@ -273,21 +279,16 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
     steer: (id: string, runId: string) => run(Effect.gen(function* () {
       const steer = dependencies.steer;
       if (!steer) return yield* Effect.fail(new Error('Steering is unavailable.'));
-      const { message, controller } = yield* mutex.withPermits(1)(Effect.gen(function* () {
-        const item = snapshot.items.find((entry) => entry.id === id);
-        if (!item || inFlight.has(id) || item.state === 'sending' || item.acceptedRunId || item.createsSession
-          || item.attachments.length || item.instructions || !item.text.trim()) {
-          return yield* Effect.fail(new Error('Only queued text messages can steer a run.'));
-        }
-        if (!canReplayMessage(item, now())) return yield* Effect.fail(new Error(NEEDS_REVIEW));
-        const controller = new AbortController();
+      let message!: QueuedMessage;
+      const controller = new AbortController();
+      yield* mutate((items) => {
+        const item = items.find((entry) => entry.id === id);
+        if (!item || inFlight.has(id) || !canSteerMessage(item)) throw new Error('Only queued, unattempted text messages can steer a run.');
+        message = item;
         inFlight.set(id, controller);
         // Steering has no idempotency key. Persist the attempt before sending it.
-        yield* save(snapshot.items.map((entry) => entry.id === id ? { ...entry, state: 'sending', steeringRunId: runId } : entry)).pipe(
-          Effect.tapError(() => Effect.sync(() => { inFlight.delete(id); })),
-        );
-        return { message: item, controller };
-      }));
+        return items.map((entry) => entry.id === id ? { ...entry, state: 'sending', steeringRunId: runId } : entry);
+      }).pipe(Effect.tapError(() => Effect.sync(() => { if (inFlight.get(id) === controller) inFlight.delete(id); })));
       yield* Effect.gen(function* () {
         if (controller.signal.aborted) return;
         const result = yield* Effect.either(Effect.tryPromise({

@@ -19,8 +19,6 @@ import { useSessionDraft } from '@/features/relay/use-session-draft';
 import { setVisibleNotificationSession } from '@/features/notifications/foreground';
 import { useEkho } from '@/lib';
 import { currentApproval, isRunActive, sessionRun } from '@/lib/run-state';
-import { sessionModelChoice } from '@/lib/hermes-client';
-import { loadModelSelection } from '@/lib/ekho-context';
 import type { HermesMessage, HermesModel, HermesRunEvent, HermesSkill } from '@/lib';
 
 const noMessages: readonly HermesMessage[] = [];
@@ -35,7 +33,7 @@ export default function SessionRoute() {
 
 function Session({ id, agentId, shareId }: { id: string; agentId: string; shareId?: string }) {
   const styles = useThemedStyles(createStyles);
-  const { agents, runtime, messages, sessionMessages, skills: loadSkills, models: loadModels, stopRun, approveRun, retryAgent, attachmentSource, deleteSession, regenerateTitle, sessionDetail, setSessionModel, saveModelSelection } = useEkho();
+  const { agents, runtime, messages, sessionMessages, skills: loadSkills, models: loadModels, stopRun, approveRun, retryAgent, attachmentSource, deleteSession, regenerateTitle, sessionDetail, resolveThreadModel, setSessionModel, saveModelSelection } = useEkho();
   const outbox = useOutbox();
   const { getShare, acknowledgeShare } = useIncomingShares();
   const [retryRevision, setRetryRevision] = useState(0);
@@ -61,7 +59,6 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   const [models, setModels] = useState<readonly HermesModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [model, setModel] = useState<HermesModel>();
-  const [modelReady, setModelReady] = useState(id === 'new');
   const skillRequest = useRef(0);
   const skillsReady = useRef(false);
   const refreshSkills = useCallback(() => {
@@ -124,23 +121,15 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   }, [agentId, resolvedId, sessionMessages, awaitingCreation, outbox.loaded]);
 
   useFocusEffect(useCallback(() => {
-    const status = state?.status;
-    if (!resolvedId || awaitingCreation || !status || status === 'connecting' || status === 'idle') return;
+    if (!resolvedId || !state?.status) return;
     let current = true;
-    setModelReady(false);
-    const restore = status === 'connected'
-      ? sessionDetail(agentId, resolvedId)
-      : loadModelSelection(agentId, resolvedId).then((selected) => { if (current) setModel(selected); });
-    void restore.then(() => {
-      if (current) setModelReady(true);
-    }).catch((cause: unknown) => {
-      if (current) setLocalError(cause instanceof Error ? cause.message : 'Could not load the thread model.');
-    });
+    void resolveThreadModel(agentId, resolvedId).then((selected) => {
+      if (current) setModel(selected);
+    }).catch(() => {});
     return () => { current = false; };
-  }, [agentId, resolvedId, awaitingCreation, state?.status, sessionDetail]));
+  }, [agentId, resolvedId, state?.status, resolveThreadModel]));
 
   const session = state?.sessions.find((candidate) => candidate.id === resolvedId);
-  const selectedModel = sessionModelChoice(session?.model, session?.selectedModel ?? model);
   const run = sessionRun(state?.runs ?? {}, resolvedId);
   const running = isRunActive(run?.status);
   const runId = run?.runId;
@@ -196,7 +185,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   };
 
   const send = (text: string) => void act(async () => {
-    if (pickerLock.current || !modelReady) return;
+    if (pickerLock.current) return;
     // Skill instructions need a live catalog lookup. Offline, send the raw text.
     // A send racing the initial catalog load refetches once so $skill refs still resolve.
     let catalog = skills;
@@ -214,8 +203,9 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
       ? `The user explicitly selected these installed skills: ${JSON.stringify(requestedSkills)}. Before responding, call skill_view for each exact name and follow its instructions. The $name references in the message identify these selections. If a skill cannot be loaded, tell the user.`
       : undefined;
     const prepared = await prepareSend();
-    if ((!resolvedId || awaitingCreation) && selectedModel) await saveModelSelection(agentId, prepared.sessionId, selectedModel);
-    await outbox.enqueue({ ...prepared, agentId, createsSession: !resolvedId || awaitingCreation, instructions, model: selectedModel?.id, provider: selectedModel?.provider });
+    if (!resolvedId && model) await saveModelSelection(agentId, prepared.sessionId, model);
+    const snapshot = await resolveThreadModel(agentId, prepared.sessionId);
+    await outbox.enqueue({ ...prepared, agentId, createsSession: !resolvedId || awaitingCreation, instructions, model: snapshot?.id, provider: snapshot?.provider });
     if (!resolvedId) {
       await moveDraft(prepared.sessionId, '', []);
       setResolvedId(prepared.sessionId);
@@ -245,13 +235,14 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
         models={models}
         modelsLoading={modelsLoading}
         defaultModel={state?.capabilities?.model}
-        selectedModel={selectedModel?.id}
-        selectedProvider={selectedModel?.provider}
+        selectedModel={model?.id}
+        selectedProvider={model?.provider}
         onSelectModel={(choice) => {
-          if (!resolvedId || awaitingCreation) setModel(choice);
+          if (!resolvedId) setModel(choice);
           else void act(async () => {
-            const lock = await setSessionModel(agentId, resolvedId, choice);
-            setModel({ id: lock.model, provider: lock.provider });
+            if (awaitingCreation) await saveModelSelection(agentId, resolvedId, choice);
+            else await setSessionModel(agentId, resolvedId, choice);
+            setModel(choice);
           });
         }}
         attachments={attachments}
@@ -262,7 +253,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
         onRetryQueued={(messageId) => void act(() => outbox.retry(messageId))}
         onSteerQueued={run && running && run.status !== 'stopping' && !approval ? (messageId) => void act(() => outbox.steer(messageId, run.runId)) : undefined}
         onRemoveQueued={(messageId) => void act(() => outbox.remove(messageId))}
-        sendDisabled={!draftLoaded || !outbox.loaded || !modelReady || Boolean(incoming)}
+        sendDisabled={!draftLoaded || !outbox.loaded || Boolean(incoming)}
         onPickAttachments={(kind) => { void pick(kind); }}
         onRemoveAttachment={(fileId) => {
           const removed = attachments.find((file) => file.id === fileId);
@@ -283,7 +274,6 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
             await retryAgent(agentId);
             if (resolvedId && !awaitingCreation) {
               await Promise.all([sessionMessages(agentId, resolvedId), sessionDetail(agentId, resolvedId)]);
-              setModelReady(true);
             }
           }
         })}

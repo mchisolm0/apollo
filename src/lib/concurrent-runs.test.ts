@@ -32,6 +32,10 @@ function providerFixture(sessions: readonly HermesSession[] = []) {
   const locks: HermesModel[] = [];
   let loseAcceptance = false;
   const detail = Promise.withResolvers<HermesSession>();
+  let detailResult = detail.promise;
+  let detailRequests = 0;
+  const reconnect = Promise.withResolvers<void>();
+  let reconnecting = false;
   const catalog = {
     get: () => record,
     list: () => [record],
@@ -40,9 +44,9 @@ function providerFixture(sessions: readonly HermesSession[] = []) {
     remove: async () => { removal.push('credential'); },
   };
   class Client {
-    async capabilities() { return { features: {} }; }
+    async capabilities() { if (reconnecting) await reconnect.promise; return { features: {} }; }
     async sessions() { return sessions; }
-    async session() { return detail.promise; }
+    async session() { detailRequests++; return detailResult; }
     async sessionMessages() { return []; }
     async deleteSession() {}
     async setSessionModel(sessionId: string, model: HermesModel) { locks.push(model); return { sessionId, model: model.id, provider: model.provider }; }
@@ -108,7 +112,7 @@ function providerFixture(sessions: readonly HermesSession[] = []) {
       if (id === './run-state') return runState;
       if (id === './attachments') return attachments;
       if (id === './message-history') return messageHistory;
-      if (id === './hermes-client') return { HermesClient: Client, HermesRequestError: class extends Error {}, parseSelectedModel: (value: HermesModel | null) => value ?? undefined, sessionModelChoice: (_model: string | undefined, cached?: HermesModel) => cached };
+      if (id === './hermes-client') return { HermesClient: Client, HermesRequestError: class extends Error {}, parseSelectedModel: (value: HermesModel | null) => value ?? undefined, sessionModelChoice: (model: string | undefined, cached?: HermesModel) => model ? { id: model, provider: model === cached?.id ? cached.provider : undefined } : cached };
       return nativeRequire(id);
     },
   });
@@ -121,6 +125,9 @@ function providerFixture(sessions: readonly HermesSession[] = []) {
   }
   return { mount, streams, stopped, approved, removal, requests, locks, resolveDetail: detail.resolve,
     get record() { return record; },
+    get detailRequests() { return detailRequests; },
+    setDetail: (session: HermesSession) => { detailResult = Promise.resolve(session); },
+    holdReconnect: () => { reconnecting = true; }, releaseReconnect: reconnect.resolve,
     get runtime() { return latestRuntime; },
     loseNextAcceptance: () => { loseAcceptance = true; },
     setRegistrationError: (error?: Error) => { registrationError = error; },
@@ -195,16 +202,35 @@ test('opening a thread preserves list activity and preview omitted by detail', a
   assert.deepEqual(JSON.parse(JSON.stringify(setup.runtime.agent.sessions[0])), { ...listed, title: 'Fresh title', pinned: false });
 });
 
-test('a pre-creation model choice restores its provider without locking on delivery', async () => {
-  const setup = providerFixture();
+test('send resolution keeps a stored provider after a session list refresh and relaunch', async () => {
+  const setup = providerFixture([{ id: 'thread', model: 'shared' }]);
   const api = setup.mount();
-  await api.saveModelSelection('agent', 'new-thread', { id: 'shared', provider: 'non-default' });
+  await api.saveModelSelection('agent', 'thread', { id: 'shared', provider: 'non-default' });
   const restored = setup.mount();
   await restored.refreshAgent('agent');
-  setup.resolveDetail({ id: 'new-thread', model: 'shared' });
-  const detail = await restored.sessionDetail('agent', 'new-thread');
-  assert.deepEqual(JSON.parse(JSON.stringify(detail.selectedModel)), { id: 'shared', provider: 'non-default' });
+  assert.equal(setup.runtime.agent.sessions[0].selectedModel, undefined);
+  setup.setDetail({ id: 'thread', model: 'shared' });
+  const choice = await restored.resolveThreadModel('agent', 'thread');
+  assert.deepEqual(JSON.parse(JSON.stringify(choice)), { id: 'shared', provider: 'non-default' });
+  await restored.startRun('agent', '[QA] tiny', { sessionId: 'thread', model: choice?.id, provider: choice?.provider });
+  assert.equal(setup.requests.at(-1)?.options.provider, 'non-default');
   assert.deepEqual(setup.locks, []);
+});
+
+test('send during reconnect fetches fresh detail rather than the previous display model', async () => {
+  const setup = providerFixture([{ id: 'thread', model: 'old' }]);
+  const api = setup.mount();
+  await api.refreshAgent('agent');
+  await api.saveModelSelection('agent', 'thread', { id: 'old', provider: 'alpha' });
+  setup.holdReconnect();
+  const refreshing = api.refreshAgent('agent');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(setup.runtime.agent.status, 'connecting');
+  setup.setDetail({ id: 'thread', model: 'fresh' });
+  assert.deepEqual(JSON.parse(JSON.stringify(await api.resolveThreadModel('agent', 'thread'))), { id: 'fresh' });
+  assert.equal(setup.detailRequests, 1);
+  setup.releaseReconnect();
+  await refreshing;
 });
 
 test('accepted model changes update runtime even when the local cache cannot save', async () => {

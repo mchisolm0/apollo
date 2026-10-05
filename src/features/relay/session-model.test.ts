@@ -5,32 +5,20 @@ import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
 import type { ReactElement } from 'react';
 import type { RunScreenProps } from './run-screen';
-import type { HermesModel, HermesSession } from '../../lib/types';
+import type { HermesModel } from '../../lib/types';
 
-// Run the route's callbacks and effects without loading native modules.
-function routeFixture(id: string, status = 'connected') {
-  const restoration = Promise.withResolvers<void>();
-  const session: HermesSession = { id };
+// Run send callbacks without loading native modules or display effects.
+function routeFixture(id: string) {
   const saved: { sessionId: string; model: HermesModel }[] = [];
   const queued: unknown[] = [];
   const order: string[] = [];
-  const slots = new Map<number, { value: unknown; deps?: readonly unknown[] }>();
+  const slots = new Map<number, unknown>();
   let cursor = 0;
-  let effects: (() => unknown)[] = [];
-  const memo = (factory: () => unknown, deps: readonly unknown[]) => {
-    const index = cursor++;
-    const previous = slots.get(index);
-    if (!previous || deps.some((value, i) => value !== previous.deps?.[i])) slots.set(index, { value: factory(), deps });
-    return slots.get(index)!.value;
-  };
-  const effect = (callback: () => unknown, deps: readonly unknown[]) => {
-    memo(() => { effects.push(callback); }, deps);
-  };
   const api = {
     agents: [{ id: 'agent', label: 'QA' }],
-    runtime: { agent: { status, sessions: id === 'new' ? [] : [session], runs: {}, events: [] } },
+    runtime: { agent: { status: 'connected', sessions: id === 'new' ? [] : [{ id }], runs: {}, events: [] } },
     messages: {}, skills: async () => [], models: async () => [], sessionMessages: async () => [],
-    sessionDetail: async () => { await restoration.promise; session.model = 'shared'; session.selectedModel = { id: 'shared', provider: 'non-default' }; },
+    resolveThreadModel: async () => saved.at(-1)?.model,
     saveModelSelection: async (_agent: string, sessionId: string, model: HermesModel) => { order.push('save'); saved.push({ sessionId, model }); },
   };
   const source = ts.transpileModule(readFileSync(new URL('../../app/(sessions)/session/[id].tsx', import.meta.url), 'utf8'), {
@@ -44,55 +32,34 @@ function routeFixture(id: string, status = 'connected') {
       if (name === 'react') return {
         useState: (initial: unknown) => {
           const index = cursor++;
-          if (!slots.has(index)) slots.set(index, { value: initial });
-          return [slots.get(index)!.value, (value: unknown) => slots.set(index, { value })];
+          if (!slots.has(index)) slots.set(index, initial);
+          return [slots.get(index), (value: unknown) => slots.set(index, value)];
         },
-        useRef: (initial: unknown) => memo(() => ({ current: initial }), []),
-        useMemo: memo, useCallback: (callback: unknown, deps: readonly unknown[]) => memo(() => callback, deps), useEffect: effect,
+        useRef: (initial: unknown) => ({ current: initial }),
+        useMemo: (factory: () => unknown) => factory(), useCallback: (callback: unknown) => callback, useEffect() {},
       };
-      if (name === 'expo-router') return { useFocusEffect: (callback: () => unknown) => effect(callback, [callback]), useRouter: () => ({ setParams() {} }) };
+      if (name === 'expo-router') return { useFocusEffect() {}, useRouter: () => ({ setParams() {} }) };
       if (name === 'react-native') return { AppState: { currentState: 'active' } };
       if (name === '@/lib') return { useEkho: () => api };
-      if (name === '@/lib/ekho-context') return { loadModelSelection: async () => { await restoration.promise; return { id: 'shared', provider: 'non-default' }; } };
       if (name === '@/lib/outbox-context') return { useOutbox: () => ({ loaded: true, items: [], enqueue: async (value: unknown) => { order.push('enqueue'); queued.push(value); } }) };
       if (name.endsWith('/use-session-draft')) return { useSessionDraft: () => ({ draft: '[QA] tiny', attachments: [], loaded: true, prepareSend: async () => ({ id: 'message', sessionId: id === 'new' ? 'created' : id, text: '[QA] tiny', attachments: [] }), move: async () => {}, clear: async () => {} }) };
       if (name.endsWith('/use-session-inbox')) return { useSessionInbox: () => ({ markRead: async () => {}, sessions: [] }) };
       if (name.endsWith('/relay-ui')) return { useThemedStyles: () => ({}) };
       if (name.endsWith('/transcript')) return { createTranscriptProjector: () => () => [] };
       if (name.endsWith('/composer-skills')) return { selectedSkillNames: () => [] };
-      if (name.endsWith('/foreground')) return { setVisibleNotificationSession: () => {} };
       if (name === '@/features/sharing') return { useIncomingShares: () => ({}) };
       if (name.endsWith('/run-state')) return { sessionRun: () => undefined, isRunActive: () => false, currentApproval: () => undefined };
-      if (name.endsWith('/hermes-client')) return { sessionModelChoice: (model?: string, cached?: HermesModel) => model ? { id: model, provider: cached?.id === model ? cached.provider : undefined } : cached };
       return {};
     },
   });
   const render = () => {
-    cursor = 0; effects = [];
-    const props = exports.Session!({ id, agentId: 'agent' }).props.children.props;
-    effects.forEach((callback) => callback());
-    return props;
+    cursor = 0;
+    return exports.Session!({ id, agentId: 'agent' }).props.children.props;
   };
-  return { render, restoration, saved, queued, order };
+  return { render, saved, queued, order };
 }
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
-
-test('existing threads cannot enqueue until model restoration succeeds', async () => {
-  const setup = routeFixture('thread');
-  const pending = setup.render();
-  assert.equal(pending.sendDisabled, true);
-  pending.onSend('[QA] tiny');
-  await flush();
-  assert.deepEqual(setup.queued, []);
-  setup.restoration.resolve();
-  await flush();
-  const ready = setup.render();
-  assert.equal(ready.sendDisabled, false);
-  ready.onSend('[QA] tiny');
-  await flush();
-  assert.deepEqual(JSON.parse(JSON.stringify(setup.queued[0])), { id: 'message', sessionId: 'thread', text: '[QA] tiny', attachments: [], agentId: 'agent', createsSession: false, model: 'shared', provider: 'non-default' });
-});
 
 test('a draft picker choice is saved under the creating message session before enqueue', async () => {
   const setup = routeFixture('new');
@@ -101,16 +68,4 @@ test('a draft picker choice is saved under the creating message session before e
   await flush();
   assert.deepEqual(JSON.parse(JSON.stringify(setup.saved)), [{ sessionId: 'created', model: { id: 'shared', provider: 'non-default' } }]);
   assert.deepEqual(setup.order, ['save', 'enqueue']);
-});
-
-test('offline threads wait for their cached provider before enqueueing', async () => {
-  const setup = routeFixture('thread', 'offline');
-  assert.equal(setup.render().sendDisabled, true);
-  setup.restoration.resolve();
-  await flush();
-  const ready = setup.render();
-  assert.equal(ready.sendDisabled, false);
-  ready.onSend('[QA] tiny');
-  await flush();
-  assert.deepEqual(JSON.parse(JSON.stringify(setup.queued[0])), { id: 'message', sessionId: 'thread', text: '[QA] tiny', attachments: [], agentId: 'agent', createsSession: false, model: 'shared', provider: 'non-default' });
 });

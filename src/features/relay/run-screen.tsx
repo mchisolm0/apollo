@@ -1,6 +1,6 @@
 import { TextInputWrapper } from 'expo-paste-input';
 import * as Clipboard from 'expo-clipboard';
-import type { QueuedMessage } from '../../lib/outbox';
+import { canSteerMessage, type QueuedMessage } from '../../lib/outbox';
 import { followAfterScroll } from './feed-follow';
 import { CopyButton } from '../content/copy-button';
 import { splitAttachmentMessage, type AttachmentSource, type DraftAttachment } from '../../lib/attachments';
@@ -171,7 +171,7 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
       {queuedMessages.length > 0 ? <ScrollView style={styles.queue} keyboardShouldPersistTaps="handled">
         {queuedMessages.map((message) => <View key={message.id} style={styles.queueRow}>
           <View style={{ flex: 1 }}><Text style={styles.queueLabel}>{message.state === 'sending' ? 'Sending' : message.steeringRunId && !message.acceptedRunId ? 'Delivery unknown' : message.state === 'failed' ? 'Not sent' : 'Queued'}</Text><Text selectable numberOfLines={2} style={styles.queueText}>{message.text || message.attachments.map((file) => file.name).join(', ')}</Text>{message.error ? <Text style={styles.queueError}>{message.error}</Text> : null}</View>
-          {onSteerQueued && message.state !== 'sending' && !message.steeringRunId && !message.acceptedRunId && !message.createsSession && !message.attachments.length && !message.instructions && message.text.trim() ? <Pressable accessibilityRole="button" accessibilityLabel="Steer now" disabled={isActing || connection !== 'connected'} onPress={() => onSteerQueued(message.id)} style={styles.queueAction}><Text style={{ color: colors.cyan, fontSize: 13 }}>Steer now</Text></Pressable> : null}
+          {onSteerQueued && canSteerMessage(message) ? <Pressable accessibilityRole="button" accessibilityLabel="Steer now" disabled={isActing || connection !== 'connected'} onPress={() => onSteerQueued(message.id)} style={styles.queueAction}><Text style={{ color: colors.cyan, fontSize: 13 }}>Steer now</Text></Pressable> : null}
           {message.state === 'failed' && !message.steeringRunId ? <Pressable accessibilityRole="button" accessibilityLabel="Retry queued message" onPress={() => onRetryQueued?.(message.id)} style={styles.queueAction}><Text style={styles.link}>Retry</Text></Pressable> : null}
           <Pressable accessibilityRole="button" accessibilityLabel="Copy queued message" style={styles.queueAction} onPress={() => { void Clipboard.setStringAsync(message.text).catch(() => Alert.alert("Could not copy", "Try again.")); }}><Text style={styles.link}>Copy</Text></Pressable>
           {message.state !== 'sending' ? <IconButton name="xmark" label="Remove queued message" onPress={() => onRemoveQueued?.(message.id)} /> : null}

@@ -57,6 +57,7 @@ export interface EkhoContextValue {
   models(agentId: string): Promise<readonly HermesModel[]>;
   toolsets(agentId: string): Promise<readonly HermesToolset[]>;
   sessionDetail(agentId: string, sessionId: string): Promise<HermesSession>;
+  resolveThreadModel(agentId: string, sessionId: string): Promise<HermesModel | undefined>;
   setSessionModel(agentId: string, sessionId: string, model: HermesModel): Promise<HermesModelLock>;
   saveModelSelection(agentId: string, sessionId: string, model: HermesModel): Promise<void>;
   steerRun(agentId: string, runId: string, input: string, signal?: AbortSignal): Promise<void>;
@@ -83,7 +84,7 @@ function modelSelectionKey(agentId: string, sessionId: string) {
   return `ekho.thread-model.${JSON.stringify([agentId, sessionId])}`;
 }
 
-export async function loadModelSelection(agentId: string, sessionId: string) {
+async function loadModelSelection(agentId: string, sessionId: string) {
   const saved = await AsyncStorage.getItem(modelSelectionKey(agentId, sessionId));
   return parseSelectedModel(saved === null ? null : JSON.parse(saved));
 }
@@ -515,6 +516,12 @@ export function EkhoProvider({
     }
   }, [setRuntime]);
 
+  const resolveThreadModel = useCallback((agentId: string, sessionId: string) => {
+    // A reconnecting agent can already have a client. Fetch once before snapshotting.
+    if (!clients.current.has(agentId)) return loadModelSelection(agentId, sessionId);
+    return sessionDetail(agentId, sessionId).then((detail) => detail.selectedModel).catch(() => loadModelSelection(agentId, sessionId));
+  }, [sessionDetail]);
+
   const steerRun = useCallback(async (agentId: string, runId: string, input: string, signal?: AbortSignal) => {
     const client = clients.current.get(agentId);
     if (!client) throw new Error('Reconnect to steer the run.');
@@ -708,6 +715,7 @@ export function EkhoProvider({
     models,
     toolsets,
     sessionDetail,
+    resolveThreadModel,
     setSessionModel,
     saveModelSelection,
     steerRun,
@@ -721,7 +729,7 @@ export function EkhoProvider({
     removeAgent,
     notificationClient,
     hasSession,
-  }), [toolsets, sessionDetail, setSessionModel, saveModelSelection, steerRun, notificationClient, hasSession, saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, deleteSession, setPinned, forkSession, regenerateTitle, models, error, loading, messages, pair, refreshAgent, removeAgent, retryAgent, runtime, sessionMessages, skills, startRun, stopRun]);
+  }), [toolsets, sessionDetail, resolveThreadModel, setSessionModel, saveModelSelection, steerRun, notificationClient, hasSession, saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, deleteSession, setPinned, forkSession, regenerateTitle, models, error, loading, messages, pair, refreshAgent, removeAgent, retryAgent, runtime, sessionMessages, skills, startRun, stopRun]);
 
   return <EkhoContext.Provider value={value}>{children}</EkhoContext.Provider>;
 }

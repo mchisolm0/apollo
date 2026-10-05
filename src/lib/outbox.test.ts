@@ -23,10 +23,10 @@ test('steer reserves a queued message and removes it only after acceptance', asy
     const steering = outbox.steer(first.id, 'active-run');
     await started;
     assert.equal(outbox.getSnapshot().items[0]?.state, 'sending');
+    await assert.rejects(outbox.steer(first.id, 'active-run'), /Only queued/);
     canSend = true;
     await outbox.drain();
     assert.deepEqual(setup.sent, []);
-    await assert.rejects(outbox.steer(first.id, 'active-run'), /Only queued/);
     release();
     await steering;
     assert.deepEqual(outbox.getSnapshot().items, []);
@@ -97,7 +97,7 @@ test('an accepted steer with an unsaved receipt requires review after relaunch',
     await relaunched.drain();
     assert.equal(relaunched.getSnapshot().items[0]?.state, 'failed');
     await assert.rejects(relaunched.retry(first.id), /Check this thread/);
-    await assert.rejects(relaunched.steer(first.id, 'another-run'), /Check this thread/);
+    await assert.rejects(relaunched.steer(first.id, 'another-run'), /Only queued/);
     assert.deepEqual(setup.sent, []);
   } finally { await relaunched.dispose(); }
 });
@@ -115,18 +115,37 @@ test('an ambiguous steer remains in the queue without automatic retry', async ()
   } finally { await outbox.dispose(); }
 });
 
-test('steer refuses expired ambiguous messages before posting', async () => {
-  const saved = { ...first, state: 'failed', createdAt: 1, firstAttemptAt: 1, attempts: 1 };
+test('attempted messages cannot steer, including after retry resets the attempt counter', async () => {
   let requests = 0;
-  const setup = fixture({ canSend: () => false, storage: { getItem: async () => JSON.stringify([saved]), setItem: async () => {} },
-    steer: async () => { requests++; } });
-  setup.advance(24 * 60 * 60 * 1000);
+  const setup = fixture({ deliver: async () => { throw new Error('Lost acceptance'); }, steer: async () => { requests++; } });
   const outbox = createOutboxRuntime(setup.dependencies);
   try {
-    await outbox.load();
-    await assert.rejects(outbox.steer(first.id, 'run'), /Check this thread/);
+    await outbox.enqueue(first);
+    await outbox.drain();
+    await assert.rejects(outbox.steer(first.id, 'run'), /Only queued/);
+    await outbox.retry(first.id);
+    assert.equal(outbox.getSnapshot().items[0].attempts, 0);
+    await assert.rejects(outbox.steer(first.id, 'run'), /Only queued/);
     assert.equal(requests, 0);
   } finally { await outbox.dispose(); }
+});
+
+test('steer waiting behind authorized reload cannot post during teardown', async () => {
+  let requests = 0;
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<boolean>();
+  const setup = fixture({ canSend: () => false, steer: async () => { requests++; } });
+  const outbox = createOutboxRuntime(setup.dependencies);
+  try {
+    await outbox.enqueue(first);
+    const reload = outbox.withReloadSafety(async () => { entered.resolve(); return release.promise; });
+    await entered.promise;
+    const steering = assert.rejects(outbox.steer(first.id, 'run'), /restarting/);
+    release.resolve(true);
+    assert.equal(await reload, true);
+    await steering;
+    assert.equal(requests, 0);
+  } finally { release.resolve(false); await outbox.dispose(); }
 });
 
 test('forgetting an agent aborts steering and a late result cannot restore its queue entry', async () => {
