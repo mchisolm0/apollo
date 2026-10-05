@@ -391,8 +391,8 @@ export class HermesClient {
     });
   }
 
-  async session(sessionId: string): Promise<HermesSession> {
-    const body = await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`);
+  async session(sessionId: string, signal?: AbortSignal): Promise<HermesSession> {
+    const body = await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`, { signal });
     if (!isJsonObject(body)) throw new Error('Hermes session response was invalid');
     const session = parseSession(body.session);
     if (session.id !== sessionId) throw new Error('Hermes returned a different thread than requested');

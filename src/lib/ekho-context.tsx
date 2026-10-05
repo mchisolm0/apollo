@@ -56,8 +56,9 @@ export interface EkhoContextValue {
   regenerateTitle(agentId: string, sessionId: string, input: string): Promise<string | undefined>;
   models(agentId: string): Promise<readonly HermesModel[]>;
   toolsets(agentId: string): Promise<readonly HermesToolset[]>;
-  sessionDetail(agentId: string, sessionId: string): Promise<HermesSession>;
-  resolveThreadModel(agentId: string, sessionId: string): Promise<HermesModel | undefined>;
+  sessionDetail(agentId: string, sessionId: string, signal?: AbortSignal): Promise<HermesSession>;
+  /** The model a send snapshots: fresh detail when reachable within a few seconds, else the stored choice or the listed model. */
+  resolveThreadModel(agentId: string, sessionId: string, options?: { creating?: boolean }): Promise<HermesModel | undefined>;
   setSessionModel(agentId: string, sessionId: string, model: HermesModel): Promise<HermesModelLock>;
   saveModelSelection(agentId: string, sessionId: string, model: HermesModel): Promise<void>;
   steerRun(agentId: string, runId: string, input: string, signal?: AbortSignal): Promise<void>;
@@ -79,6 +80,8 @@ export interface EkhoContextValue {
 
 // Several missed keepalives: long enough that a quiet but healthy run rarely pays for a status request.
 const QUIET_STREAM_MS = 45_000;
+
+const DETAIL_TIMEOUT_MS = 4_000;
 
 function modelSelectionKey(agentId: string, sessionId: string) {
   return `ekho.thread-model.${JSON.stringify([agentId, sessionId])}`;
@@ -492,14 +495,14 @@ export function EkhoProvider({
     return client.toolsets();
   }, []);
 
-  const sessionDetail = useCallback(async (agentId: string, sessionId: string) => {
+  const sessionDetail = useCallback(async (agentId: string, sessionId: string, signal?: AbortSignal) => {
     const client = clients.current.get(agentId);
     if (!client) throw new Error('Reconnect to load the thread model.');
     const key = `${agentId}:${sessionId}`;
     const request = {};
     sessionDetailRequests.current.set(key, request);
     try {
-      const [session, selectedModel] = await Promise.all([client.session(sessionId), loadModelSelection(agentId, sessionId)]);
+      const [session, selectedModel] = await Promise.all([client.session(sessionId, signal), loadModelSelection(agentId, sessionId)]);
       const detail = { ...session, selectedModel: sessionModelChoice(session.model, selectedModel) };
       const defined = Object.fromEntries(Object.entries(detail).filter(([, value]) => value !== undefined));
       setRuntime((current) => {
@@ -517,10 +520,26 @@ export function EkhoProvider({
     }
   }, [setRuntime]);
 
-  const resolveThreadModel = useCallback((agentId: string, sessionId: string) => {
-    // A reconnecting agent can already have a client. Fetch once before snapshotting.
-    if (!clients.current.has(agentId)) return loadModelSelection(agentId, sessionId);
-    return sessionDetail(agentId, sessionId).then((detail) => detail.selectedModel).catch(() => loadModelSelection(agentId, sessionId));
+  const resolveThreadModel = useCallback(async (agentId: string, sessionId: string, options: { creating?: boolean } = {}) => {
+    const fallback = async () => {
+      const listed = runtimeRef.current[agentId]?.sessions.find((session) => session.id === sessionId)?.model;
+      return sessionModelChoice(listed, await loadModelSelection(agentId, sessionId));
+    };
+    // A thread that doesn't exist yet has no detail to fetch.
+    if (options.creating || !clients.current.has(agentId)) return fallback();
+    // A reconnecting agent can already have a client. Fetch once, but never let an unreachable host stall the send.
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { controller.abort(); reject(new Error('Thread detail timed out')); }, DETAIL_TIMEOUT_MS);
+    });
+    try {
+      return (await Promise.race([sessionDetail(agentId, sessionId, controller.signal), timeout])).selectedModel;
+    } catch {
+      return fallback();
+    } finally {
+      clearTimeout(timer);
+    }
   }, [sessionDetail]);
 
   const steerRun = useCallback(async (agentId: string, runId: string, input: string, signal?: AbortSignal) => {

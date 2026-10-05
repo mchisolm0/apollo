@@ -59,6 +59,8 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   const [models, setModels] = useState<readonly HermesModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [model, setModel] = useState<HermesModel>();
+  // Bumped on every picker choice so a slower focus resolve can't overwrite it.
+  const modelPicks = useRef(0);
   const skillRequest = useRef(0);
   const skillsReady = useRef(false);
   const refreshSkills = useCallback(() => {
@@ -123,8 +125,9 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   useFocusEffect(useCallback(() => {
     if (!resolvedId || !state?.status) return;
     let current = true;
+    const picks = modelPicks.current;
     void resolveThreadModel(agentId, resolvedId).then((selected) => {
-      if (current) setModel(selected);
+      if (current && picks === modelPicks.current) setModel(selected);
     }).catch(() => {});
     return () => { current = false; };
   }, [agentId, resolvedId, state?.status, resolveThreadModel]));
@@ -204,7 +207,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
       : undefined;
     const prepared = await prepareSend();
     if (!resolvedId && model) await saveModelSelection(agentId, prepared.sessionId, model);
-    const snapshot = await resolveThreadModel(agentId, prepared.sessionId);
+    const snapshot = await resolveThreadModel(agentId, prepared.sessionId, { creating: !resolvedId || awaitingCreation });
     await outbox.enqueue({ ...prepared, agentId, createsSession: !resolvedId || awaitingCreation, instructions, model: snapshot?.id, provider: snapshot?.provider });
     if (!resolvedId) {
       await moveDraft(prepared.sessionId, '', []);
@@ -238,6 +241,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
         selectedModel={model?.id}
         selectedProvider={model?.provider}
         onSelectModel={(choice) => {
+          modelPicks.current += 1;
           if (!resolvedId) setModel(choice);
           else void act(async () => {
             if (awaitingCreation) await saveModelSelection(agentId, resolvedId, choice);

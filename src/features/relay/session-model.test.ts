@@ -12,13 +12,14 @@ function routeFixture(id: string) {
   const saved: { sessionId: string; model: HermesModel }[] = [];
   const queued: unknown[] = [];
   const order: string[] = [];
+  const resolved: { sessionId: string; creating?: boolean }[] = [];
   const slots = new Map<number, unknown>();
   let cursor = 0;
   const api = {
     agents: [{ id: 'agent', label: 'QA' }],
     runtime: { agent: { status: 'connected', sessions: id === 'new' ? [] : [{ id }], runs: {}, events: [] } },
     messages: {}, skills: async () => [], models: async () => [], sessionMessages: async () => [],
-    resolveThreadModel: async () => saved.at(-1)?.model,
+    resolveThreadModel: async (_agent: string, sessionId: string, options?: { creating?: boolean }) => { resolved.push({ sessionId, creating: options?.creating }); return saved.at(-1)?.model; },
     saveModelSelection: async (_agent: string, sessionId: string, model: HermesModel) => { order.push('save'); saved.push({ sessionId, model }); },
   };
   const source = ts.transpileModule(readFileSync(new URL('../../app/(sessions)/session/[id].tsx', import.meta.url), 'utf8'), {
@@ -56,7 +57,7 @@ function routeFixture(id: string) {
     cursor = 0;
     return exports.Session!({ id, agentId: 'agent' }).props.children.props;
   };
-  return { render, saved, queued, order };
+  return { render, saved, queued, order, resolved };
 }
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -68,4 +69,7 @@ test('a draft picker choice is saved under the creating message session before e
   await flush();
   assert.deepEqual(JSON.parse(JSON.stringify(setup.saved)), [{ sessionId: 'created', model: { id: 'shared', provider: 'non-default' } }]);
   assert.deepEqual(setup.order, ['save', 'enqueue']);
+  assert.deepEqual(setup.resolved, [{ sessionId: 'created', creating: true }]);
+  const [queued] = setup.queued as { model?: string; provider?: string }[];
+  assert.deepEqual({ model: queued.model, provider: queued.provider }, { model: 'shared', provider: 'non-default' });
 });

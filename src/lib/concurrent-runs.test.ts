@@ -80,7 +80,7 @@ function providerFixture(sessions: readonly HermesSession[] = []) {
   }).outputText;
   const exports: { EkhoProvider?: React.ComponentType<React.PropsWithChildren<{ catalog: unknown }>>; useEkho?: () => EkhoContextValue } = {};
   runInNewContext(source, {
-    exports, clearTimeout,
+    exports, clearTimeout, AbortController,
     // Open subscriptions arm a quiet-stream check; it must not keep the test process alive.
     setTimeout: (callback: () => void, ms?: number) => setTimeout(callback, ms).unref(),
     require: (id: string) => {
@@ -231,6 +231,27 @@ test('send during reconnect fetches fresh detail rather than the previous displa
   assert.equal(setup.detailRequests, 1);
   setup.releaseReconnect();
   await refreshing;
+});
+
+test('send resolution falls back to the stored choice when detail never answers', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const setup = providerFixture([{ id: 'thread', model: 'listed' }]);
+  const api = setup.mount();
+  await api.refreshAgent('agent');
+  await api.saveModelSelection('agent', 'thread', { id: 'listed', provider: 'alpha' });
+  const resolving = api.resolveThreadModel('agent', 'thread');
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(4_000);
+  assert.deepEqual(JSON.parse(JSON.stringify(await resolving)), { id: 'listed', provider: 'alpha' });
+});
+
+test('a creating send resolves locally without requesting detail', async () => {
+  const setup = providerFixture([]);
+  const api = setup.mount();
+  await api.refreshAgent('agent');
+  await api.saveModelSelection('agent', 'created', { id: 'picked', provider: 'beta' });
+  assert.deepEqual(JSON.parse(JSON.stringify(await api.resolveThreadModel('agent', 'created', { creating: true }))), { id: 'picked', provider: 'beta' });
+  assert.equal(setup.detailRequests, 0);
 });
 
 test('accepted model changes update runtime even when the local cache cannot save', async () => {
