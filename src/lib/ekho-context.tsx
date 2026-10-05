@@ -58,6 +58,7 @@ export interface EkhoContextValue {
   toolsets(agentId: string): Promise<readonly HermesToolset[]>;
   sessionDetail(agentId: string, sessionId: string): Promise<HermesSession>;
   setSessionModel(agentId: string, sessionId: string, model: HermesModel): Promise<HermesModelLock>;
+  saveModelSelection(agentId: string, sessionId: string, model: HermesModel): Promise<void>;
   steerRun(agentId: string, runId: string, input: string, signal?: AbortSignal): Promise<void>;
   uploadAttachment(agentId: string, file: { name: string; mimeType: string; data: string }, signal?: AbortSignal): Promise<Attachment>;
   attachmentSource(agentId: string, id: string): AttachmentSource | undefined;
@@ -395,15 +396,19 @@ export function EkhoProvider({
     });
   }, [setRuntime]);
 
+  const saveModelSelection = useCallback(async (agentId: string, sessionId: string, model: HermesModel) => {
+    await AsyncStorage.setItem(modelSelectionKey(agentId, sessionId), JSON.stringify(model));
+    updateSessionModel(agentId, sessionId, model);
+  }, [updateSessionModel]);
+
   const setSessionModel = useCallback(async (agentId: string, sessionId: string, model: HermesModel) => {
     const client = clients.current.get(agentId);
     if (!client) throw new Error('Reconnect to change the thread model.');
     const lock = await client.setSessionModel(sessionId, model);
     const selected = { id: lock.model, provider: lock.provider };
-    await AsyncStorage.setItem(modelSelectionKey(agentId, sessionId), JSON.stringify(selected));
-    updateSessionModel(agentId, sessionId, selected);
+    await saveModelSelection(agentId, sessionId, selected);
     return lock;
-  }, [updateSessionModel]);
+  }, [saveModelSelection]);
 
   const startRun = useCallback(async (agentId: string, input: string, options?: StartRunOptions): Promise<HermesRunStatus> => {
     const key = JSON.stringify([agentId, options?.sessionId]);
@@ -493,13 +498,14 @@ export function EkhoProvider({
     try {
       const [session, selectedModel] = await Promise.all([client.session(sessionId), loadModelSelection(agentId, sessionId)]);
       const detail = { ...session, selectedModel: sessionModelChoice(session.model, selectedModel) };
+      const defined = Object.fromEntries(Object.entries(detail).filter(([, value]) => value !== undefined));
       setRuntime((current) => {
         if (sessionDetailRequests.current.get(key) !== request) return current;
         sessionDetailRequests.current.delete(key);
         const state = current[agentId];
         if (!state) return current;
         const existing = state.sessions.some((item) => item.id === session.id);
-        const sessions = existing ? state.sessions.map((item) => item.id === session.id ? { ...item, ...detail } : item) : [detail, ...state.sessions];
+        const sessions = existing ? state.sessions.map((item) => item.id === session.id ? { ...item, ...defined } : item) : [detail, ...state.sessions];
         return { ...current, [agentId]: { ...state, sessions } };
       });
       return detail;
@@ -702,6 +708,7 @@ export function EkhoProvider({
     toolsets,
     sessionDetail,
     setSessionModel,
+    saveModelSelection,
     steerRun,
     sessionMessages,
     skills,
@@ -713,7 +720,7 @@ export function EkhoProvider({
     removeAgent,
     notificationClient,
     hasSession,
-  }), [toolsets, sessionDetail, setSessionModel, steerRun, notificationClient, hasSession, saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, deleteSession, setPinned, forkSession, regenerateTitle, models, error, loading, messages, pair, refreshAgent, removeAgent, retryAgent, runtime, sessionMessages, skills, startRun, stopRun]);
+  }), [toolsets, sessionDetail, setSessionModel, saveModelSelection, steerRun, notificationClient, hasSession, saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, deleteSession, setPinned, forkSession, regenerateTitle, models, error, loading, messages, pair, refreshAgent, removeAgent, retryAgent, runtime, sessionMessages, skills, startRun, stopRun]);
 
   return <EkhoContext.Provider value={value}>{children}</EkhoContext.Provider>;
 }

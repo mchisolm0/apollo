@@ -17,7 +17,7 @@ const { renderToString } = createRequire(import.meta.url)('react-dom/server') as
 
 // Exercise the provider's real callbacks without loading native modules in Node.
 // Server rendering supplies React's hooks; this test asserts network/subscription effects.
-function providerFixture() {
+function providerFixture(sessions: readonly HermesSession[] = []) {
   const streams = new Map<string, { onEvent(event: HermesRunEvent): void }>();
   const statuses = new Map<string, HermesRunStatus>();
   const stopped: string[] = [];
@@ -40,7 +40,7 @@ function providerFixture() {
   };
   class Client {
     async capabilities() { return { features: {} }; }
-    async sessions() { return []; }
+    async sessions() { return sessions; }
     async session() { return detail.promise; }
     async sessionMessages() { return []; }
     async setSessionModel(sessionId: string, model: HermesModel) { locks.push(model); return { sessionId, model: model.id, provider: model.provider }; }
@@ -66,6 +66,9 @@ function providerFixture() {
     async approveRun(id: string) { approved.push(id); return { runId: id }; }
   }
   const nativeRequire = createRequire(import.meta.url);
+  const react = nativeRequire('react') as typeof import('react');
+  let stateIndex = 0;
+  let latestRuntime: EkhoContextValue['runtime'] = {};
   const source = ts.transpileModule(readFileSync(new URL('./ekho-context.tsx', import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
   }).outputText;
@@ -75,6 +78,14 @@ function providerFixture() {
     // Open subscriptions arm a quiet-stream check; it must not keep the test process alive.
     setTimeout: (callback: () => void, ms?: number) => setTimeout(callback, ms).unref(),
     require: (id: string) => {
+      if (id === 'react') return { ...react, useState: (initial: unknown) => {
+        const [value, setValue] = react.useState(initial);
+        const runtimeState = ++stateIndex === 2;
+        return [value, (next: unknown) => {
+          if (runtimeState) latestRuntime = next as EkhoContextValue['runtime'];
+          setValue(next);
+        }];
+      } };
       if (id === '@/config/posthog') return { posthog: { capture() {} } };
       if (id === '@/features/notifications/notifications') return {
         createNotificationRegistrationClient: () => ({ unregister: async () => {
@@ -99,6 +110,7 @@ function providerFixture() {
     },
   });
   function mount() {
+    stateIndex = 0;
     let api: EkhoContextValue | undefined;
     function Capture() { api = exports.useEkho!(); return null; }
     renderToString(createElement(exports.EkhoProvider!, { catalog }, createElement(Capture)));
@@ -106,6 +118,7 @@ function providerFixture() {
   }
   return { mount, streams, stopped, approved, removal, requests, locks, resolveDetail: detail.resolve,
     get record() { return record; },
+    get runtime() { return latestRuntime; },
     loseNextAcceptance: () => { loseAcceptance = true; },
     setRegistrationError: (error?: Error) => { registrationError = error; },
   };
@@ -167,6 +180,28 @@ function queueFor(api: EkhoContextValue, initial: string | null = null) {
 }
 
 const queued = { id: 'message', agentId: 'agent', sessionId: 'thread', createsSession: false, text: '[QA] tiny', attachments: [], model: 'A', provider: 'alpha' };
+
+test('opening a thread preserves list activity and preview omitted by detail', async () => {
+  const listed = { id: 'thread', title: 'Old title', startedAt: 100, lastActive: 900, preview: 'Recent message', pinned: true };
+  const setup = providerFixture([listed]);
+  const api = setup.mount();
+  await api.refreshAgent('agent');
+  setup.resolveDetail({ id: 'thread', title: 'Fresh title', lastActive: undefined, preview: undefined, pinned: false });
+  await api.sessionDetail('agent', 'thread');
+  assert.deepEqual(JSON.parse(JSON.stringify(setup.runtime.agent.sessions[0])), { ...listed, title: 'Fresh title', pinned: false });
+});
+
+test('a pre-creation model choice restores its provider without locking on delivery', async () => {
+  const setup = providerFixture();
+  const api = setup.mount();
+  await api.saveModelSelection('agent', 'new-thread', { id: 'shared', provider: 'non-default' });
+  const restored = setup.mount();
+  await restored.refreshAgent('agent');
+  setup.resolveDetail({ id: 'new-thread', model: 'shared' });
+  const detail = await restored.sessionDetail('agent', 'new-thread');
+  assert.deepEqual(JSON.parse(JSON.stringify(detail.selectedModel)), { id: 'shared', provider: 'non-default' });
+  assert.deepEqual(setup.locks, []);
+});
 
 test('removing and reconnecting an agent discards its pending session detail', async () => {
   const setup = providerFixture();

@@ -34,7 +34,7 @@ export default function SessionRoute() {
 
 function Session({ id, agentId, shareId }: { id: string; agentId: string; shareId?: string }) {
   const styles = useThemedStyles(createStyles);
-  const { agents, runtime, messages, sessionMessages, skills: loadSkills, models: loadModels, stopRun, approveRun, retryAgent, attachmentSource, deleteSession, regenerateTitle, sessionDetail, setSessionModel } = useEkho();
+  const { agents, runtime, messages, sessionMessages, skills: loadSkills, models: loadModels, stopRun, approveRun, retryAgent, attachmentSource, deleteSession, regenerateTitle, sessionDetail, setSessionModel, saveModelSelection } = useEkho();
   const outbox = useOutbox();
   const { getShare, acknowledgeShare } = useIncomingShares();
   const [retryRevision, setRetryRevision] = useState(0);
@@ -60,6 +60,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   const [models, setModels] = useState<readonly HermesModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [model, setModel] = useState<HermesModel>();
+  const [modelReady, setModelReady] = useState(id === 'new');
   const skillRequest = useRef(0);
   const skillsReady = useRef(false);
   const refreshSkills = useCallback(() => {
@@ -124,7 +125,10 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   useFocusEffect(useCallback(() => {
     if (!resolvedId || awaitingCreation || state?.status !== 'connected') return;
     let current = true;
-    void sessionDetail(agentId, resolvedId).catch((cause: unknown) => {
+    setModelReady(false);
+    void sessionDetail(agentId, resolvedId).then(() => {
+      if (current) setModelReady(true);
+    }).catch((cause: unknown) => {
       if (current) setLocalError(cause instanceof Error ? cause.message : 'Could not load the thread model.');
     });
     return () => { current = false; };
@@ -187,7 +191,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   };
 
   const send = (text: string) => void act(async () => {
-    if (pickerLock.current) return;
+    if (pickerLock.current || !modelReady) return;
     // Skill instructions need a live catalog lookup. Offline, send the raw text.
     // A send racing the initial catalog load refetches once so $skill refs still resolve.
     let catalog = skills;
@@ -205,6 +209,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
       ? `The user explicitly selected these installed skills: ${JSON.stringify(requestedSkills)}. Before responding, call skill_view for each exact name and follow its instructions. The $name references in the message identify these selections. If a skill cannot be loaded, tell the user.`
       : undefined;
     const prepared = await prepareSend();
+    if ((!resolvedId || awaitingCreation) && selectedModel) await saveModelSelection(agentId, prepared.sessionId, selectedModel);
     await outbox.enqueue({ ...prepared, agentId, createsSession: !resolvedId || awaitingCreation, instructions, model: selectedModel?.id, provider: selectedModel?.provider });
     if (!resolvedId) {
       await moveDraft(prepared.sessionId, '', []);
@@ -252,7 +257,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
         onRetryQueued={(messageId) => void act(() => outbox.retry(messageId))}
         onSteerQueued={run && running && run.status !== 'stopping' && !approval ? (messageId) => void act(() => outbox.steer(messageId, run.runId)) : undefined}
         onRemoveQueued={(messageId) => void act(() => outbox.remove(messageId))}
-        sendDisabled={!draftLoaded || !outbox.loaded || Boolean(incoming)}
+        sendDisabled={!draftLoaded || !outbox.loaded || !modelReady || Boolean(incoming)}
         onPickAttachments={(kind) => { void pick(kind); }}
         onRemoveAttachment={(fileId) => {
           const removed = attachments.find((file) => file.id === fileId);
@@ -271,7 +276,10 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
           setRetryRevision((value) => value + 1);
           if (!incoming) {
             await retryAgent(agentId);
-            if (resolvedId && !awaitingCreation) await sessionMessages(agentId, resolvedId);
+            if (resolvedId && !awaitingCreation) {
+              await Promise.all([sessionMessages(agentId, resolvedId), sessionDetail(agentId, resolvedId)]);
+              setModelReady(true);
+            }
           }
         })}
         onBack={openInbox}
