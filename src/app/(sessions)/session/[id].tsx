@@ -33,7 +33,7 @@ export default function SessionRoute() {
 
 function Session({ id, agentId, shareId }: { id: string; agentId: string; shareId?: string }) {
   const styles = useThemedStyles(createStyles);
-  const { agents, runtime, messages, sessionMessages, skills: loadSkills, models: loadModels, stopRun, approveRun, retryAgent, attachmentSource, deleteSession, regenerateTitle, sessionDetail, resolveThreadModel, setSessionModel, saveModelSelection } = useEkho();
+  const { agents, runtime, messages, sessionMessages, skills: loadSkills, models: loadModels, stopRun, approveRun, retryAgent, attachmentSource, deleteSession, regenerateTitle, resolveThreadModel, setSessionModel, saveModelSelection } = useEkho();
   const outbox = useOutbox();
   const { getShare, acknowledgeShare } = useIncomingShares();
   const [retryRevision, setRetryRevision] = useState(0);
@@ -280,7 +280,9 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
           if (!incoming) {
             await retryAgent(agentId);
             if (resolvedId && !awaitingCreation) {
-              await Promise.all([sessionMessages(agentId, resolvedId), sessionDetail(agentId, resolvedId)]);
+              const picks = modelPicks.current;
+              const [, selected] = await Promise.all([sessionMessages(agentId, resolvedId), resolveThreadModel(agentId, resolvedId)]);
+              if (picks === modelPicks.current) setModel(selected);
             }
           }
         })}
