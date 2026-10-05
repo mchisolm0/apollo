@@ -6,18 +6,16 @@ import type { RelayAgent } from './types';
 
 export type AgentSettingsScreenProps = {
   agent: RelayAgent;
-  deviceName?: string;
+  deviceName: string;
   pairedAt?: string;
   onBack?: () => void;
   onTestConnection?: () => void;
-  onEditEndpoint?: () => void;
-  onRevokeDevice?: () => void;
   onForgetAgent?: () => void;
   onNotifications?: () => void;
 };
 
 /** One agent's connection and pairing details, opened from the agent picker. App-wide preferences live in AppSettingsScreen. */
-export function AgentSettingsScreen({ agent, deviceName = 'This device', pairedAt, onBack, onTestConnection, onEditEndpoint, onRevokeDevice, onForgetAgent, onNotifications }: AgentSettingsScreenProps) {
+export function AgentSettingsScreen({ agent, deviceName, pairedAt, onBack, onTestConnection, onForgetAgent, onNotifications }: AgentSettingsScreenProps) {
   const styles = useThemedStyles(createStyles);
   const uiStyles = useRelayStyles();
   const colors = useColors();
@@ -32,14 +30,14 @@ export function AgentSettingsScreen({ agent, deviceName = 'This device', pairedA
 
         <SettingSection label="Connection">
           {agent.hostname !== agent.name ? <SettingRow label="Host" value={agent.hostname} /> : null}
-          <SettingRow label="Endpoint" value={agent.endpoint} onPress={onEditEndpoint} />
+          <SettingRow label="Endpoint" value={agent.endpoint} />
           <SettingRow label="Route" value={agent.transport === 'tailscale' ? 'Tailscale Serve' : agent.endpoint.startsWith('http:') ? 'Local development' : 'HTTPS'} />
           <SettingRow label="Status" value={connectionLabels[agent.connection]} />
           <SettingRow label="Last seen" value={agent.lastSeen ?? 'Not yet'} />
           {agent.platform ? <SettingRow label="Platform" value={agent.platform} /> : null}
         </SettingSection>
         {onTestConnection ? <ConnectionAction state={agent.connection} onReconnect={onTestConnection} /> : null}
-        {onTestConnection ? <View style={styles.primaryAction}><Pressable accessibilityRole="button" onPress={onTestConnection} style={styles.testConnection}><Text style={[styles.testConnectionText, { color: colors.cyan }]}>Test connection</Text></Pressable></View> : null}
+        {onTestConnection && agent.connection === 'connected' ? <View style={styles.primaryAction}><Pressable accessibilityRole="button" onPress={onTestConnection} style={styles.testConnection}><Text style={[styles.testConnectionText, { color: colors.cyan }]}>Test connection</Text></Pressable></View> : null}
 
         <SettingSection label="This device">
           <SettingRow label="Name" value={deviceName} />
@@ -47,12 +45,9 @@ export function AgentSettingsScreen({ agent, deviceName = 'This device', pairedA
           {pairedAt ? <SettingRow label="Paired" value={pairedAt} /> : null}
         </SettingSection>
         <View style={styles.dangerSection}>
-          {onRevokeDevice ? <RelayButton tone="amber" onPress={onRevokeDevice}>Revoke this device</RelayButton> : null}
           {onForgetAgent ? <RelayButton tone="destructive" onPress={onForgetAgent}>Forget agent</RelayButton> : null}
           <Text style={styles.dangerHelp}>
-            {onRevokeDevice
-              ? 'Revoking blocks this phone. Forgetting removes the saved endpoint.'
-              : 'Forget removes local access. Revoke a lost phone from the connector CLI.'}
+            Forget removes local access. Revoke a lost phone from the connector CLI.
           </Text>
         </View>
       </ScrollView>

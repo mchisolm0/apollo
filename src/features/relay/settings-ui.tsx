@@ -1,15 +1,17 @@
 import type { ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
-import { IconButton, useColors, useThemedStyles, type RelayPalette } from './relay-ui';
+import { IconButton, useColors, useTextScale, useThemedStyles, type RelayPalette } from './relay-ui';
+import { isLargeText } from './text-size';
 
 /** Pushed-screen header shared by app and agent settings: back chevron, centered title. */
 export function SettingsHeader({ title, onBack }: { title: string; onBack?: () => void }) {
   const styles = useThemedStyles(createStyles);
+  const { factor } = useTextScale();
   return (
     <View style={styles.header}>
       <View style={styles.headerSlot}>{onBack ? <IconButton name="chevron.left" label="Back" onPress={onBack} /> : null}</View>
-      <Text style={styles.headerTitle} numberOfLines={1}>{title}</Text>
+      <Text style={[styles.headerTitle, { fontSize: 17 * factor, lineHeight: 22 * factor }]} numberOfLines={1}>{title}</Text>
       <View style={styles.headerSlot} />
     </View>
   );
@@ -17,9 +19,10 @@ export function SettingsHeader({ title, onBack }: { title: string; onBack?: () =
 
 export function SettingSection({ label, children }: { label: string; children: ReactNode }) {
   const styles = useThemedStyles(createStyles);
+  const { factor } = useTextScale();
   return (
     <View style={styles.section}>
-      <Text style={styles.sectionLabel}>{label}</Text>
+      <Text style={[styles.sectionLabel, { fontSize: 14 * factor }]}>{label}</Text>
       <View style={styles.rows}>{children}</View>
     </View>
   );
@@ -29,18 +32,19 @@ export function SettingRow({ label, value, onPress }: { label: string; value: st
   const styles = useThemedStyles(createStyles);
   const settingStyles = useSettingStyles();
   const { fontScale } = useWindowDimensions();
+  const { factor } = useTextScale();
   const cyan = useColors().cyan;
-  const large = fontScale > 1.3;
+  const large = isLargeText(fontScale, factor);
   const rowStyle = [settingStyles.row, large && styles.rowLarge];
-  const content = <><Text style={[settingStyles.rowLabel, large && styles.rowLabelLarge]}>{label}</Text><Text style={[settingStyles.rowValue, large && styles.rowValueLarge]} selectable>{value}</Text>{onPress ? <Text style={[styles.rowAction, { color: cyan }]}>Edit</Text> : null}</>;
+  const content = <><Text style={[settingStyles.rowLabel, large && styles.rowLabelLarge]}>{label}</Text><Text style={[settingStyles.rowValue, large && styles.rowValueLarge]} selectable>{value}</Text>{onPress ? <Text style={[styles.rowAction, { color: cyan, fontSize: 15 * factor, lineHeight: 20 * factor }]}>Edit</Text> : null}</>;
   if (!onPress) return <View style={rowStyle}>{content}</View>;
   return <Pressable accessibilityRole="button" accessibilityLabel={`Edit ${label}`} onPress={onPress} style={({ pressed }) => [rowStyle, { opacity: pressed ? 0.65 : 1 }]}>{content}</Pressable>;
 }
 
 /** Row styles for custom rows (sliders, switches) that sit alongside SettingRow. */
 const createSettingStyles = (colors: RelayPalette) => StyleSheet.create({
-  row: { minHeight: 56, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line, flexDirection: 'row', alignItems: 'center', gap: 12, paddingTop: 12, paddingHorizontal: 0 },
-  rowLabel: { color: colors.primary, fontSize: 17, lineHeight: 23, flexShrink: 0 },
+  row: { minHeight: 56, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 12, paddingTop: 12, paddingHorizontal: 0 },
+  rowLabel: { color: colors.primary, fontSize: 17, lineHeight: 23, flexShrink: 1 },
   rowValue: { color: colors.secondary, fontSize: 17, lineHeight: 23, flex: 1, textAlign: 'right' },
 });
 
@@ -58,5 +62,11 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
 });
 
 export function useSettingStyles() {
-  return useThemedStyles(createSettingStyles);
+  const styles = useThemedStyles(createSettingStyles);
+  const { factor } = useTextScale();
+  return {
+    ...styles,
+    rowLabel: { ...styles.rowLabel, fontSize: 17 * factor, lineHeight: 23 * factor },
+    rowValue: { ...styles.rowValue, fontSize: 17 * factor, lineHeight: 23 * factor },
+  };
 }

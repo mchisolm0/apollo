@@ -6,6 +6,7 @@ import { LegendList } from '@legendapp/list/react-native';
 import Swipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 
 import { useTextScale, useThemedStyles, useColors, type RelayPalette } from './relay-ui';
+import { isLargeText } from './text-size';
 import { KeyboardFrame } from './keyboard-frame';
 import { canSettleSession, isSessionSnoozed, type InboxSession } from './session-inbox';
 import { useAutoSettleLedger, useSnoozeLedger } from './use-session-inbox';
@@ -117,7 +118,7 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
   const { fontScale } = useWindowDimensions();
   const { factor } = useTextScale();
   const { runtime, deleteSession, setPinned, forkSession, regenerateTitle } = useEkho();
-  const largeText = fontScale > 1.3;
+  const largeText = isLargeText(fontScale, factor);
   const swipe = useRef<SwipeableMethods>(null);
   const action = session.settled && onReopen ? { label: 'Reopen', run: () => onReopen(session.id) }
     : snoozed ? { label: 'Unsnooze', run: () => onUnsnooze(session.id) }

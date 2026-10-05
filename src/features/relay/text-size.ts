@@ -10,6 +10,11 @@ export const TEXT_SIZE_STORAGE_KEY = 'ekho:text-scale';
 export const CODE_SIZE_STORAGE_KEY = 'ekho:code-text-size';
 export const CODE_CUSTOM_STORAGE_KEY = 'ekho:code-text-custom';
 
+/** App text size and Dynamic Type combine when deciding whether rows need more room. */
+export function isLargeText(fontScale: number, factor: number): boolean {
+  return fontScale * factor > 1.2;
+}
+
 // Legacy Small/Default/Large stored values map onto the pt slider.
 const LEGACY_SCALE_SIZES = { small: 14, default: 17, large: 20 } as const;
 

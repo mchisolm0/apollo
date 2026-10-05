@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { CODE_SIZE_DEFAULT, TEXT_SIZE_DEFAULT, clampSize, parseCodeSize, parseEnabled, parseTextSize } from './text-size.ts';
+import { CODE_SIZE_DEFAULT, TEXT_SIZE_DEFAULT, TEXT_SIZE_MAX, TEXT_SIZE_MIN, clampSize, isLargeText, parseCodeSize, parseEnabled, parseTextSize } from './text-size.ts';
+
+test('expands rows for maximum app text size and combined Dynamic Type scaling', () => {
+  assert.equal(isLargeText(1, TEXT_SIZE_MIN / TEXT_SIZE_DEFAULT), false);
+  assert.equal(isLargeText(1, 1), false);
+  assert.equal(isLargeText(1, TEXT_SIZE_MAX / TEXT_SIZE_DEFAULT), true);
+  assert.equal(isLargeText(1.3, 1), true);
+  assert.equal(isLargeText(1.1, 1.1), true);
+});
 
 test('maps legacy Small/Default/Large values onto the pt slider', () => {
   assert.equal(parseTextSize('small'), 14);
