@@ -662,6 +662,7 @@ export function EkhoProvider({
       if (!(error && typeof error === 'object' && 'status' in error && [401, 404].includes(Number(error.status)))) throw error;
     }
     closeSubscription(agentId);
+    for (const key of sessionDetailRequests.current.keys()) if (key.startsWith(`${agentId}:`)) sessionDetailRequests.current.delete(key);
     clients.current.delete(agentId);
     await catalog.remove(agentId);
     const modelKeys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith(`ekho.thread-model.[${JSON.stringify(agentId)},`));

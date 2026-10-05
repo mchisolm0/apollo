@@ -6,7 +6,7 @@ import { runInNewContext } from 'node:vm';
 import { createElement } from 'react';
 import ts from 'typescript';
 import type { EkhoContextValue } from './ekho-context';
-import type { HermesModel, HermesRunEvent, HermesRunStatus, StartRunOptions } from './types';
+import type { HermesModel, HermesRunEvent, HermesRunStatus, HermesSession, StartRunOptions } from './types';
 import { createOutboxRuntime } from './outbox.ts';
 import * as runState from './run-state.ts';
 import * as attachments from './attachments.ts';
@@ -30,6 +30,7 @@ function providerFixture() {
   const requests: { input: string; options: StartRunOptions }[] = [];
   const locks: HermesModel[] = [];
   let loseAcceptance = false;
+  const detail = Promise.withResolvers<HermesSession>();
   const catalog = {
     get: () => record,
     list: () => [record],
@@ -40,6 +41,7 @@ function providerFixture() {
   class Client {
     async capabilities() { return { features: {} }; }
     async sessions() { return []; }
+    async session() { return detail.promise; }
     async sessionMessages() { return []; }
     async setSessionModel(sessionId: string, model: HermesModel) { locks.push(model); return { sessionId, model: model.id, provider: model.provider }; }
     async startRun(input: string, options: StartRunOptions) {
@@ -92,7 +94,7 @@ function providerFixture() {
       if (id === './run-state') return runState;
       if (id === './attachments') return attachments;
       if (id === './message-history') return messageHistory;
-      if (id === './hermes-client') return { HermesClient: Client, HermesRequestError: class extends Error {}, parseSelectedModel: (value: HermesModel | null) => value ?? undefined };
+      if (id === './hermes-client') return { HermesClient: Client, HermesRequestError: class extends Error {}, parseSelectedModel: (value: HermesModel | null) => value ?? undefined, sessionModelChoice: (_model: string | undefined, cached?: HermesModel) => cached };
       return nativeRequire(id);
     },
   });
@@ -102,7 +104,7 @@ function providerFixture() {
     renderToString(createElement(exports.EkhoProvider!, { catalog }, createElement(Capture)));
     return api!;
   }
-  return { mount, streams, stopped, approved, removal, requests, locks,
+  return { mount, streams, stopped, approved, removal, requests, locks, resolveDetail: detail.resolve,
     get record() { return record; },
     loseNextAcceptance: () => { loseAcceptance = true; },
     setRegistrationError: (error?: Error) => { registrationError = error; },
@@ -165,6 +167,18 @@ function queueFor(api: EkhoContextValue, initial: string | null = null) {
 }
 
 const queued = { id: 'message', agentId: 'agent', sessionId: 'thread', createsSession: false, text: '[QA] tiny', attachments: [], model: 'A', provider: 'alpha' };
+
+test('removing and reconnecting an agent discards its pending session detail', async () => {
+  const setup = providerFixture();
+  const api = setup.mount();
+  await api.refreshAgent('agent');
+  const pending = api.sessionDetail('agent', 'old-thread');
+  await api.removeAgent('agent');
+  await api.refreshAgent('agent');
+  setup.resolveDetail({ id: 'old-thread', title: 'Old thread' });
+  await pending;
+  assert.equal(api.hasSession('agent', 'old-thread'), false);
+});
 
 test('a lost acceptance retries the same queued snapshot after the picker changes', async () => {
   const setup = providerFixture();
