@@ -29,6 +29,8 @@ export function AppUpdateProvider({ children }: PropsWithChildren) {
   const latest = useRef({ state, outbox, colors });
   useLayoutEffect(() => { latest.current = { state, outbox, colors }; }, [state, outbox, colors]);
   const controller = useRef<ReturnType<typeof createUpdateController>>(undefined);
+  // Set the moment a notice is shown, before the async persist lands, so a quick dismiss can't resurface it.
+  const shownId = useRef<string>(undefined);
   const [appState, setAppState] = useState<AppStateStatus>(AppState.currentState);
   const [keyboardVisible, setKeyboardVisible] = useState(() => Keyboard.isVisible());
   const [noticeTimer] = useState(createUpdateNoticeTimer);
@@ -74,17 +76,14 @@ export function AppUpdateProvider({ children }: PropsWithChildren) {
   const readyId = state.status === 'ready' ? state.update.id : undefined;
   const noticeOnScreen = noticeVisible && !!readyId && appState === 'active' && !keyboardVisible;
   useEffect(() => {
-    if (noticedId === undefined || !readyId || !shouldNoticeUpdate(latest.current.state, noticedId, appState === 'active', keyboardVisible)) return;
+    if (noticedId === undefined || !readyId || shownId.current === readyId || !shouldNoticeUpdate(latest.current.state, noticedId, appState === 'active', keyboardVisible)) return;
     setNoticeVisible(true);
   }, [readyId, noticedId, appState, keyboardVisible]);
 
   useEffect(() => {
     if (!noticeOnScreen || !readyId) return;
-    let live = true;
-    void AsyncStorage.setItem(NOTICED_KEY, readyId).catch(() => undefined).then(() => {
-      if (live) setNoticedId(readyId);
-    });
-    return () => { live = false; };
+    shownId.current = readyId;
+    void AsyncStorage.setItem(NOTICED_KEY, readyId).catch(() => undefined).then(() => setNoticedId(readyId));
   }, [noticeOnScreen, readyId]);
 
   useEffect(() => {
