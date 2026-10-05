@@ -5,13 +5,17 @@ import { IconButton, useColors, useTextScale, useThemedStyles, type RelayPalette
 import { isLargeText } from './text-size';
 
 /** Pushed-screen header shared by app and agent settings: back chevron, centered title. */
-export function SettingsHeader({ title, onBack }: { title: string; onBack?: () => void }) {
+/** Centered settings title; `detail` names the subject (e.g. the agent) on its own line so it never truncates away. */
+export function SettingsHeader({ title, detail, onBack }: { title: string; detail?: string; onBack?: () => void }) {
   const styles = useThemedStyles(createStyles);
   const { factor } = useTextScale();
   return (
     <View style={styles.header}>
       <View style={styles.headerSlot}>{onBack ? <IconButton name="chevron.left" label="Back" onPress={onBack} /> : null}</View>
-      <Text style={[styles.headerTitle, { fontSize: 17 * factor, lineHeight: 22 * factor }]} numberOfLines={1}>{title}</Text>
+      <View style={styles.headerText}>
+        <Text style={[styles.headerTitle, { fontSize: 17 * factor, lineHeight: 22 * factor }]} numberOfLines={1}>{title}</Text>
+        {detail ? <Text style={[styles.headerDetail, { fontSize: 13 * factor, lineHeight: 17 * factor }]} numberOfLines={1}>{detail}</Text> : null}
+      </View>
       <View style={styles.headerSlot} />
     </View>
   );
@@ -51,7 +55,9 @@ const createSettingStyles = (colors: RelayPalette) => StyleSheet.create({
 const createStyles = (colors: RelayPalette) => StyleSheet.create({
   header: { backgroundColor: colors.chrome, minHeight: 62, paddingHorizontal: 12, paddingTop: 6, paddingBottom: 6, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   headerSlot: { width: 44, alignItems: 'flex-start' },
-  headerTitle: { flex: 1, textAlign: 'center', color: colors.primary, fontSize: 17, lineHeight: 22, fontWeight: '600', letterSpacing: -0.25 },
+  headerText: { flex: 1 },
+  headerDetail: { textAlign: 'center', color: colors.secondary },
+  headerTitle: { textAlign: 'center', color: colors.primary, fontSize: 17, lineHeight: 22, fontWeight: '600', letterSpacing: -0.25 },
   section: { paddingTop: 22, gap: 8 },
   sectionLabel: { color: colors.primary, fontSize: 14, fontWeight: '600' },
   rows: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line, gap: 10, paddingBottom: 6 },
