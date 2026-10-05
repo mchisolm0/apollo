@@ -40,8 +40,27 @@ export function updateState(enabled: boolean, snapshot: UpdateSnapshot): UpdateS
   return { status: snapshot.isChecking ? 'checking' : 'idle' };
 }
 
-export function shouldNoticeUpdate(state: UpdateState, noticedId: string | null, active: boolean): boolean {
-  return active && state.status === 'ready' && state.update.id !== noticedId;
+export function shouldNoticeUpdate(state: UpdateState, noticedId: string | null, active: boolean, keyboardVisible: boolean): boolean {
+  return active && !keyboardVisible && state.status === 'ready' && state.update.id !== noticedId;
+}
+
+/** Counts only time spent displaying a notice, resuming after keyboard or app hiding. */
+export function createUpdateNoticeTimer() {
+  let id: string | undefined;
+  let remaining = 8_000;
+  let shownAt: number | undefined;
+  return {
+    show(updateId: string, now: number) {
+      if (id !== updateId) { id = updateId; remaining = 8_000; }
+      shownAt = now;
+      return remaining;
+    },
+    hide(now: number) {
+      if (shownAt === undefined) return;
+      remaining = Math.max(0, remaining - Math.max(0, now - shownAt));
+      shownAt = undefined;
+    },
+  };
 }
 
 export const FOREGROUND_CHECK_INTERVAL_MS = 60 * 60 * 1000;

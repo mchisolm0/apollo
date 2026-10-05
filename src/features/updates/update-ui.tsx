@@ -1,7 +1,7 @@
 import * as Application from 'expo-application';
 import * as Updates from 'expo-updates';
 import { useEffect, useState } from 'react';
-import { AccessibilityInfo, Keyboard, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { AccessibilityInfo, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useColors } from '@/features/relay/relay-ui';
@@ -51,18 +51,12 @@ export function UpdateReadyNotice() {
   const insets = useSafeAreaInsets();
   const { state, noticeVisible, dismissNotice, error } = useAppUpdate();
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const [keyboardVisible, setKeyboardVisible] = useState(() => Keyboard.isVisible());
-  useEffect(() => {
-    const show = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', () => setKeyboardVisible(true));
-    const hide = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => setKeyboardVisible(false));
-    return () => { show.remove(); hide.remove(); };
-  }, []);
   useEffect(() => {
     if (noticeVisible) AccessibilityInfo.announceForAccessibility('Update ready');
   }, [noticeVisible]);
   if (state.status !== 'ready') return null;
   return <>
-    {noticeVisible && !keyboardVisible ? <View style={[styles.noticeLayer, { paddingBottom: insets.bottom + 8, backgroundColor: colors.background }]}>
+    {noticeVisible ? <View style={[styles.noticeLayer, { paddingBottom: insets.bottom + 8, backgroundColor: colors.background }]}>
       <View accessibilityLiveRegion="polite" style={[styles.notice, { backgroundColor: colors.elevated, borderColor: colors.line }]}>
         <Text style={[styles.noticeText, { color: colors.primary }]}>Update ready</Text>
         <UpdateActions onInfo={() => { dismissNotice(); setDetailsOpen(true); }} />

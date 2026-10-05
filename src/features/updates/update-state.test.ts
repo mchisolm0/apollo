@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildSummary, createUpdateController, FOREGROUND_CHECK_INTERVAL_MS, releaseNotes, shouldNoticeUpdate, updateState, type UpdateState } from './update-state.ts';
+import { buildSummary, createUpdateController, createUpdateNoticeTimer, FOREGROUND_CHECK_INTERVAL_MS, releaseNotes, shouldNoticeUpdate, updateState, type UpdateState } from './update-state.ts';
 
 const ready: UpdateState = { status: 'ready', update: { id: 'next-update', notes: [], rollback: false } };
 
@@ -31,10 +31,10 @@ function environment() {
 }
 
 test('ready notices are once per update, only in the foreground', () => {
-  assert.equal(shouldNoticeUpdate(ready, null, true), true);
-  assert.equal(shouldNoticeUpdate(ready, 'next-update', true), false);
-  assert.equal(shouldNoticeUpdate(ready, null, false), false);
-  assert.equal(shouldNoticeUpdate({ status: 'downloading', progress: 1 }, null, true), false);
+  assert.equal(shouldNoticeUpdate(ready, null, true, false), true);
+  assert.equal(shouldNoticeUpdate(ready, 'next-update', true, false), false);
+  assert.equal(shouldNoticeUpdate(ready, null, false, false), false);
+  assert.equal(shouldNoticeUpdate({ status: 'downloading', progress: 1 }, null, true, false), false);
 });
 
 test('disabled updates are idle even with a pending download', () => {
@@ -164,4 +164,24 @@ test('About uses native build, channel, update identity, and relative age', () =
   assert.equal(buildSummary({ ...info, embedded: true }, 0), '1.2.3 (42) · preview · embedded · just now');
   assert.equal(buildSummary({ version: null, build: null, development: true, embedded: false }, 0), 'Unknown · development');
   assert.equal(buildSummary({ version: '1.2.3', build: '42', development: false, embedded: true }, 0), '1.2.3 (42) · embedded');
+});
+
+test('ready while the keyboard is up stays unseen until the keyboard hides', () => {
+  assert.equal(shouldNoticeUpdate(ready, null, true, true), false);
+  const timer = createUpdateNoticeTimer();
+  // The first visible interval starts after typing longer than the expiry.
+  assert.equal(timer.show('next-update', 20_000), 8_000);
+  assert.equal(shouldNoticeUpdate(ready, null, true, false), true);
+  assert.equal(shouldNoticeUpdate(ready, 'next-update', true, false), false);
+});
+
+test('notice expiry pauses while hidden and resets for the next update', () => {
+  const timer = createUpdateNoticeTimer();
+  assert.equal(timer.show('first', 0), 8_000);
+  timer.hide(3_000);
+  assert.equal(timer.show('first', 30_000), 5_000);
+  timer.hide(35_000);
+  assert.equal(timer.show('first', 40_000), 0);
+  timer.hide(40_000);
+  assert.equal(timer.show('second', 50_000), 8_000);
 });
