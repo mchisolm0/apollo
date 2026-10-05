@@ -47,12 +47,15 @@ export default function SettingsRoute() {
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
       <AgentSettingsScreen
         agent={relayAgent}
+        defaultModel={(runtime[agentId]?.capabilities ?? agent.capabilities)?.model}
+        platform={(runtime[agentId]?.capabilities ?? agent.capabilities)?.platform}
         deviceName={agent.deviceName ?? Device.deviceName ?? 'Ekho mobile'}
         pairedAt={new Date(agent.createdAt).toLocaleDateString()}
         onBack={() => router.back()}
         onTestConnection={() => void refreshAgent(agent.id)}
         onForgetAgent={confirmForget}
         onNotifications={() => router.push({ pathname: "/notifications/[agentId]", params: { agentId } })}
+        onToolsets={() => router.push({ pathname: '/toolsets/[agentId]', params: { agentId } })}
       />
     </SafeAreaView>
   );

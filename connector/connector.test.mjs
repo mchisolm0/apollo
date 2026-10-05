@@ -138,6 +138,21 @@ test("allowlisted SSE route is streamed", async (t) => {
   assert.match(await response.text(), /run\.completed/u);
 });
 
+test("model inventory is device-authenticated and GET-only", async (t) => {
+  const f = await fixture(); t.after(async () => { await f.connector.close(); await f.hermes.close(); });
+  assert.equal((await req(f.base, "/api/model/options")).response.status, 401);
+  const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
+  const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
+  const headers = { authorization: `Bearer ${exchange.body.access_token}` };
+  assert.equal((await req(f.base, "/api/model/options", { headers })).response.status, 200);
+  assert.equal(f.hermes.seen.at(-1).url, "/api/model/options");
+  const count = f.hermes.seen.length;
+  for (const method of ["POST", "PATCH", "DELETE"]) {
+    assert.equal((await req(f.base, "/api/model/options", { method, headers })).response.status, 404);
+  }
+  assert.equal(f.hermes.seen.length, count);
+});
+
 
 test("thread titles require device authentication and tolerate unavailable Codex", async (t) => {
   const f = await fixture({ generateThreadTitle: async (input) => input === "unavailable" ? undefined : "Count files by extension" });

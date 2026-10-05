@@ -12,11 +12,12 @@ import { isRunActive } from './run-state';
 import { isJsonObject } from './protocol';
 
 type Outbox = ReturnType<typeof createOutboxRuntime>;
-type QueueInput = { id?: string; agentId: string; sessionId?: string; createsSession?: boolean; text: string; model?: string; instructions?: string; attachments: readonly DraftAttachment[] };
+type QueueInput = { id?: string; agentId: string; sessionId?: string; createsSession?: boolean; text: string; model?: string; provider?: string; instructions?: string; attachments: readonly DraftAttachment[] };
 type OutboxContextValue = OutboxSnapshot & {
   enqueue(input: QueueInput): Promise<{ id: string; sessionId: string }>;
   retry(id: string): Promise<void>;
   remove(id: string): Promise<void>;
+  steer(id: string, runId: string): Promise<void>;
   reload(): Promise<void>;
   withReloadSafety(apply: () => Promise<boolean>): Promise<boolean>;
 };
@@ -80,11 +81,17 @@ export function OutboxProvider({ children }: PropsWithChildren) {
           signal,
           idempotencyKey: message.id,
           model: message.model,
+          provider: message.provider,
           instructions: message.instructions,
           attachments: attachments.flatMap((file) => file.uploaded ? [file.uploaded] : []),
         });
         await checkpoint({ acceptedRunId: run.runId });
         return run.runId;
+      },
+      steer: (message, runId, signal) => {
+        const run = api.current.runtime[message.agentId]?.runs[runId];
+        if (!run || run.sessionId !== message.sessionId || !isRunActive(run.status) || run.status === 'stopping' || run.status === 'waiting_for_approval') throw Object.assign(new Error('The run is no longer accepting steer messages.'), { status: 409 });
+        return api.current.steerRun(message.agentId, runId, message.text, signal);
       },
       discardAttachments: (attachments) => attachments.forEach(discardAttachment),
     });
@@ -113,14 +120,15 @@ export function OutboxProvider({ children }: PropsWithChildren) {
   };
   return <OutboxContext.Provider value={{
     ...snapshot,
-    enqueue: async ({ id, agentId, sessionId, createsSession, text, attachments, model, instructions }) => {
+    enqueue: async ({ id, agentId, sessionId, createsSession, text, attachments, model, provider, instructions }) => {
       const message = await requireOutbox().enqueue({
-        id: id ?? randomUUID(), agentId, sessionId: sessionId ?? randomUUID(), createsSession: createsSession ?? !sessionId, text, attachments, model, instructions,
+        id: id ?? randomUUID(), agentId, sessionId: sessionId ?? randomUUID(), createsSession: createsSession ?? !sessionId, text, attachments, model, provider, instructions,
       });
       return { id: message.id, sessionId: message.sessionId };
     },
     retry: (id) => requireOutbox().retry(id),
     remove: (id) => requireOutbox().remove(id),
+    steer: (id, runId) => requireOutbox().steer(id, runId),
     reload: () => requireOutbox().load(),
     withReloadSafety: (apply) => requireOutbox().withReloadSafety(apply),
   }}>{children}</OutboxContext.Provider>;

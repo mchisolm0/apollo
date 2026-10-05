@@ -12,13 +12,17 @@ export type AgentSettingsScreenProps = {
   onTestConnection?: () => void;
   onForgetAgent?: () => void;
   onNotifications?: () => void;
+  onToolsets?: () => void;
+  defaultModel?: string;
+  platform?: string;
 };
 
 /** One agent's connection and pairing details, opened from the agent picker. App-wide preferences live in AppSettingsScreen. */
-export function AgentSettingsScreen({ agent, deviceName, pairedAt, onBack, onTestConnection, onForgetAgent, onNotifications }: AgentSettingsScreenProps) {
+export function AgentSettingsScreen({ agent, deviceName, pairedAt, onBack, onTestConnection, onForgetAgent, onNotifications, onToolsets, defaultModel, platform }: AgentSettingsScreenProps) {
   const styles = useThemedStyles(createStyles);
   const uiStyles = useRelayStyles();
   const colors = useColors();
+  const agentPlatform = platform ?? agent.platform;
   return (
     <View style={uiStyles.screen}>
       <SettingsHeader title="Agent" onBack={onBack} />
@@ -34,7 +38,9 @@ export function AgentSettingsScreen({ agent, deviceName, pairedAt, onBack, onTes
           <SettingRow label="Route" value={agent.transport === 'tailscale' ? 'Tailscale Serve' : agent.endpoint.startsWith('http:') ? 'Local development' : 'HTTPS'} />
           <SettingRow label="Status" value={connectionLabels[agent.connection]} />
           <SettingRow label="Last seen" value={agent.lastSeen ?? 'Not yet'} />
-          {agent.platform ? <SettingRow label="Platform" value={agent.platform} /> : null}
+          {agentPlatform ? <SettingRow label="Platform" value={agentPlatform} /> : null}
+          {defaultModel ? <SettingRow label="Default model" value={defaultModel} /> : null}
+          {onToolsets ? <SettingRow label="Toolsets" value="" action="View" onPress={onToolsets} /> : null}
         </SettingSection>
         {onTestConnection ? <ConnectionAction state={agent.connection} onReconnect={onTestConnection} /> : null}
         {onTestConnection && agent.connection === 'connected' ? <View style={styles.primaryAction}><Pressable accessibilityRole="button" onPress={onTestConnection} style={styles.testConnection}><Text style={[styles.testConnectionText, { color: colors.cyan }]}>Test connection</Text></Pressable></View> : null}

@@ -12,12 +12,13 @@ import {
   type PropsWithChildren,
 } from 'react';
 import { AppState } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { reconcileHistory } from './message-history';
 import { AgentCatalog } from './catalog';
 import { eventTransportIdentity, isRunActive, statusAfterEvent } from './run-state';
 import { PairingClient, parsePairingLink } from './pairing';
-import { HermesClient, HermesRequestError, type RunEventSubscription } from './hermes-client';
+import { HermesClient, HermesRequestError, parseSelectedModel, sessionModelChoice, type RunEventSubscription } from './hermes-client';
 import type {
   AgentRecord,
   InboxConfig,
@@ -28,6 +29,9 @@ import type {
   HermesApprovalResponse,
   HermesMessage,
   HermesModel,
+  HermesModelLock,
+  HermesToolset,
+  HermesSession,
   HermesRunEvent,
   HermesRunStatus,
   HermesSkill,
@@ -51,6 +55,13 @@ export interface EkhoContextValue {
   forkSession(agentId: string, sessionId: string): Promise<string>;
   regenerateTitle(agentId: string, sessionId: string, input: string): Promise<string | undefined>;
   models(agentId: string): Promise<readonly HermesModel[]>;
+  toolsets(agentId: string): Promise<readonly HermesToolset[]>;
+  sessionDetail(agentId: string, sessionId: string, signal?: AbortSignal): Promise<HermesSession>;
+  /** The model a send snapshots: fresh detail when reachable within a few seconds, else the stored choice or the listed model. */
+  resolveThreadModel(agentId: string, sessionId: string, options?: { creating?: boolean }): Promise<HermesModel | undefined>;
+  setSessionModel(agentId: string, sessionId: string, model: HermesModel): Promise<HermesModelLock>;
+  saveModelSelection(agentId: string, sessionId: string, model: HermesModel): Promise<void>;
+  steerRun(agentId: string, runId: string, input: string, signal?: AbortSignal): Promise<void>;
   uploadAttachment(agentId: string, file: { name: string; mimeType: string; data: string }, signal?: AbortSignal): Promise<Attachment>;
   attachmentSource(agentId: string, id: string): AttachmentSource | undefined;
   sessionMessages(agentId: string, sessionId: string): Promise<readonly HermesMessage[]>;
@@ -69,6 +80,17 @@ export interface EkhoContextValue {
 
 // Several missed keepalives: long enough that a quiet but healthy run rarely pays for a status request.
 const QUIET_STREAM_MS = 45_000;
+
+const DETAIL_TIMEOUT_MS = 4_000;
+
+function modelSelectionKey(agentId: string, sessionId: string) {
+  return `ekho.thread-model.${JSON.stringify([agentId, sessionId])}`;
+}
+
+async function loadModelSelection(agentId: string, sessionId: string) {
+  const saved = await AsyncStorage.getItem(modelSelectionKey(agentId, sessionId));
+  return parseSelectedModel(saved === null ? null : JSON.parse(saved));
+}
 
 const EkhoContext = createContext<EkhoContextValue | undefined>(undefined);
 
@@ -105,6 +127,7 @@ export function EkhoProvider({
   const [error, setError] = useState<string>();
   const startingRuns = useRef(new Set<string>());
   const newSessions = useRef(new Set<string>());
+  const sessionDetailRequests = useRef(new Map<string, object>());
   const clients = useRef(new Map<string, HermesClient>());
   const subscriptions = useRef(new Map<string, RunEventSubscription & { runId: string }>());
 
@@ -370,6 +393,29 @@ export function EkhoProvider({
     }
   }, [catalog, pairingClient, refreshAgent, updateRuntime]);
 
+  const updateSessionModel = useCallback((agentId: string, sessionId: string, selectedModel: HermesModel) => {
+    sessionDetailRequests.current.delete(`${agentId}:${sessionId}`);
+    setRuntime((current) => {
+      const state = current[agentId];
+      return state ? { ...current, [agentId]: { ...state, sessions: state.sessions.map((session) => session.id === sessionId ? { ...session, model: selectedModel.id, selectedModel } : session) } } : current;
+    });
+  }, [setRuntime]);
+
+  const saveModelSelection = useCallback(async (agentId: string, sessionId: string, model: HermesModel) => {
+    await AsyncStorage.setItem(modelSelectionKey(agentId, sessionId), JSON.stringify(model));
+    updateSessionModel(agentId, sessionId, model);
+  }, [updateSessionModel]);
+
+  const setSessionModel = useCallback(async (agentId: string, sessionId: string, model: HermesModel) => {
+    const client = clients.current.get(agentId);
+    if (!client) throw new Error('Reconnect to change the thread model.');
+    const lock = await client.setSessionModel(sessionId, model);
+    const selected = { id: lock.model, provider: lock.provider };
+    updateSessionModel(agentId, sessionId, selected);
+    await saveModelSelection(agentId, sessionId, selected).catch(() => undefined);
+    return lock;
+  }, [saveModelSelection, updateSessionModel]);
+
   const startRun = useCallback(async (agentId: string, input: string, options?: StartRunOptions): Promise<HermesRunStatus> => {
     const key = JSON.stringify([agentId, options?.sessionId]);
     if (startingRuns.current.has(key) || (options?.sessionId && Object.values(runtimeRef.current[agentId]?.runs ?? {}).some((run) => run.sessionId === options.sessionId && isRunActive(run.status)))) {
@@ -385,6 +431,7 @@ export function EkhoProvider({
         client = clients.current.get(agentId);
       }
       if (!client) throw new Error('Agent is offline');
+      // Delivery uses the queued snapshot, including retries under the same key.
       const result = await client.startRun(input, options);
       const status = { ...result, sessionId: result.sessionId ?? options?.sessionId };
       const previousRuns = runtimeRef.current[agentId]?.runs ?? {};
@@ -442,10 +489,71 @@ export function EkhoProvider({
     return client.models();
   }, []);
 
+  const toolsets = useCallback(async (agentId: string) => {
+    const client = clients.current.get(agentId);
+    if (!client) throw new Error('Reconnect to load toolsets.');
+    return client.toolsets();
+  }, []);
+
+  const sessionDetail = useCallback(async (agentId: string, sessionId: string, signal?: AbortSignal) => {
+    const client = clients.current.get(agentId);
+    if (!client) throw new Error('Reconnect to load the thread model.');
+    const key = `${agentId}:${sessionId}`;
+    const request = {};
+    sessionDetailRequests.current.set(key, request);
+    try {
+      const [session, selectedModel] = await Promise.all([client.session(sessionId, signal), loadModelSelection(agentId, sessionId)]);
+      const detail = { ...session, selectedModel: sessionModelChoice(session.model, selectedModel) };
+      const defined = Object.fromEntries(Object.entries(detail).filter(([, value]) => value !== undefined));
+      setRuntime((current) => {
+        if (sessionDetailRequests.current.get(key) !== request) return current;
+        sessionDetailRequests.current.delete(key);
+        const state = current[agentId];
+        if (!state) return current;
+        const existing = state.sessions.some((item) => item.id === session.id);
+        const sessions = existing ? state.sessions.map((item) => item.id === session.id ? { ...item, ...defined } : item) : [detail, ...state.sessions];
+        return { ...current, [agentId]: { ...state, sessions } };
+      });
+      return detail;
+    } finally {
+      if (sessionDetailRequests.current.get(key) === request) sessionDetailRequests.current.delete(key);
+    }
+  }, [setRuntime]);
+
+  const resolveThreadModel = useCallback(async (agentId: string, sessionId: string, options: { creating?: boolean } = {}) => {
+    const fallback = async () => {
+      const listed = runtimeRef.current[agentId]?.sessions.find((session) => session.id === sessionId)?.model;
+      return sessionModelChoice(listed, await loadModelSelection(agentId, sessionId));
+    };
+    // A thread that doesn't exist yet has no detail to fetch.
+    if (options.creating || !clients.current.has(agentId)) return fallback();
+    // A reconnecting agent can already have a client. Fetch once, but never let an unreachable host stall the send.
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { controller.abort(); reject(new Error('Thread detail timed out')); }, DETAIL_TIMEOUT_MS);
+    });
+    try {
+      return (await Promise.race([sessionDetail(agentId, sessionId, controller.signal), timeout])).selectedModel;
+    } catch {
+      return fallback();
+    } finally {
+      clearTimeout(timer);
+    }
+  }, [sessionDetail]);
+
+  const steerRun = useCallback(async (agentId: string, runId: string, input: string, signal?: AbortSignal) => {
+    const client = clients.current.get(agentId);
+    if (!client) throw new Error('Reconnect to steer the run.');
+    await client.steerRun(runId, input, signal);
+  }, []);
+
   const deleteSession = useCallback(async (agentId: string, sessionId: string): Promise<void> => {
     const client = clients.current.get(agentId);
     if (!client) throw new Error('Connect to the agent to update threads.');
     await client.deleteSession(sessionId);
+    await AsyncStorage.removeItem(modelSelectionKey(agentId, sessionId)).catch(() => undefined);
+    sessionDetailRequests.current.delete(`${agentId}:${sessionId}`);
     setRuntime((current) => {
       const state = current[agentId];
       if (!state) return current;
@@ -587,7 +695,10 @@ export function EkhoProvider({
       // Revoked credentials and older connectors have no registration to remove.
       if (!(error && typeof error === 'object' && 'status' in error && [401, 404].includes(Number(error.status)))) throw error;
     }
+    const modelKeys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith(`ekho.thread-model.[${JSON.stringify(agentId)},`));
+    await AsyncStorage.multiRemove(modelKeys);
     closeSubscription(agentId);
+    for (const key of sessionDetailRequests.current.keys()) if (key.startsWith(`${agentId}:`)) sessionDetailRequests.current.delete(key);
     clients.current.delete(agentId);
     await catalog.remove(agentId);
     posthog.capture('agent_removed', { agent_id: agentId });
@@ -622,6 +733,12 @@ export function EkhoProvider({
     forkSession,
     regenerateTitle,
     models,
+    toolsets,
+    sessionDetail,
+    resolveThreadModel,
+    setSessionModel,
+    saveModelSelection,
+    steerRun,
     sessionMessages,
     skills,
     saveInbox,
@@ -632,7 +749,7 @@ export function EkhoProvider({
     removeAgent,
     notificationClient,
     hasSession,
-  }), [notificationClient, hasSession, saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, deleteSession, setPinned, forkSession, regenerateTitle, models, error, loading, messages, pair, refreshAgent, removeAgent, retryAgent, runtime, sessionMessages, skills, startRun, stopRun]);
+  }), [toolsets, sessionDetail, resolveThreadModel, setSessionModel, saveModelSelection, steerRun, notificationClient, hasSession, saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, deleteSession, setPinned, forkSession, regenerateTitle, models, error, loading, messages, pair, refreshAgent, removeAgent, retryAgent, runtime, sessionMessages, skills, startRun, stopRun]);
 
   return <EkhoContext.Provider value={value}>{children}</EkhoContext.Provider>;
 }

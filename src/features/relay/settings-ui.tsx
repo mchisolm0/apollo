@@ -32,7 +32,8 @@ export function SettingSection({ label, children }: { label: string; children: R
   );
 }
 
-export function SettingRow({ label, value, onPress }: { label: string; value: string; onPress?: () => void }) {
+/** A label/value row; with `onPress` it shows a cyan `action` (default "Edit"). */
+export function SettingRow({ label, value, onPress, action = 'Edit' }: { label: string; value: string; onPress?: () => void; action?: string }) {
   const styles = useThemedStyles(createStyles);
   const settingStyles = useSettingStyles();
   const { fontScale } = useWindowDimensions();
@@ -40,9 +41,9 @@ export function SettingRow({ label, value, onPress }: { label: string; value: st
   const cyan = useColors().cyan;
   const large = isLargeText(fontScale, factor);
   const rowStyle = [settingStyles.row, large && styles.rowLarge];
-  const content = <><Text style={[settingStyles.rowLabel, large && styles.rowLabelLarge]}>{label}</Text><Text style={[settingStyles.rowValue, large && styles.rowValueLarge]} selectable>{value}</Text>{onPress ? <Text style={[styles.rowAction, { color: cyan, fontSize: 15 * factor, lineHeight: 20 * factor }]}>Edit</Text> : null}</>;
+  const content = <><Text style={[settingStyles.rowLabel, large && styles.rowLabelLarge]}>{label}</Text><Text style={[settingStyles.rowValue, large && styles.rowValueLarge]} selectable>{value}</Text>{onPress ? <Text style={[styles.rowAction, { color: cyan, fontSize: 15 * factor, lineHeight: 20 * factor }]}>{action}</Text> : null}</>;
   if (!onPress) return <View style={rowStyle}>{content}</View>;
-  return <Pressable accessibilityRole="button" accessibilityLabel={`Edit ${label}`} onPress={onPress} style={({ pressed }) => [rowStyle, { opacity: pressed ? 0.65 : 1 }]}>{content}</Pressable>;
+  return <Pressable accessibilityRole="button" accessibilityLabel={`${action} ${label}`} onPress={onPress} style={({ pressed }) => [rowStyle, { opacity: pressed ? 0.65 : 1 }]}>{content}</Pressable>;
 }
 
 /** Row styles for custom rows (sliders, switches) that sit alongside SettingRow. */
