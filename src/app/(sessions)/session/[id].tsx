@@ -241,11 +241,14 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
         selectedModel={model?.id}
         selectedProvider={model?.provider}
         onSelectModel={(choice) => {
-          modelPicks.current += 1;
-          if (!resolvedId) setModel(choice);
-          else void act(async () => {
+          if (!resolvedId) {
+            modelPicks.current += 1;
+            setModel(choice);
+          } else void act(async () => {
             if (awaitingCreation) await saveModelSelection(agentId, resolvedId, choice);
             else await setSessionModel(agentId, resolvedId, choice);
+            // Only a saved choice supersedes resolves still in flight; a failed lock keeps the current model.
+            modelPicks.current += 1;
             setModel(choice);
           });
         }}

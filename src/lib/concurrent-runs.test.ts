@@ -245,6 +245,17 @@ test('send resolution falls back to the stored choice when detail never answers'
   assert.deepEqual(JSON.parse(JSON.stringify(await resolving)), { id: 'listed', provider: 'alpha' });
 });
 
+test('send resolution falls back to the listed model when nothing was picked on this device', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const setup = providerFixture([{ id: 'thread', model: 'listed' }]);
+  const api = setup.mount();
+  await api.refreshAgent('agent');
+  const resolving = api.resolveThreadModel('agent', 'thread');
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(4_000);
+  assert.deepEqual(JSON.parse(JSON.stringify(await resolving)), { id: 'listed' });
+});
+
 test('a creating send resolves locally without requesting detail', async () => {
   const setup = providerFixture([]);
   const api = setup.mount();
