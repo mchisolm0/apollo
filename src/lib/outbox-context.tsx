@@ -18,6 +18,7 @@ type OutboxContextValue = OutboxSnapshot & {
   retry(id: string): Promise<void>;
   remove(id: string): Promise<void>;
   reload(): Promise<void>;
+  withReloadSafety(apply: () => Promise<boolean>): Promise<boolean>;
 };
 
 const EMPTY: OutboxSnapshot = { loaded: false, items: [] };
@@ -121,6 +122,7 @@ export function OutboxProvider({ children }: PropsWithChildren) {
     retry: (id) => requireOutbox().retry(id),
     remove: (id) => requireOutbox().remove(id),
     reload: () => requireOutbox().load(),
+    withReloadSafety: (apply) => requireOutbox().withReloadSafety(apply),
   }}>{children}</OutboxContext.Provider>;
 }
 

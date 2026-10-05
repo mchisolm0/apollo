@@ -1,9 +1,8 @@
-import Constants from 'expo-constants';
-import * as Updates from 'expo-updates';
+import { AppUpdateAbout } from '@/features/updates/update-ui';
 import { Platform, Pressable, ScrollView, StyleSheet, Switch, Text, useWindowDimensions, View } from 'react-native';
 
 import { useColors, useRelayTheme, RelaySlider, CODE_SIZE_MAX, CODE_SIZE_MIN, TEXT_SIZE_MAX, TEXT_SIZE_MIN, useTextScale, useRelayStyles, useThemedStyles, type RelayPalette } from './relay-ui';
-import { SettingRow, SettingSection, SettingsHeader, useSettingStyles } from './settings-ui';
+import { SettingSection, SettingsHeader, useSettingStyles } from './settings-ui';
 import { THEMES, THEME_PALETTES } from './theme';
 
 /** App-wide, local-only preferences: theme, text and code size, plus build info. Agent details live on the agent screen. */
@@ -86,8 +85,7 @@ export function AppSettingsScreen({ onBack }: { onBack?: () => void }) {
         </SettingSection>
 
         <SettingSection label="App">
-          <SettingRow label="Version" value={Constants.expoConfig?.version ?? 'Unknown'} />
-          <SettingRow label="Fingerprint" value={Updates.runtimeVersion ?? 'Unavailable in development'} />
+          <AppUpdateAbout />
         </SettingSection>
       </ScrollView>
     </View>

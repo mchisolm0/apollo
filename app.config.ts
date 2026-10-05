@@ -18,6 +18,7 @@ export default function configure({ config }: ConfigContext): ExpoConfig {
     },
     extra: {
       ...config.extra,
+      releaseNotes: (process.env.RELEASE_NOTES ?? '').split('\n').map((line: string) => line.trim()).filter(Boolean),
       posthogProjectToken: process.env.POSTHOG_PROJECT_TOKEN,
       posthogHost: process.env.POSTHOG_HOST,
     },
