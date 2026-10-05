@@ -18,6 +18,7 @@ function loadClient() {
   const exports: {
     HermesClient?: typeof import('./hermes-client').HermesClient;
     parseModels?: (value: unknown) => readonly HermesModel[];
+    sessionModelChoice?: typeof import('./hermes-client').sessionModelChoice;
     parseSelectedModel?: typeof import('./hermes-client').parseSelectedModel;
   } = {};
   runInNewContext(source, {
@@ -41,7 +42,7 @@ function stubFetch(body: unknown, seen: { url?: string; init?: RequestInit }[] =
   }) as unknown as typeof fetch;
 }
 
-const { HermesClient, parseModels, parseSelectedModel } = loadClient();
+const { HermesClient, parseModels, parseSelectedModel, sessionModelChoice } = loadClient();
 // Values cross the vm boundary with foreign prototypes; compare their plain JSON shape.
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
 const clientWith = (body: unknown, seen: { url?: string; init?: RequestInit }[] = []) =>
@@ -155,15 +156,15 @@ test('a restored thread model lock remains in every run request', async () => {
   }) as typeof fetch });
   const lock = await client.setSessionModel('thread', { id: 'chosen', provider: 'alpha' });
   const restored = parseSelectedModel(JSON.parse(JSON.stringify({ id: lock.model, provider: lock.provider })));
-  await client.startRun('[QA] first', { sessionId: 'thread' }, restored);
-  await client.startRun('[QA] next', { sessionId: 'thread' }, restored);
+  await client.startRun('[QA] first', { sessionId: 'thread', model: restored?.id, provider: restored?.provider });
+  await client.startRun('[QA] next', { sessionId: 'thread', model: restored?.id, provider: restored?.provider });
   for (const request of seen.slice(1)) {
     assert.equal(request.url, 'https://agent.example.ts.net/v1/runs');
     assert.deepEqual(JSON.parse(String(request.init?.body)), { input: request === seen[1] ? '[QA] first' : '[QA] next', session_id: 'thread', model: 'chosen', provider: 'alpha' });
   }
-  await client.startRun('[QA] default', { sessionId: 'untouched' }, parseSelectedModel(null));
+  await client.startRun('[QA] default', { sessionId: 'untouched' });
   assert.deepEqual(JSON.parse(String(seen[3]?.init?.body)), { input: '[QA] default', session_id: 'untouched' });
-  await client.startRun('[QA] provider unknown', { sessionId: 'thread' }, { id: 'chosen' });
+  await client.startRun('[QA] provider unknown', { sessionId: 'thread', model: 'chosen' });
   assert.deepEqual(JSON.parse(String(seen[4]?.init?.body)), { input: '[QA] provider unknown', session_id: 'thread', model: 'chosen' });
 });
 
@@ -260,4 +261,14 @@ test('replayed session creation recovers only the matching session_exists confli
   const before = seen.length;
   await assert.rejects(client.createSession({ id: 'queued-thread' }));
   assert.equal(seen.length, before + 1);
+});
+
+
+test('fresh server detail wins over a selection cached before relaunch', async () => {
+  const cached = parseSelectedModel(JSON.parse('{"id":"A","provider":"alpha"}'));
+  const server = await clientWith({ session: { id: 'thread', model: 'B' } }).session('thread');
+  assert.deepEqual(plain(sessionModelChoice(server.model, cached)), { id: 'B' });
+  assert.deepEqual(plain(sessionModelChoice('A', cached)), { id: 'A', provider: 'alpha' });
+  assert.deepEqual(plain(sessionModelChoice(undefined, cached)), { id: 'A', provider: 'alpha' });
+  assert.equal(sessionModelChoice(undefined, undefined), undefined);
 });

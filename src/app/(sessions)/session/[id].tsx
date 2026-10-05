@@ -19,6 +19,7 @@ import { useSessionDraft } from '@/features/relay/use-session-draft';
 import { setVisibleNotificationSession } from '@/features/notifications/foreground';
 import { useEkho } from '@/lib';
 import { currentApproval, isRunActive, sessionRun } from '@/lib/run-state';
+import { sessionModelChoice } from '@/lib/hermes-client';
 import type { HermesMessage, HermesModel, HermesRunEvent, HermesSkill } from '@/lib';
 
 const noMessages: readonly HermesMessage[] = [];
@@ -130,6 +131,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   }, [agentId, resolvedId, awaitingCreation, state?.status, sessionDetail]));
 
   const session = state?.sessions.find((candidate) => candidate.id === resolvedId);
+  const selectedModel = sessionModelChoice(session?.model, session?.selectedModel ?? model);
   const run = sessionRun(state?.runs ?? {}, resolvedId);
   const running = isRunActive(run?.status);
   const runId = run?.runId;
@@ -203,8 +205,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
       ? `The user explicitly selected these installed skills: ${JSON.stringify(requestedSkills)}. Before responding, call skill_view for each exact name and follow its instructions. The $name references in the message identify these selections. If a skill cannot be loaded, tell the user.`
       : undefined;
     const prepared = await prepareSend();
-    const selected = model ?? session?.selectedModel;
-    await outbox.enqueue({ ...prepared, agentId, createsSession: !resolvedId || awaitingCreation, instructions, model: selected?.id, provider: selected?.provider });
+    await outbox.enqueue({ ...prepared, agentId, createsSession: !resolvedId || awaitingCreation, instructions, model: selectedModel?.id, provider: selectedModel?.provider });
     if (!resolvedId) {
       await moveDraft(prepared.sessionId, '', []);
       setResolvedId(prepared.sessionId);
@@ -234,8 +235,8 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
         models={models}
         modelsLoading={modelsLoading}
         defaultModel={state?.capabilities?.model}
-        selectedModel={model?.id ?? session?.selectedModel?.id ?? session?.model}
-        selectedProvider={model?.provider ?? session?.selectedModel?.provider}
+        selectedModel={selectedModel?.id}
+        selectedProvider={selectedModel?.provider}
         onSelectModel={(choice) => {
           if (!resolvedId || awaitingCreation) setModel(choice);
           else void act(async () => {

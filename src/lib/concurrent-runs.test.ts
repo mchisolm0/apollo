@@ -6,7 +6,8 @@ import { runInNewContext } from 'node:vm';
 import { createElement } from 'react';
 import ts from 'typescript';
 import type { EkhoContextValue } from './ekho-context';
-import type { HermesModel, HermesRunEvent, HermesRunStatus } from './types';
+import type { HermesModel, HermesRunEvent, HermesRunStatus, StartRunOptions } from './types';
+import { createOutboxRuntime } from './outbox.ts';
 import * as runState from './run-state.ts';
 import * as attachments from './attachments.ts';
 import * as messageHistory from './message-history.ts';
@@ -16,7 +17,7 @@ const { renderToString } = createRequire(import.meta.url)('react-dom/server') as
 
 // Exercise the provider's real callbacks without loading native modules in Node.
 // Server rendering supplies React's hooks; this test asserts network/subscription effects.
-test('concurrent threads retain independent streams, controls, and saved run IDs', async () => {
+function providerFixture() {
   const streams = new Map<string, { onEvent(event: HermesRunEvent): void }>();
   const statuses = new Map<string, HermesRunStatus>();
   const stopped: string[] = [];
@@ -26,7 +27,9 @@ test('concurrent threads retain independent streams, controls, and saved run IDs
   const removal: string[] = [];
   let registrationError: Error | undefined;
   const storage = new Map<string, string>();
-  const selections: (HermesModel | undefined)[] = [];
+  const requests: { input: string; options: StartRunOptions }[] = [];
+  const locks: HermesModel[] = [];
+  let loseAcceptance = false;
   const catalog = {
     get: () => record,
     list: () => [record],
@@ -38,9 +41,10 @@ test('concurrent threads retain independent streams, controls, and saved run IDs
     async capabilities() { return { features: {} }; }
     async sessions() { return []; }
     async sessionMessages() { return []; }
-    async setSessionModel(sessionId: string, model: HermesModel) { return { sessionId, model: model.id, provider: model.provider }; }
-    async startRun(_input: string, options: { sessionId: string }, selected?: HermesModel) {
-      selections.push(selected);
+    async setSessionModel(sessionId: string, model: HermesModel) { locks.push(model); return { sessionId, model: model.id, provider: model.provider }; }
+    async startRun(input: string, options: StartRunOptions) {
+      requests.push({ input, options: { ...options } });
+      if (loseAcceptance) { loseAcceptance = false; throw new Error('Connection lost'); }
       await Promise.resolve();
       const run: HermesRunStatus = { runId: `run-${++count}`, sessionId: options.sessionId, status: 'running' };
       statuses.set(run.runId, run);
@@ -98,14 +102,25 @@ test('concurrent threads retain independent streams, controls, and saved run IDs
     renderToString(createElement(exports.EkhoProvider!, { catalog }, createElement(Capture)));
     return api!;
   }
+  return { mount, streams, stopped, approved, removal, requests, locks,
+    get record() { return record; },
+    loseNextAcceptance: () => { loseAcceptance = true; },
+    setRegistrationError: (error?: Error) => { registrationError = error; },
+  };
+}
+
+test('concurrent threads retain independent streams, controls, and saved run IDs', async () => {
+  const setup = providerFixture();
+  const { mount, streams, stopped, approved, removal, requests } = setup;
   const api = mount();
   await api.refreshAgent('agent');
   const firstStart = api.startRun('agent', 'First', { sessionId: 'first' });
   await assert.rejects(api.startRun('agent', 'Duplicate', { sessionId: 'first' }), /current run/);
   const [first, second] = await Promise.all([firstStart, api.startRun('agent', 'Second', { sessionId: 'second' })]);
   assert.equal(streams.size, 2);
-  assert.deepEqual(selections, [undefined, undefined]);
-  assert.deepEqual(Array.from(record.activeRunIds), [first.runId, second.runId]);
+  assert.equal(requests[0].options.model, undefined);
+  assert.equal(requests[1].options.model, undefined);
+  assert.deepEqual(Array.from(setup.record.activeRunIds), [first.runId, second.runId]);
   await assert.rejects(api.startRun('agent', 'Duplicate after start', { sessionId: 'first' }), /current run/);
   await api.approveRun('agent', second.runId, 'once');
   assert.deepEqual(approved, [second.runId]);
@@ -116,21 +131,87 @@ test('concurrent threads retain independent streams, controls, and saved run IDs
   assert.equal(streams.has(first.runId), false);
   assert.equal(streams.has(second.runId), true);
   await api.setSessionModel('agent', 'first', { id: 'chosen', provider: 'alpha' });
-  const third = await api.startRun('agent', 'Continue', { sessionId: 'first' });
-  assert.deepEqual(JSON.parse(JSON.stringify(selections.at(-1))), { id: 'chosen', provider: 'alpha' });
-  assert.deepEqual(Array.from(record.activeRunIds), [second.runId, third.runId]);
+  const third = await api.startRun('agent', 'Continue', { sessionId: 'first', model: 'chosen', provider: 'alpha' });
+  assert.equal(requests.at(-1)?.options.model, 'chosen');
+  assert.deepEqual(Array.from(setup.record.activeRunIds), [second.runId, third.runId]);
   streams.clear();
   const restored = mount();
   await restored.refreshAgent('agent');
   assert.deepEqual([...streams.keys()], [second.runId, third.runId]);
   await restored.stopRun('agent', third.runId);
   await restored.startRun('agent', 'After relaunch', { sessionId: 'first' });
-  assert.deepEqual(JSON.parse(JSON.stringify(selections.at(-1))), { id: 'chosen', provider: 'alpha' });
-  registrationError = new Error('Offline');
+  assert.equal(requests.at(-1)?.options.model, undefined);
+  assert.equal(requests.at(-1)?.options.provider, undefined);
+  setup.setRegistrationError(new Error('Offline'));
   await assert.rejects(restored.removeAgent('agent'), /Offline/);
   assert.deepEqual(removal, []);
-  registrationError = undefined;
+  setup.setRegistrationError();
   await restored.removeAgent('agent');
   assert.deepEqual(removal, ['notification', 'credential']);
   assert.equal(streams.size, 0);
+});
+
+
+function queueFor(api: EkhoContextValue, initial: string | null = null) {
+  let saved = initial;
+  return createOutboxRuntime({
+    storage: { getItem: async () => saved, setItem: async (_, value) => { saved = value; } },
+    canSend: () => true,
+    deliver: async (message) => (await api.startRun(message.agentId, message.text, {
+      sessionId: message.sessionId, idempotencyKey: message.id, model: message.model, provider: message.provider,
+    })).runId,
+    discardAttachments: () => {},
+  });
+}
+
+const queued = { id: 'message', agentId: 'agent', sessionId: 'thread', createsSession: false, text: '[QA] tiny', attachments: [], model: 'A', provider: 'alpha' };
+
+test('a lost acceptance retries the same queued snapshot after the picker changes', async () => {
+  const setup = providerFixture();
+  const api = setup.mount();
+  await api.refreshAgent('agent');
+  await api.setSessionModel('agent', 'thread', { id: 'A', provider: 'alpha' });
+  const outbox = queueFor(api);
+  try {
+    await outbox.enqueue(queued);
+    setup.loseNextAcceptance();
+    await outbox.drain();
+    await api.setSessionModel('agent', 'thread', { id: 'B', provider: 'beta' });
+    await outbox.retry(queued.id);
+    await outbox.drain();
+    assert.equal(setup.requests.length, 2);
+    assert.deepEqual(setup.requests[0], setup.requests[1]);
+    assert.deepEqual(setup.requests[1].options, { sessionId: 'thread', idempotencyKey: 'message', model: 'A', provider: 'alpha' });
+    assert.deepEqual(outbox.getSnapshot().items, []);
+  } finally { await outbox.dispose(); }
+});
+
+test('draining model A does not relock a thread explicitly changed to B', async () => {
+  const setup = providerFixture();
+  const api = setup.mount();
+  await api.refreshAgent('agent');
+  const outbox = queueFor(api);
+  try {
+    await outbox.enqueue(queued);
+    await api.setSessionModel('agent', 'thread', { id: 'B', provider: 'beta' });
+    await outbox.drain();
+    assert.deepEqual(setup.locks, [{ id: 'B', provider: 'beta' }]);
+    assert.equal(setup.requests[0].options.model, 'A');
+    assert.equal(setup.requests[0].options.provider, 'alpha');
+  } finally { await outbox.dispose(); }
+});
+
+test('an older persisted outbox item without a model snapshot sends no override', async () => {
+  const setup = providerFixture();
+  const api = setup.mount();
+  await api.refreshAgent('agent');
+  await api.setSessionModel('agent', 'thread', { id: 'B', provider: 'beta' });
+  const { model: _model, provider: _provider, ...legacy } = queued;
+  const outbox = queueFor(api, JSON.stringify([{ ...legacy, state: 'queued', attempts: 0, createdAt: Date.now() }]));
+  try {
+    await outbox.drain();
+    assert.equal(setup.requests[0].options.model, undefined);
+    assert.equal(setup.requests[0].options.provider, undefined);
+    assert.equal(setup.locks.length, 1);
+  } finally { await outbox.dispose(); }
 });

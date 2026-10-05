@@ -371,9 +371,10 @@ test('a delivered draft cannot enqueue again after restart and upstream expiry',
 test('restores the selected model and skill instructions with a queued message', async () => {
   const setup = fixture({ canSend: () => false });
   const original = createOutboxRuntime(setup.dependencies);
-  await original.enqueue({ ...first, model: 'provider/model', instructions: 'Use the selected skill.' });
+  await original.enqueue({ ...first, model: 'provider/model', provider: 'alpha', instructions: 'Use the selected skill.' });
   const restored = decodeOutbox(setup.stored())[0];
   assert.equal(restored.model, 'provider/model');
+  assert.equal(restored.provider, 'alpha');
   assert.equal(restored.instructions, 'Use the selected skill.');
   assert.throws(() => decodeOutbox(JSON.stringify([{ ...restored, model: 42 }])));
   await original.dispose();

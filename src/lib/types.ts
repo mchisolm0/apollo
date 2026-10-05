@@ -91,7 +91,7 @@ export interface HermesSession {
   source?: string;
   model?: string;
   title?: string;
-  /** This device's acknowledged picker choice, separate from the last model used. */
+  /** Model for new sends, resolved from server detail with a matching cached provider. */
   selectedModel?: HermesModel;
   startedAt?: number;
   endedAt?: number;

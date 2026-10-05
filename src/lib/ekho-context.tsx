@@ -18,7 +18,7 @@ import { reconcileHistory } from './message-history';
 import { AgentCatalog } from './catalog';
 import { eventTransportIdentity, isRunActive, statusAfterEvent } from './run-state';
 import { PairingClient, parsePairingLink } from './pairing';
-import { HermesClient, HermesRequestError, parseSelectedModel, type RunEventSubscription } from './hermes-client';
+import { HermesClient, HermesRequestError, parseSelectedModel, sessionModelChoice, type RunEventSubscription } from './hermes-client';
 import type {
   AgentRecord,
   InboxConfig,
@@ -420,17 +420,8 @@ export function EkhoProvider({
         client = clients.current.get(agentId);
       }
       if (!client) throw new Error('Agent is offline');
-      let selected = options?.sessionId ? await loadModelSelection(agentId, options.sessionId) : undefined;
-      // A newly queued thread has a picker choice before its session exists.
-      if (options?.sessionId && options.model && (options.model !== selected?.id || options.provider !== selected?.provider)
-        && !(options.provider === 'hermes' && options.model === agent.capabilities?.model)) {
-        const lock = await client.setSessionModel(options.sessionId, { id: options.model, provider: options.provider }, options.signal);
-        selected = { id: lock.model, provider: lock.provider };
-        await AsyncStorage.setItem(modelSelectionKey(agentId, options.sessionId), JSON.stringify(selected));
-        updateSessionModel(agentId, options.sessionId, selected);
-      }
-      // /v1/runs does not apply Hermes's persisted Browser model lock.
-      const result = await client.startRun(input, options, selected);
+      // Delivery uses the queued snapshot, including retries under the same key.
+      const result = await client.startRun(input, options);
       const status = { ...result, sessionId: result.sessionId ?? options?.sessionId };
       const previousRuns = runtimeRef.current[agentId]?.runs ?? {};
       updateRun(agentId, status);
@@ -462,7 +453,7 @@ export function EkhoProvider({
       });
       return status;
     } finally { startingRuns.current.delete(key); }
-  }, [catalog, refreshAgent, subscribe, updateRuntime, updateRun, setRuntime, updateSessionModel]);
+  }, [catalog, refreshAgent, subscribe, updateRuntime, updateRun, setRuntime]);
 
   const uploadAttachment = useCallback(async (agentId: string, file: { name: string; mimeType: string; data: string }, signal?: AbortSignal) => {
     const client = clients.current.get(agentId);
@@ -501,17 +492,17 @@ export function EkhoProvider({
     sessionDetailRequests.current.set(key, request);
     try {
       const [session, selectedModel] = await Promise.all([client.session(sessionId), loadModelSelection(agentId, sessionId)]);
+      const detail = { ...session, selectedModel: sessionModelChoice(session.model, selectedModel) };
       setRuntime((current) => {
         if (sessionDetailRequests.current.get(key) !== request) return current;
         sessionDetailRequests.current.delete(key);
         const state = current[agentId];
         if (!state) return current;
         const existing = state.sessions.some((item) => item.id === session.id);
-        const detail = { ...session, selectedModel };
         const sessions = existing ? state.sessions.map((item) => item.id === session.id ? { ...item, ...detail } : item) : [detail, ...state.sessions];
         return { ...current, [agentId]: { ...state, sessions } };
       });
-      return session;
+      return detail;
     } finally {
       if (sessionDetailRequests.current.get(key) === request) sessionDetailRequests.current.delete(key);
     }
