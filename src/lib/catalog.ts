@@ -51,6 +51,7 @@ function parseAgent(value: unknown): AgentRecord | undefined {
     id,
     label,
     hostname: stringValue(value.hostname),
+    deviceName: stringValue(value.deviceName),
     endpoint: { url, transport },
     createdAt: numberValue(value.createdAt) ?? Date.now(),
     lastConnectedAt: numberValue(value.lastConnectedAt),

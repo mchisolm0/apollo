@@ -1,4 +1,5 @@
 import { useThemedStyles, type RelayPalette } from '@/features/relay/relay-ui';
+import * as Device from 'expo-device';
 import { Redirect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Alert, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -46,6 +47,7 @@ export default function SettingsRoute() {
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
       <AgentSettingsScreen
         agent={relayAgent}
+        deviceName={agent.deviceName ?? Device.deviceName ?? 'Ekho mobile'}
         pairedAt={new Date(agent.createdAt).toLocaleDateString()}
         onBack={() => router.back()}
         onTestConnection={() => void refreshAgent(agent.id)}
