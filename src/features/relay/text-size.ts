@@ -10,7 +10,10 @@ export const TEXT_SIZE_STORAGE_KEY = 'ekho:text-scale';
 export const CODE_SIZE_STORAGE_KEY = 'ekho:code-text-size';
 export const CODE_CUSTOM_STORAGE_KEY = 'ekho:code-text-custom';
 
-/** App text size and Dynamic Type combine when deciding whether rows need more room. */
+/**
+ * App text size and Dynamic Type combine when deciding whether rows need more room.
+ * The cutoff sits below the max app text factor (22/17) so the largest slider setting alone expands rows.
+ */
 export function isLargeText(fontScale: number, factor: number): boolean {
   return fontScale * factor > 1.2;
 }

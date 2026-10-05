@@ -1,5 +1,5 @@
 import { AppUpdateAbout } from '@/features/updates/update-ui';
-import { Platform, Pressable, ScrollView, StyleSheet, Switch, Text, useWindowDimensions, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { useColors, useRelayTheme, RelaySlider, CODE_SIZE_MAX, CODE_SIZE_MIN, TEXT_SIZE_MAX, TEXT_SIZE_MIN, useTextScale, useRelayStyles, useThemedStyles, type RelayPalette } from './relay-ui';
 import { SettingSection, SettingsHeader, useSettingStyles } from './settings-ui';
@@ -13,8 +13,6 @@ export function AppSettingsScreen({ onBack }: { onBack?: () => void }) {
   const { pt, factor, setSize, codeSize, codeCustom, setCodeCustom, setCodeSize } = useTextScale();
   const { id: themeId, setTheme } = useRelayTheme();
   const colors = useColors();
-  const { fontScale } = useWindowDimensions();
-  const large = fontScale > 1.3;
   const monoSize = codeCustom ? codeSize : 13 * factor;
   return (
     <View style={uiStyles.screen}>
@@ -40,7 +38,7 @@ export function AppSettingsScreen({ onBack }: { onBack?: () => void }) {
               </Pressable>
             ))}
           </View>
-          <View style={[settingStyles.row, large && styles.rowLarge]}>
+          <View style={settingStyles.row}>
             <Text style={styles.sizeGlyphSmall}>AA</Text>
             <Text style={settingStyles.rowLabel}>Text size</Text>
             <Text style={settingStyles.rowValue}>{pt} pt</Text>
@@ -93,7 +91,6 @@ export function AppSettingsScreen({ onBack }: { onBack?: () => void }) {
 }
 
 const createStyles = (colors: RelayPalette) => StyleSheet.create({
-  rowLarge: { flexWrap: 'wrap' },
   spacer: { flex: 1 },
   sizeGlyphSmall: { color: colors.secondary, fontSize: 13, fontWeight: '600' },
   sizeGlyphLarge: { color: colors.primary, fontSize: 22, fontWeight: '600' },

@@ -44,7 +44,7 @@ export default function NotificationsRoute() {
   };
 
   return <SafeAreaView style={[styles.safe, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
-    <SettingsHeader title="Notifications" onBack={() => router.back()} />
+    <SettingsHeader title={`Notifications · ${agent.label}`} onBack={() => router.back()} />
     <ScrollView contentContainerStyle={uiStyles.content}>
       {clientError ? <Text accessibilityRole="alert" style={[styles.error, { color: colors.red }]}>{clientError}</Text> : null}
       <SettingSection label="This device">
