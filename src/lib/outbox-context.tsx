@@ -19,6 +19,7 @@ type OutboxContextValue = OutboxSnapshot & {
   remove(id: string): Promise<void>;
   steer(id: string, runId: string): Promise<void>;
   reload(): Promise<void>;
+  withReloadSafety(apply: () => Promise<boolean>): Promise<boolean>;
 };
 
 const EMPTY: OutboxSnapshot = { loaded: false, items: [] };
@@ -129,6 +130,7 @@ export function OutboxProvider({ children }: PropsWithChildren) {
     remove: (id) => requireOutbox().remove(id),
     steer: (id, runId) => requireOutbox().steer(id, runId),
     reload: () => requireOutbox().load(),
+    withReloadSafety: (apply) => requireOutbox().withReloadSafety(apply),
   }}>{children}</OutboxContext.Provider>;
 }
 
