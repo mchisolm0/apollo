@@ -83,7 +83,7 @@ function modelSelectionKey(agentId: string, sessionId: string) {
   return `ekho.thread-model.${JSON.stringify([agentId, sessionId])}`;
 }
 
-async function loadModelSelection(agentId: string, sessionId: string) {
+export async function loadModelSelection(agentId: string, sessionId: string) {
   const saved = await AsyncStorage.getItem(modelSelectionKey(agentId, sessionId));
   return parseSelectedModel(saved === null ? null : JSON.parse(saved));
 }
@@ -406,9 +406,10 @@ export function EkhoProvider({
     if (!client) throw new Error('Reconnect to change the thread model.');
     const lock = await client.setSessionModel(sessionId, model);
     const selected = { id: lock.model, provider: lock.provider };
-    await saveModelSelection(agentId, sessionId, selected);
+    updateSessionModel(agentId, sessionId, selected);
+    await saveModelSelection(agentId, sessionId, selected).catch(() => undefined);
     return lock;
-  }, [saveModelSelection]);
+  }, [saveModelSelection, updateSessionModel]);
 
   const startRun = useCallback(async (agentId: string, input: string, options?: StartRunOptions): Promise<HermesRunStatus> => {
     const key = JSON.stringify([agentId, options?.sessionId]);
@@ -524,7 +525,7 @@ export function EkhoProvider({
     const client = clients.current.get(agentId);
     if (!client) throw new Error('Connect to the agent to update threads.');
     await client.deleteSession(sessionId);
-    await AsyncStorage.removeItem(modelSelectionKey(agentId, sessionId));
+    await AsyncStorage.removeItem(modelSelectionKey(agentId, sessionId)).catch(() => undefined);
     sessionDetailRequests.current.delete(`${agentId}:${sessionId}`);
     setRuntime((current) => {
       const state = current[agentId];
@@ -667,12 +668,12 @@ export function EkhoProvider({
       // Revoked credentials and older connectors have no registration to remove.
       if (!(error && typeof error === 'object' && 'status' in error && [401, 404].includes(Number(error.status)))) throw error;
     }
+    const modelKeys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith(`ekho.thread-model.[${JSON.stringify(agentId)},`));
+    await AsyncStorage.multiRemove(modelKeys);
     closeSubscription(agentId);
     for (const key of sessionDetailRequests.current.keys()) if (key.startsWith(`${agentId}:`)) sessionDetailRequests.current.delete(key);
     clients.current.delete(agentId);
     await catalog.remove(agentId);
-    const modelKeys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith(`ekho.thread-model.[${JSON.stringify(agentId)},`));
-    await AsyncStorage.multiRemove(modelKeys);
     posthog.capture('agent_removed', { agent_id: agentId });
     setAgents(catalog.list());
     setRuntime((current) => {

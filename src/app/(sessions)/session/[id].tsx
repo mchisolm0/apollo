@@ -20,6 +20,7 @@ import { setVisibleNotificationSession } from '@/features/notifications/foregrou
 import { useEkho } from '@/lib';
 import { currentApproval, isRunActive, sessionRun } from '@/lib/run-state';
 import { sessionModelChoice } from '@/lib/hermes-client';
+import { loadModelSelection } from '@/lib/ekho-context';
 import type { HermesMessage, HermesModel, HermesRunEvent, HermesSkill } from '@/lib';
 
 const noMessages: readonly HermesMessage[] = [];
@@ -123,10 +124,14 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   }, [agentId, resolvedId, sessionMessages, awaitingCreation, outbox.loaded]);
 
   useFocusEffect(useCallback(() => {
-    if (!resolvedId || awaitingCreation || state?.status !== 'connected') return;
+    const status = state?.status;
+    if (!resolvedId || awaitingCreation || !status || status === 'connecting' || status === 'idle') return;
     let current = true;
     setModelReady(false);
-    void sessionDetail(agentId, resolvedId).then(() => {
+    const restore = status === 'connected'
+      ? sessionDetail(agentId, resolvedId)
+      : loadModelSelection(agentId, resolvedId).then((selected) => { if (current) setModel(selected); });
+    void restore.then(() => {
       if (current) setModelReady(true);
     }).catch((cause: unknown) => {
       if (current) setLocalError(cause instanceof Error ? cause.message : 'Could not load the thread model.');

@@ -26,6 +26,7 @@ function providerFixture(sessions: readonly HermesSession[] = []) {
   let count = 0;
   const removal: string[] = [];
   let registrationError: Error | undefined;
+  let storageError: Error | undefined;
   const storage = new Map<string, string>();
   const requests: { input: string; options: StartRunOptions }[] = [];
   const locks: HermesModel[] = [];
@@ -43,6 +44,7 @@ function providerFixture(sessions: readonly HermesSession[] = []) {
     async sessions() { return sessions; }
     async session() { return detail.promise; }
     async sessionMessages() { return []; }
+    async deleteSession() {}
     async setSessionModel(sessionId: string, model: HermesModel) { locks.push(model); return { sessionId, model: model.id, provider: model.provider }; }
     async startRun(input: string, options: StartRunOptions) {
       requests.push({ input, options: { ...options } });
@@ -96,9 +98,10 @@ function providerFixture(sessions: readonly HermesSession[] = []) {
       if (id === 'react-native') return { AppState: {} };
       if (id === '@react-native-async-storage/async-storage') return { __esModule: true, default: {
         getItem: async (key: string) => storage.get(key) ?? null,
-        setItem: async (key: string, value: string) => { storage.set(key, value); },
+        setItem: async (key: string, value: string) => { if (storageError) throw storageError; storage.set(key, value); },
+        removeItem: async (key: string) => { if (storageError) throw storageError; storage.delete(key); },
         getAllKeys: async () => [...storage.keys()],
-        multiRemove: async (keys: readonly string[]) => keys.forEach((key) => storage.delete(key)),
+        multiRemove: async (keys: readonly string[]) => { if (storageError) throw storageError; keys.forEach((key) => storage.delete(key)); },
       } };
       if (id === './catalog') return {};
       if (id === './pairing') return { PairingClient: class {} };
@@ -121,6 +124,7 @@ function providerFixture(sessions: readonly HermesSession[] = []) {
     get runtime() { return latestRuntime; },
     loseNextAcceptance: () => { loseAcceptance = true; },
     setRegistrationError: (error?: Error) => { registrationError = error; },
+    setStorageError: (error?: Error) => { storageError = error; },
   };
 }
 
@@ -201,6 +205,37 @@ test('a pre-creation model choice restores its provider without locking on deliv
   const detail = await restored.sessionDetail('agent', 'new-thread');
   assert.deepEqual(JSON.parse(JSON.stringify(detail.selectedModel)), { id: 'shared', provider: 'non-default' });
   assert.deepEqual(setup.locks, []);
+});
+
+test('accepted model changes update runtime even when the local cache cannot save', async () => {
+  const setup = providerFixture([{ id: 'thread', model: 'old' }]);
+  const api = setup.mount();
+  await api.refreshAgent('agent');
+  setup.setStorageError(new Error('Disk full'));
+  const lock = await api.setSessionModel('agent', 'thread', { id: 'new', provider: 'non-default' });
+  assert.equal(lock.model, 'new');
+  assert.deepEqual(JSON.parse(JSON.stringify(setup.runtime.agent.sessions[0].selectedModel)), { id: 'new', provider: 'non-default' });
+});
+
+test('deleted threads leave runtime even when their model cache cannot be removed', async () => {
+  const setup = providerFixture([{ id: 'thread' }]);
+  const api = setup.mount();
+  await api.refreshAgent('agent');
+  setup.setStorageError(new Error('Disk full'));
+  await api.deleteSession('agent', 'thread');
+  assert.equal(api.hasSession('agent', 'thread'), false);
+});
+
+test('failed cache cleanup leaves agent removal retryable', async () => {
+  const setup = providerFixture();
+  const api = setup.mount();
+  await api.refreshAgent('agent');
+  setup.setStorageError(new Error('Disk full'));
+  await assert.rejects(api.removeAgent('agent'), /Disk full/);
+  assert.deepEqual(setup.removal, ['notification']);
+  setup.setStorageError();
+  await api.removeAgent('agent');
+  assert.deepEqual(setup.removal, ['notification', 'notification', 'credential']);
 });
 
 test('removing and reconnecting an agent discards its pending session detail', async () => {

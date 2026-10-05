@@ -8,7 +8,7 @@ import type { RunScreenProps } from './run-screen';
 import type { HermesModel, HermesSession } from '../../lib/types';
 
 // Run the route's callbacks and effects without loading native modules.
-function routeFixture(id: string) {
+function routeFixture(id: string, status = 'connected') {
   const restoration = Promise.withResolvers<void>();
   const session: HermesSession = { id };
   const saved: { sessionId: string; model: HermesModel }[] = [];
@@ -28,7 +28,7 @@ function routeFixture(id: string) {
   };
   const api = {
     agents: [{ id: 'agent', label: 'QA' }],
-    runtime: { agent: { status: 'connected', sessions: id === 'new' ? [] : [session], runs: {}, events: [] } },
+    runtime: { agent: { status, sessions: id === 'new' ? [] : [session], runs: {}, events: [] } },
     messages: {}, skills: async () => [], models: async () => [], sessionMessages: async () => [],
     sessionDetail: async () => { await restoration.promise; session.model = 'shared'; session.selectedModel = { id: 'shared', provider: 'non-default' }; },
     saveModelSelection: async (_agent: string, sessionId: string, model: HermesModel) => { order.push('save'); saved.push({ sessionId, model }); },
@@ -53,6 +53,7 @@ function routeFixture(id: string) {
       if (name === 'expo-router') return { useFocusEffect: (callback: () => unknown) => effect(callback, [callback]), useRouter: () => ({ setParams() {} }) };
       if (name === 'react-native') return { AppState: { currentState: 'active' } };
       if (name === '@/lib') return { useEkho: () => api };
+      if (name === '@/lib/ekho-context') return { loadModelSelection: async () => { await restoration.promise; return { id: 'shared', provider: 'non-default' }; } };
       if (name === '@/lib/outbox-context') return { useOutbox: () => ({ loaded: true, items: [], enqueue: async (value: unknown) => { order.push('enqueue'); queued.push(value); } }) };
       if (name.endsWith('/use-session-draft')) return { useSessionDraft: () => ({ draft: '[QA] tiny', attachments: [], loaded: true, prepareSend: async () => ({ id: 'message', sessionId: id === 'new' ? 'created' : id, text: '[QA] tiny', attachments: [] }), move: async () => {}, clear: async () => {} }) };
       if (name.endsWith('/use-session-inbox')) return { useSessionInbox: () => ({ markRead: async () => {}, sessions: [] }) };
@@ -100,4 +101,16 @@ test('a draft picker choice is saved under the creating message session before e
   await flush();
   assert.deepEqual(JSON.parse(JSON.stringify(setup.saved)), [{ sessionId: 'created', model: { id: 'shared', provider: 'non-default' } }]);
   assert.deepEqual(setup.order, ['save', 'enqueue']);
+});
+
+test('offline threads wait for their cached provider before enqueueing', async () => {
+  const setup = routeFixture('thread', 'offline');
+  assert.equal(setup.render().sendDisabled, true);
+  setup.restoration.resolve();
+  await flush();
+  const ready = setup.render();
+  assert.equal(ready.sendDisabled, false);
+  ready.onSend('[QA] tiny');
+  await flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(setup.queued[0])), { id: 'message', sessionId: 'thread', text: '[QA] tiny', attachments: [], agentId: 'agent', createsSession: false, model: 'shared', provider: 'non-default' });
 });
