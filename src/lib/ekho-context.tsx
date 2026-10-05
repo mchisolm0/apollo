@@ -369,6 +369,7 @@ export function EkhoProvider({
         id: result.descriptor.id,
         label: result.descriptor.label,
         hostname: result.descriptor.hostname,
+        deviceName,
         endpoint: { url: input.endpoint, transport: transportFor(input.endpoint) },
         createdAt: Date.now(),
         capabilities: result.descriptor.capabilities,

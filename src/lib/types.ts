@@ -12,6 +12,7 @@ export interface AgentRecord {
   id: string;
   label: string;
   hostname?: string;
+  deviceName?: string;
   endpoint: AgentEndpoint;
   createdAt: number;
   lastConnectedAt?: number;
