@@ -8,7 +8,7 @@ const execute = promisify(execFile);
 
 /** Optional host capability. Failure leaves the caller's initial title intact. */
 export async function generateThreadTitle(input) {
-  const directory = await mkdtemp(join(tmpdir(), 'ekho-title-'));
+  const directory = await mkdtemp(join(tmpdir(), 'apollo-title-'));
   try {
     const output = join(directory, 'title.txt');
     const task = execute('codex', ['exec', '--ignore-user-config', '--ephemeral', '--skip-git-repo-check',

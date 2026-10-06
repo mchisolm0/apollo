@@ -14,7 +14,7 @@ import { isIP } from "node:net";
 const execFileAsync = promisify(execFile);
 const VERSION = "0.1.0";
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
-const PUBLIC_DESCRIPTOR_PATH = "/.well-known/ekho/agent";
+const PUBLIC_DESCRIPTOR_PATH = "/.well-known/apollo/agent";
 const EXCHANGE_PATH = "/v1/pair/exchange";
 
 const PROXY_ROUTES = new Set([
@@ -44,7 +44,7 @@ const secureEqual = (a, b) => {
 };
 const token = () => randomBytes(32).toString("base64url");
 const isoNow = () => new Date().toISOString();
-const defaultStatePath = () => `${homedir()}/.config/ekho/connector.json`;
+const defaultStatePath = () => `${homedir()}/.config/apollo/connector.json`;
 
 function freshState(label) {
   return { version: 1, agent_id: randomUUID(), label, created_at: isoNow(), pairing_tokens: [], devices: [] };
@@ -152,8 +152,8 @@ function forwardedHeaders(req) {
 }
 
 function normalizeName(name) {
-  if (typeof name !== "string" || !name.trim()) return "Ekho mobile";
-  return name.trim().replace(/[\u0000-\u001f\u007f]/gu, "").slice(0, 80) || "Ekho mobile";
+  if (typeof name !== "string" || !name.trim()) return "Apollo mobile";
+  return name.trim().replace(/[\u0000-\u001f\u007f]/gu, "").slice(0, 80) || "Apollo mobile";
 }
 
 function isLoopbackHost(value) {
@@ -181,19 +181,19 @@ export function createConnectorServer(options = {}) {
   if (!/^https?:$/u.test(hermesUrl.protocol) || hermesUrl.username || hermesUrl.password) throw new Error("HERMES_URL must be a plain HTTP(S) URL");
   if (!isLoopbackHost(hermesUrl.hostname)) throw new Error("HERMES_URL must point to a loopback Hermes API");
   const hermesApiKey = options.hermesApiKey ?? process.env.HERMES_API_KEY;
-  const adminSecret = options.adminSecret ?? process.env.EKHO_ADMIN_SECRET;
+  const adminSecret = options.adminSecret ?? process.env.APOLLO_ADMIN_SECRET;
   if (!hermesApiKey) throw new Error("HERMES_API_KEY is required");
-  if (!adminSecret) throw new Error("EKHO_ADMIN_SECRET is required");
-  const label = options.label ?? process.env.EKHO_AGENT_LABEL ?? hostname();
-  const store = options.store ?? new StateStore(options.statePath ?? process.env.EKHO_STATE_FILE ?? defaultStatePath(), label);
-  const expoPushUrl = options.expoPushUrl ?? process.env.EKHO_EXPO_PUSH_URL;
+  if (!adminSecret) throw new Error("APOLLO_ADMIN_SECRET is required");
+  const label = options.label ?? process.env.APOLLO_AGENT_LABEL ?? hostname();
+  const store = options.store ?? new StateStore(options.statePath ?? process.env.APOLLO_STATE_FILE ?? defaultStatePath(), label);
+  const expoPushUrl = options.expoPushUrl ?? process.env.APOLLO_EXPO_PUSH_URL;
   const sendPush = options.sendPush ?? (expoPushUrl ? createExpoPushSender({
     url: expoPushUrl,
-    accessToken: options.expoAccessToken ?? process.env.EKHO_EXPO_ACCESS_TOKEN,
+    accessToken: options.expoAccessToken ?? process.env.APOLLO_EXPO_ACCESS_TOKEN,
     fetchImpl: options.fetchImpl ?? fetch,
   }) : null);
 
-  const attachmentDirectory = options.attachmentDirectory ?? `${dirname(options.statePath ?? process.env.EKHO_STATE_FILE ?? defaultStatePath())}/attachments`;
+  const attachmentDirectory = options.attachmentDirectory ?? `${dirname(options.statePath ?? process.env.APOLLO_STATE_FILE ?? defaultStatePath())}/attachments`;
 
   async function fetchRun(runId) {
     const response = await (options.fetchImpl ?? fetch)(new URL(`/v1/runs/${encodeURIComponent(runId)}`, hermesUrl), {
@@ -244,7 +244,7 @@ export function createConnectorServer(options = {}) {
   }
 
   function authenticateAdmin(req) {
-    const presented = req.headers["x-ekho-admin-secret"] ?? bearer(req.headers);
+    const presented = req.headers["x-apollo-admin-secret"] ?? bearer(req.headers);
     return typeof presented === "string" && secureEqual(presented, adminSecret);
   }
 
@@ -252,7 +252,7 @@ export function createConnectorServer(options = {}) {
     const state = await store.read();
     const capabilities = await discoverCapabilities(hermesUrl, hermesApiKey);
     return {
-      object: "ekho.agent",
+      object: "apollo.agent",
       agent_id: state.agent_id,
       label: state.label,
       hostname: hostname(),
@@ -260,8 +260,8 @@ export function createConnectorServer(options = {}) {
       proxy_base_url: "/",
       capabilities,
       auth_methods: ["pairing_token"],
-      pairing: { exchange_path: EXCHANGE_PATH, url_scheme: "ekho", fragment_token: true },
-      notifications: { registration_path: "/v1/ekho/notifications", available: Boolean(sendPush) },
+      pairing: { exchange_path: EXCHANGE_PATH, url_scheme: "apollo", fragment_token: true },
+      notifications: { registration_path: "/v1/apollo/notifications", available: Boolean(sendPush) },
       ...(options.publicBaseUrl ? { public_base_url: options.publicBaseUrl } : {}),
     };
   }
@@ -281,7 +281,7 @@ export function createConnectorServer(options = {}) {
         return current;
       });
       const publicBase = typeof body.public_base_url === "string" ? body.public_base_url : options.publicBaseUrl;
-      const pairingUrl = publicBase ? `ekho://pair?host=${encodeURIComponent(publicBase)}#token=${raw}` : null;
+      const pairingUrl = publicBase ? `apollo://pair?host=${encodeURIComponent(publicBase)}#token=${raw}` : null;
       return json(res, 201, { agent_id: state.agent_id, pairing_token: raw, expires_at: expires, pairing_url: pairingUrl });
     }
     if (req.method === "GET" && url.pathname === "/admin/devices") {
@@ -413,7 +413,7 @@ export function createConnectorServer(options = {}) {
   }
 
   async function proxy(req, res, url) {
-    if (!validProxyRoute(req.method, url.pathname)) return error(res, 404, "route not available through Ekho", "not_found");
+    if (!validProxyRoute(req.method, url.pathname)) return error(res, 404, "route not available through Apollo", "not_found");
     const device = await authenticateDevice(req);
     if (!device) return error(res, 401, "device authentication required", "unauthorized");
     let body;
@@ -423,7 +423,7 @@ export function createConnectorServer(options = {}) {
     res.once("close", () => controller.abort());
     const headers = forwardedHeaders(req);
     headers.authorization = `Bearer ${hermesApiKey}`;
-    headers["x-ekho-device-id"] = device.id;
+    headers["x-apollo-device-id"] = device.id;
     let upstream;
     try {
       upstream = await (options.fetchImpl ?? fetch)(new URL(`${url.pathname}${url.search}`, hermesUrl), { method: req.method, headers, body, redirect: "error", signal: controller.signal });
@@ -458,9 +458,9 @@ export function createConnectorServer(options = {}) {
       if (req.method === "GET" && url.pathname === PUBLIC_DESCRIPTOR_PATH) return json(res, 200, await descriptor());
       if (req.method === "POST" && url.pathname === EXCHANGE_PATH) return exchange(req, res);
       if (url.pathname.startsWith("/admin/")) return handleAdmin(req, res, url);
-      if (req.method === "POST" && url.pathname === "/v1/ekho/thread-title") return threadTitle(req, res);
-      if (url.pathname === "/v1/ekho/notifications") return await notifications(req, res);
-      const attachmentRoute = url.pathname.match(/^\/v1\/ekho\/attachments(?:\/([a-f0-9-]{36}))?$/);
+      if (req.method === "POST" && url.pathname === "/v1/apollo/thread-title") return threadTitle(req, res);
+      if (url.pathname === "/v1/apollo/notifications") return await notifications(req, res);
+      const attachmentRoute = url.pathname.match(/^\/v1\/apollo\/attachments(?:\/([a-f0-9-]{36}))?$/);
       if (attachmentRoute) return await attachmentRequest(req, res, attachmentRoute[1]);
       if (url.pathname === "/v1/inbox") return await inbox(req, res);
       return proxy(req, res, url);

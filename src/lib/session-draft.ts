@@ -42,11 +42,11 @@ let reloadPending = false;
 let draftsHeld = false;
 
 export function draftKey(agentId: string, sessionId: string): string {
-  return `ekho.draft.v2.${encodeURIComponent(agentId)}.${encodeURIComponent(sessionId)}`;
+  return `apollo.draft.v2.${encodeURIComponent(agentId)}.${encodeURIComponent(sessionId)}`;
 }
 
 function legacyDraftKey(agentId: string, sessionId: string): string {
-  return `ekho.draft.${encodeURIComponent(agentId)}.${encodeURIComponent(sessionId)}`;
+  return `apollo.draft.${encodeURIComponent(agentId)}.${encodeURIComponent(sessionId)}`;
 }
 
 function validateDraft(draft: string, attachments: readonly DraftAttachment[]): void {

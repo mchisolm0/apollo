@@ -6,7 +6,7 @@ Research date: 2026-09-05
 
 Answering `n` is not a permanent "never use Apple" setting. The current EAS CLI prints that it may ask again if a later step needs Apple access. In the current source, `CredentialsContext.bestEffortAppStoreAuthenticateAsync()` returns immediately when `nonInteractive` is true, so `--non-interactive` is the right way to prevent the Apple login prompt during a build.
 
-For Ekho, the command to try is:
+For Apollo, the command to try is:
 
 ```sh
 EXPO_NO_KEYCHAIN=1 npx eas-cli@latest build \
@@ -16,7 +16,7 @@ EXPO_NO_KEYCHAIN=1 npx eas-cli@latest build \
   --freeze-credentials
 ```
 
-As of this research, `eas-cli@latest` resolves to 23.2.0. Ekho's `eas.json` requires EAS CLI >= 20.2.0, so the current CLI satisfies the project constraint.
+As of this research, `eas-cli@latest` resolves to 23.2.0. Apollo's `eas.json` requires EAS CLI >= 20.2.0, so the current CLI satisfies the project constraint.
 
 `--freeze-credentials` is useful here because it prevents credential updates in non-interactive mode. It does not create missing credentials. If the remote distribution certificate, provisioning profile, or registered device is missing or expired, an Apple-authorized team member must prepare or refresh them first with `eas credentials` or the EAS dashboard.
 
@@ -38,7 +38,7 @@ Expo documents this variable as disabling macOS Keychain support. It controls wh
 
 ### Reusing credentials
 
-Ekho's `development:device` profile does not set `credentialsSource`, so it uses the EAS default, `remote`. Expo's current guidance says a team member without Apple access can build when an authorized Apple user has already uploaded the distribution certificate and provisioning profile to the organization's Expo project. A physical-device development build also needs a suitable ad hoc provisioning profile containing the device UDID.
+Apollo's `development:device` profile does not set `credentialsSource`, so it uses the EAS default, `remote`. Expo's current guidance says a team member without Apple access can build when an authorized Apple user has already uploaded the distribution certificate and provisioning profile to the organization's Expo project. A physical-device development build also needs a suitable ad hoc provisioning profile containing the device UDID.
 
 If the credentials are available as files instead, `credentialsSource: "local"` and `credentials.json` are supported. That changes where EAS obtains the credentials. It does not make Apple account access unnecessary when a profile or device still needs to be created or refreshed.
 

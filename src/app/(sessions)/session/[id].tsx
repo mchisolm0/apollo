@@ -17,7 +17,7 @@ import { createTranscriptProjector } from '@/features/relay/transcript';
 import { selectedSkillNames } from '@/features/relay/composer-skills';
 import { useSessionDraft } from '@/features/relay/use-session-draft';
 import { setVisibleNotificationSession } from '@/features/notifications/foreground';
-import { useEkho } from '@/lib';
+import { useApollo } from '@/lib';
 import { currentApproval, isRunActive, sessionRun } from '@/lib/run-state';
 import type { HermesMessage, HermesModel, HermesRunEvent, HermesSkill } from '@/lib';
 
@@ -33,7 +33,7 @@ export default function SessionRoute() {
 
 function Session({ id, agentId, shareId }: { id: string; agentId: string; shareId?: string }) {
   const styles = useThemedStyles(createStyles);
-  const { agents, runtime, messages, sessionMessages, skills: loadSkills, models: loadModels, stopRun, approveRun, retryAgent, attachmentSource, deleteSession, regenerateTitle, resolveThreadModel, setSessionModel, saveModelSelection } = useEkho();
+  const { agents, runtime, messages, sessionMessages, skills: loadSkills, models: loadModels, stopRun, approveRun, retryAgent, attachmentSource, deleteSession, regenerateTitle, resolveThreadModel, setSessionModel, saveModelSelection } = useApollo();
   const outbox = useOutbox();
   const { getShare, acknowledgeShare } = useIncomingShares();
   const [retryRevision, setRetryRevision] = useState(0);

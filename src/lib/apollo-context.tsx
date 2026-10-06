@@ -38,7 +38,7 @@ import type {
   StartRunOptions,
 } from './types';
 
-export interface EkhoContextValue {
+export interface ApolloContextValue {
   agents: readonly AgentRecord[];
   runtime: Readonly<Record<string, AgentRuntimeState>>;
   messages: Readonly<Record<string, readonly HermesMessage[]>>;
@@ -84,7 +84,7 @@ const QUIET_STREAM_MS = 45_000;
 const DETAIL_TIMEOUT_MS = 4_000;
 
 function modelSelectionKey(agentId: string, sessionId: string) {
-  return `ekho.thread-model.${JSON.stringify([agentId, sessionId])}`;
+  return `apollo.thread-model.${JSON.stringify([agentId, sessionId])}`;
 }
 
 async function loadModelSelection(agentId: string, sessionId: string) {
@@ -92,7 +92,7 @@ async function loadModelSelection(agentId: string, sessionId: string) {
   return parseSelectedModel(saved === null ? null : JSON.parse(saved));
 }
 
-const EkhoContext = createContext<EkhoContextValue | undefined>(undefined);
+const ApolloContext = createContext<ApolloContextValue | undefined>(undefined);
 
 function emptyRuntime(): AgentRuntimeState {
   return { status: 'idle', sessions: [], runs: {}, events: [] };
@@ -108,7 +108,7 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : 'Connection failed';
 }
 
-export function EkhoProvider({
+export function ApolloProvider({
   children,
   catalog: suppliedCatalog,
   pairingClient: suppliedPairingClient,
@@ -695,7 +695,7 @@ export function EkhoProvider({
       // Revoked credentials and older connectors have no registration to remove.
       if (!(error && typeof error === 'object' && 'status' in error && [401, 404].includes(Number(error.status)))) throw error;
     }
-    const modelKeys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith(`ekho.thread-model.[${JSON.stringify(agentId)},`));
+    const modelKeys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith(`apollo.thread-model.[${JSON.stringify(agentId)},`));
     await AsyncStorage.multiRemove(modelKeys);
     closeSubscription(agentId);
     for (const key of sessionDetailRequests.current.keys()) if (key.startsWith(`${agentId}:`)) sessionDetailRequests.current.delete(key);
@@ -717,7 +717,7 @@ export function EkhoProvider({
 
   const hasSession = useCallback((agentId: string, sessionId: string) => runtimeRef.current[agentId]?.sessions.some((session) => session.id === sessionId) ?? false, []);
 
-  const value = useMemo<EkhoContextValue>(() => ({
+  const value = useMemo<ApolloContextValue>(() => ({
     agents,
     runtime,
     messages,
@@ -751,11 +751,11 @@ export function EkhoProvider({
     hasSession,
   }), [toolsets, sessionDetail, resolveThreadModel, setSessionModel, saveModelSelection, steerRun, notificationClient, hasSession, saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, deleteSession, setPinned, forkSession, regenerateTitle, models, error, loading, messages, pair, refreshAgent, removeAgent, retryAgent, runtime, sessionMessages, skills, startRun, stopRun]);
 
-  return <EkhoContext.Provider value={value}>{children}</EkhoContext.Provider>;
+  return <ApolloContext.Provider value={value}>{children}</ApolloContext.Provider>;
 }
 
-export function useEkho(): EkhoContextValue {
-  const value = useContext(EkhoContext);
-  if (!value) throw new Error('useEkho must be used inside EkhoProvider');
+export function useApollo(): ApolloContextValue {
+  const value = useContext(ApolloContext);
+  if (!value) throw new Error('useApollo must be used inside ApolloProvider');
   return value;
 }

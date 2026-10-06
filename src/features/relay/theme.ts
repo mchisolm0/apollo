@@ -29,7 +29,7 @@ export type RelayPalette = Record<
   string
 >;
 
-export const THEME_STORAGE_KEY = 'ekho:theme';
+export const THEME_STORAGE_KEY = 'apollo:theme';
 
 export const THEME_PALETTES = {
   code: {

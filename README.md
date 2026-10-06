@@ -1,6 +1,6 @@
-# Ekho
+# Apollo
 
-Ekho is a private mobile client for [Hermes Agent](https://hermes-agent.nousresearch.com/docs/). It pairs each phone with its own revocable credential, keeps the Hermes root API key on the host, and connects over Tailscale Serve or another private HTTPS route.
+Apollo is a private mobile client for [Hermes Agent](https://hermes-agent.nousresearch.com/docs/). It pairs each phone with its own revocable credential, keeps the Hermes root API key on the host, and connects over Tailscale Serve or another private HTTPS route.
 
 ## What works
 
@@ -47,9 +47,9 @@ existing gateway process:
 pnpm install:macos-services
 ```
 
-This installs one per-user macOS LaunchAgent for Ekho. It loads
+This installs one per-user macOS LaunchAgent for Apollo. It loads
 `~/.hermes/.env`, so the connector uses the same `API_SERVER_KEY` as Hermes.
-Logs are written to `~/Library/Logs/ekho/`.
+Logs are written to `~/Library/Logs/apollo/`.
 
 In this repository, start the connector with the same key:
 
@@ -57,7 +57,7 @@ In this repository, start the connector with the same key:
 HERMES_API_KEY=replace-with-a-long-random-secret node connector/cli.mjs serve
 ```
 
-The connector accepts only a loopback Hermes URL and never returns that root key to the app. Its local admin credential is created automatically in `~/.config/ekho/admin-secret`.
+The connector accepts only a loopback Hermes URL and never returns that root key to the app. Its local admin credential is created automatically in `~/.config/apollo/admin-secret`.
 
 With Tailscale installed, connected, and MagicDNS enabled, run in another terminal:
 
@@ -65,7 +65,7 @@ With Tailscale installed, connected, and MagicDNS enabled, run in another termin
 node connector/cli.mjs pair --tailscale --name "My phone"
 ```
 
-Scan the printed QR code in Ekho. The fallback link can be pasted into the app or opened directly on the phone. The pairing token expires after five minutes and works once.
+Scan the printed QR code in Apollo. The fallback link can be pasted into the app or opened directly on the phone. The pairing token expires after five minutes and works once.
 
 Without Tailscale, pass an HTTPS endpoint that already routes privately to the connector:
 
@@ -92,4 +92,4 @@ pnpm lint
 pnpm test:connector
 ```
 
-Integrated mobile verification follows [.agents/skills/test-ekho-mobile/SKILL.md](.agents/skills/test-ekho-mobile/SKILL.md).
+Integrated mobile verification follows [.agents/skills/test-apollo-mobile/SKILL.md](.agents/skills/test-apollo-mobile/SKILL.md).

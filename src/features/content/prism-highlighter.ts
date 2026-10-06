@@ -5,7 +5,7 @@ import 'prismjs/components/prism-perl.js';
 import 'prismjs/components/prism-python.js';
 import 'prismjs/components/prism-typescript.js';
 
-import type { MarkdownCodeHighlighter, MarkdownHighlightedToken } from '@ekho/native-markdown-text';
+import type { MarkdownCodeHighlighter, MarkdownHighlightedToken } from '@apollo/native-markdown-text';
 
 type HighlightColors = Readonly<{ cyan: string; green: string; amber: string; muted: string; codeText: string }>;
 

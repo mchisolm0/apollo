@@ -4,13 +4,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ToolsetsScreen } from '@/features/relay/toolsets-screen';
 import { useColors } from '@/features/relay/relay-ui';
-import { useEkho, type HermesToolset } from '@/lib';
+import { useApollo, type HermesToolset } from '@/lib';
 
 export default function ToolsetsRoute() {
   const { agentId } = useLocalSearchParams<{ agentId: string }>();
   const router = useRouter();
   const colors = useColors();
-  const { agents, runtime, toolsets: loadToolsets, retryAgent } = useEkho();
+  const { agents, runtime, toolsets: loadToolsets, retryAgent } = useApollo();
   const agent = agents.find((candidate) => candidate.id === agentId);
   const status = runtime[agentId]?.status;
   const [result, setResult] = useState<{ request: string; toolsets: readonly HermesToolset[]; error?: string }>();

@@ -297,7 +297,7 @@ export class HermesClient {
     } catch (error) {
       if (error instanceof HermesRequestError && error.status === 404) {
         if (!settled && !config) return { settled: {}, config: {} };
-        throw new Error('Update the Ekho connector to sync finished threads.');
+        throw new Error('Update the Apollo connector to sync finished threads.');
       }
       throw error;
     }
@@ -324,17 +324,17 @@ export class HermesClient {
   }
 
   async uploadAttachment(file: { name: string; mimeType: string; data: string }, signal?: AbortSignal): Promise<Attachment> {
-    const body = await this.request('/v1/ekho/attachments', { signal, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(file) });
+    const body = await this.request('/v1/apollo/attachments', { signal, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(file) });
     if (!isJsonObject(body) || !isAttachment(body.attachment)) throw new Error('The attachment upload response was invalid.');
     return body.attachment;
   }
 
   attachmentSource(id: string): AttachmentSource {
-    return { uri: `${this.baseUrl}/v1/ekho/attachments/${encodeURIComponent(id)}`, headers: { Authorization: `Bearer ${this.token}` } };
+    return { uri: `${this.baseUrl}/v1/apollo/attachments/${encodeURIComponent(id)}`, headers: { Authorization: `Bearer ${this.token}` } };
   }
 
   async generateSessionTitle(sessionId: string, input: string): Promise<string | undefined> {
-    const body = await this.request('/v1/ekho/thread-title', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input }) });
+    const body = await this.request('/v1/apollo/thread-title', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input }) });
     if (!isJsonObject(body) || typeof body.title !== 'string' || !body.title.trim()) return undefined;
     await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: body.title }) });
     return body.title;

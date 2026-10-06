@@ -1,6 +1,6 @@
 # Mobile verification
 
-Use `pnpm ios:dev` to build Ekho Dev and `pnpm start:dev` to serve its bundle. The development variant has its own bundle identifier, URL scheme, and app storage. Rebuild after changing native dependencies. Do not connect this client to a daily-driver Hermes instance for tests without explicit authorization.
+Use `pnpm ios:dev` to build Apollo Dev and `pnpm start:dev` to serve its bundle. The development variant has its own bundle identifier, URL scheme, and app storage. Rebuild after changing native dependencies. Do not connect this client to a daily-driver Hermes instance for tests without explicit authorization.
 
 ## Automated checks
 
@@ -24,7 +24,7 @@ Keep the trace and screenshots outside the repository. Compare the same build co
 
 The current connector exposes Hermes text runs and approvals, but no attachment upload endpoint. Messages can render Markdown images, links, tables, and highlighted code using the native renderer. Pasting a URL or code into the composer is supported. Uploading pictures requires a verified Hermes/connector protocol change.
 
-Hermes may discard a consumed event stream. If SSE fails, Ekho reconciles run status and durable session messages through polling. Tool updates may be unavailable during this fallback; never infer current tool progress from old events.
+Hermes may discard a consumed event stream. If SSE fails, Apollo reconciles run status and durable session messages through polling. Tool updates may be unavailable during this fallback; never infer current tool progress from old events.
 
 
 ## Inbox navigation verification

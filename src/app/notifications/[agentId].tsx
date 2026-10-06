@@ -6,7 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { type NotificationPreferences, type NotificationRegistrationClient, useNotificationRegistration } from '@/features/notifications';
 import { SettingSection, SettingsHeader, useSettingStyles } from '@/features/relay/settings-ui';
-import { useEkho } from '@/lib';
+import { useApollo } from '@/lib';
 import { useColors, useRelayStyles } from '@/features/relay/relay-ui';
 
 const projectId = (Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId) as string | undefined;
@@ -16,7 +16,7 @@ export default function NotificationsRoute() {
   const router = useRouter();
   const colors = useColors();
   const uiStyles = useRelayStyles();
-  const { agents, notificationClient } = useEkho();
+  const { agents, notificationClient } = useApollo();
   const agent = agents.find((candidate) => candidate.id === agentId);
   const [client, setClient] = useState<NotificationRegistrationClient>();
   const [clientError, setClientError] = useState<string>();
@@ -51,7 +51,7 @@ export default function NotificationsRoute() {
         <Row label="Allow notifications">
           {busy ? <ActivityIndicator color={colors.secondary} /> : <Switch trackColor={{ true: colors.cyan, false: colors.lineStrong }} thumbColor={colors.primary} accessibilityLabel="Allow notifications" value={enabled} disabled={!client || registration.state === 'unsupported'} onValueChange={(value) => { setClientError(undefined); void (value ? registration.enable() : registration.disable()); }} />}
         </Row>
-        <Text style={[styles.help, { color: colors.secondary }]}>{registration.state === 'denied' ? 'Notifications are disabled in system settings.' : registration.state === 'unsupported' ? 'Push notifications are unavailable on this device.' : 'Ekho sends short status updates without message or command text.'}</Text>
+        <Text style={[styles.help, { color: colors.secondary }]}>{registration.state === 'denied' ? 'Notifications are disabled in system settings.' : registration.state === 'unsupported' ? 'Push notifications are unavailable on this device.' : 'Apollo sends short status updates without message or command text.'}</Text>
       </SettingSection>
       <SettingSection label="Notify me when">
         <Row label="Approval is needed"><Switch trackColor={{ true: colors.cyan, false: colors.lineStrong }} thumbColor={colors.primary} accessibilityLabel="Notify when approval is needed" disabled={!enabled || busy} value={registration.preferences.notifyOnApproval} onValueChange={(value) => update('notifyOnApproval', value)} /></Row>

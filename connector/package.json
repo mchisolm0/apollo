@@ -1,9 +1,9 @@
 {
-  "name": "@ekho/connector",
+  "name": "@apollo/connector",
   "private": true,
   "type": "module",
   "engines": { "node": ">=22" },
-  "bin": { "ekho-connector": "cli.mjs" },
+  "bin": { "apollo-connector": "cli.mjs" },
   "dependencies": { "qrcode-terminal": "0.12.0" },
   "scripts": { "test": "node --test" }
 }

@@ -26,7 +26,7 @@ function decode(value: string): string {
   }
 }
 
-/** Parses only the explicit ekho://pair deep link shape. */
+/** Parses only the explicit apollo://pair deep link shape. */
 export function parsePairingLink(link: string): PairingInput {
   let parsed: URL;
   try {
@@ -34,8 +34,8 @@ export function parsePairingLink(link: string): PairingInput {
   } catch {
     throw new Error('Invalid pairing link');
   }
-  if (parsed.protocol !== 'ekho:' || parsed.hostname !== 'pair') {
-    throw new Error('Pairing link must use ekho://pair');
+  if (parsed.protocol !== 'apollo:' || parsed.hostname !== 'pair') {
+    throw new Error('Pairing link must use apollo://pair');
   }
 
   const endpointValue = parsed.searchParams.get('host') ?? parsed.searchParams.get('endpoint');
@@ -106,7 +106,7 @@ export class PairingClient {
 
   async describe(endpoint: string): Promise<PairingDescriptor> {
     const baseUrl = normalizeEndpoint(endpoint);
-    const response = await this.fetchImpl(pathUrl(baseUrl, '/.well-known/ekho/agent'));
+    const response = await this.fetchImpl(pathUrl(baseUrl, '/.well-known/apollo/agent'));
     const body: unknown = await response.json().catch(() => undefined);
     if (!response.ok) throw new Error(errorMessage(body, `Descriptor request failed (${response.status})`));
     return parsePairingDescriptor(body, baseUrl);

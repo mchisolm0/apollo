@@ -1,5 +1,5 @@
 {
-  "name": "ekho",
+  "name": "apollo",
   "main": "expo-router/entry",
   "version": "1.0.0",
   "dependencies": {
@@ -43,8 +43,8 @@
     "expo-crypto": "~57.0.2",
     "expo-sharing": "~57.0.18",
     "expo-paste-input": "0.1.15",
-    "@ekho/native-markdown-text": "file:modules/ekho-markdown-text",
-    "@ekho/native-review-diff": "file:modules/ekho-review-diff",
+    "@apollo/native-markdown-text": "file:modules/apollo-markdown-text",
+    "@apollo/native-review-diff": "file:modules/apollo-review-diff",
     "expo-clipboard": "~57.0.1",
     "react-native-nitro-markdown": "0.5.8",
     "react-native-nitro-modules": "0.35.9",
@@ -73,15 +73,15 @@
     "test:connector": "node --test connector/**/*.test.mjs",
     "install:macos-services": "./scripts/install-macos-services.sh",
     "test:mobile": "node --experimental-strip-types --test src/features/relay/*.test.ts src/lib/*.test.ts src/features/notifications/*.test.ts src/features/content/*.test.ts src/features/updates/*.test.ts",
-    "start:dev": "EKHO_APP_VARIANT=development expo start --dev-client --port 8085",
-    "ios:dev": "EKHO_APP_VARIANT=development expo run:ios --port 8085",
+    "start:dev": "APOLLO_APP_VARIANT=development expo start --dev-client --port 8085",
+    "ios:dev": "APOLLO_APP_VARIANT=development expo run:ios --port 8085",
     "build:ios:preview": "eas build --profile preview:device --platform ios",
-    "update:dev": "EKHO_APP_VARIANT=development eas update --channel ekho-dev --environment development",
+    "update:dev": "APOLLO_APP_VARIANT=development eas update --channel apollo-dev --environment development",
     "build:ios:production": "eas build --profile production --platform ios",
     "build:android:preview": "eas build --profile preview:device --platform android",
     "build:android:production": "eas build --profile production --platform android",
-    "update:preview": "EKHO_APP_VARIANT=preview eas update --channel preview --environment preview",
-    "update:production": "EKHO_APP_VARIANT=production eas update --channel production --environment production"
+    "update:preview": "APOLLO_APP_VARIANT=preview eas update --channel preview --environment preview",
+    "update:production": "APOLLO_APP_VARIANT=production eas update --channel production --environment production"
   },
   "private": true,
   "enriched-markdown": {

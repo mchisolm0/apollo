@@ -19,7 +19,7 @@ export type IncomingSharesContextValue = Readonly<{
   error?: string;
 }>;
 
-const STORAGE_KEY = '@ekho/incoming-shares';
+const STORAGE_KEY = '@apollo/incoming-shares';
 const MAX_PENDING_SHARES = 20;
 const shareDirectory = () => new Directory(Paths.document, 'incoming-shares');
 const Context = createContext<IncomingSharesContextValue | null>(null);

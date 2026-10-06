@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 launch_agents="$HOME/Library/LaunchAgents"
-logs_dir="$HOME/Library/Logs/ekho"
+logs_dir="$HOME/Library/Logs/apollo"
 hermes_env="$HOME/.hermes/.env"
 node_bin="$(command -v node)"
 user_id="$(id -u)"
@@ -35,7 +35,7 @@ plistlib.dump({
     "StandardOutPath": f"{logs}/{label}.out.log",
     "StandardErrorPath": f"{logs}/{label}.err.log",
     "EnvironmentVariables": {
-        "EKHO_HERMES_ENV": env_file,
+        "APOLLO_HERMES_ENV": env_file,
         "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
     },
 }, open(path, "wb"))
@@ -47,8 +47,8 @@ PY
 }
 
 write_agent \
-  com.matthewchisolm.ekho-connector \
+  com.matthewchisolm.apollo-connector \
   "set -a; source \"$hermes_env\"; set +a; export HERMES_API_KEY=\"\${HERMES_API_KEY:-\${API_SERVER_KEY:-}}\"; exec \"$node_bin\" \"$repo_dir/connector/cli.mjs\" serve"
 
-print "Installed and started the Ekho connector LaunchAgent."
+print "Installed and started the Apollo connector LaunchAgent."
 print "Logs: $logs_dir"

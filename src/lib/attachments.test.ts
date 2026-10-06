@@ -13,8 +13,13 @@ test('attachment prompts round-trip text and file-only messages for history rend
   assert.equal(attachmentMessage('Ordinary text'), 'Ordinary text');
 });
 
+test('history written before the Apollo rename still renders its attachments', () => {
+  const legacy = attachmentMessage('Read this.', [file]).replaceAll('apollo-attachments', 'ekho-attachments');
+  assert.deepEqual(splitAttachmentMessage(legacy), { text: 'Read this.', attachments: [file] });
+});
+
 test('ordinary or malformed marker text stays visible', () => {
-  for (const content of ['hello', '\n\n<ekho-attachments>\nnot JSON\n</ekho-attachments>', attachmentMessage('hello', [file]) + '\nMore user text', attachmentMessage('hello', [{ ...file, path: 'relative/path' }])]) {
+  for (const content of ['hello', '\n\n<apollo-attachments>\nnot JSON\n</apollo-attachments>', attachmentMessage('hello', [file]) + '\nMore user text', attachmentMessage('hello', [{ ...file, path: 'relative/path' }])]) {
     assert.deepEqual(splitAttachmentMessage(content), { text: content, attachments: [] });
   }
 });

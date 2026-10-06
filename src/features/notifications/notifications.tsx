@@ -30,7 +30,7 @@ export function createNotificationRegistrationClient({ endpoint, accessToken, fe
   accessToken: string;
   fetchImpl?: typeof fetch;
 }): NotificationRegistrationClient {
-  const url = `${endpoint.replace(/\/+$/u, '')}/v1/ekho/notifications`;
+  const url = `${endpoint.replace(/\/+$/u, '')}/v1/apollo/notifications`;
   const request = async (method: 'GET' | 'PUT' | 'DELETE', body?: unknown) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10_000);

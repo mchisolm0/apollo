@@ -9,7 +9,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { PairingScreen, RelayButton } from '@/features/relay';
 import type { PairingPayload, PairingState } from '@/features/relay';
-import { PairingClient, parsePairingLink, useEkho } from '@/lib';
+import { PairingClient, parsePairingLink, useApollo } from '@/lib';
 
 const idlePairing: PairingPayload = {
   endpoint: 'Waiting for a pairing link',
@@ -21,7 +21,7 @@ export default function ConnectRoute() {
   const styles = useThemedStyles(createStyles);
   const { link } = useLocalSearchParams<{ link?: string }>();
   const router = useRouter();
-  const { pair } = useEkho();
+  const { pair } = useApollo();
   const [isBusy, setBusy] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
   const [pendingLink, setPendingLink] = useState<string>();
@@ -74,7 +74,7 @@ export default function ConnectRoute() {
     preparing.current = true;
     setBusy(true);
     try {
-      const agent = await pair(pendingLink, Device.deviceName ?? 'Ekho mobile');
+      const agent = await pair(pendingLink, Device.deviceName ?? 'Apollo mobile');
       router.replace({ pathname: '/', params: { agentId: agent.id } });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Pairing failed';

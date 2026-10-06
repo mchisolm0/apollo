@@ -1,22 +1,22 @@
 {
   "expo": {
-    "name": "Ekho",
-    "slug": "ekho",
+    "name": "Apollo",
+    "slug": "apollo",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "ekho",
+    "scheme": "apollo",
     "userInterfaceStyle": "dark",
     "ios": {
       "icon": "./assets/expo.icon",
-      "bundleIdentifier": "com.matthewchisolm.ekho",
+      "bundleIdentifier": "com.matthewchisolm.apollo",
       "supportsTablet": true,
       "config": {
         "usesNonExemptEncryption": false
       }
     },
     "android": {
-      "package": "com.matthewchisolm.ekho",
+      "package": "com.matthewchisolm.apollo",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -46,7 +46,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow Ekho to scan a one-time pairing code.",
+          "cameraPermission": "Allow Apollo to scan a one-time pairing code.",
           "recordAudioAndroid": false,
           "barcodeScannerEnabled": true
         }
@@ -55,7 +55,7 @@
         "expo-image-picker",
         {
           "photosPermission": "Choose photos to attach to messages.",
-          "cameraPermission": "Allow Ekho to scan a one-time pairing code.",
+          "cameraPermission": "Allow Apollo to scan a one-time pairing code.",
           "microphonePermission": false
         }
       ]
@@ -67,7 +67,7 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "abbd4780-e7ac-4ac1-8727-b278e6bd0ec3"
+        "projectId": "16a78eb6-3cda-4bcf-93ce-954a842bd404"
       }
     },
     "owner": "mchisolm0",
@@ -75,7 +75,7 @@
       "policy": "fingerprint"
     },
     "updates": {
-      "url": "https://u.expo.dev/abbd4780-e7ac-4ac1-8727-b278e6bd0ec3",
+      "url": "https://u.expo.dev/16a78eb6-3cda-4bcf-93ce-954a842bd404",
       "fallbackToCacheTimeout": 0
     }
   }

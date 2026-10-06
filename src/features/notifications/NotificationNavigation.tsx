@@ -5,7 +5,7 @@ import { useRouter } from 'expo-router';
 import { useCallback, useEffect } from 'react';
 import { AppState, Platform } from 'react-native';
 
-import { useEkho } from '@/lib';
+import { useApollo } from '@/lib';
 
 import { allowsNotifications, useNotificationResponseNavigation } from './notifications';
 import type { NotificationDestination } from './navigation';
@@ -14,7 +14,7 @@ const projectId = (Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easC
 
 export function NotificationNavigation() {
   const router = useRouter();
-  const { agents, loading, notificationClient, hasSession, refreshAgent } = useEkho();
+  const { agents, loading, notificationClient, hasSession, refreshAgent } = useApollo();
   const isKnownAgent = useCallback((agentId: string) => agents.some((agent) => agent.id === agentId), [agents]);
   const navigate = useCallback((destination: NotificationDestination) => router.push(destination), [router]);
   const isKnownSession = useCallback(async (agentId: string, sessionId: string) => {

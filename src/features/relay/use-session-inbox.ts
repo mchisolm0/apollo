@@ -3,7 +3,7 @@ import { useOutbox } from '../../lib/outbox-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
 
-import { useEkho, type InboxConfig, type InboxSettledState } from '@/lib';
+import { useApollo, type InboxConfig, type InboxSettledState } from '@/lib';
 
 import {
   canSettleSession,
@@ -18,7 +18,7 @@ import {
   type SessionInboxState,
 } from './session-inbox';
 
-const STORAGE_PREFIX = 'ekho:session-inbox:';
+const STORAGE_PREFIX = 'apollo:session-inbox:';
 
 /** Session id -> auto-settle opted out. Absent means on (the default). Shared via the connector. */
 type InboxAutoSettle = Readonly<Record<string, boolean>>;
@@ -176,7 +176,7 @@ export type SessionInboxResult = {
 
 /** Reads stay local; legacy settle entries migrate to the shared connector ledger. */
 export function useSessionInbox(agentId: string, state: SessionInboxState | undefined): SessionInboxResult {
-  const { saveInbox } = useEkho();
+  const { saveInbox } = useApollo();
   const { items } = useOutbox();
   const store = useSyncExternalStore(
     useCallback((listener) => subscribe(agentId, listener), [agentId]),
@@ -326,7 +326,7 @@ export function useAutoSettleLedger(agentId: string): {
   loaded: boolean;
   setAutoSettle: (sessionId: string, enabled: boolean) => Promise<boolean>;
 } {
-  const { saveInbox } = useEkho();
+  const { saveInbox } = useApollo();
   const store = useSyncExternalStore(
     useCallback((listener) => subscribe(agentId, listener), [agentId]),
     useCallback(() => snapshot(agentId), [agentId]),

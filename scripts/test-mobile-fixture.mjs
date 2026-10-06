@@ -8,10 +8,10 @@ import { createConnectorServer } from "../connector/index.mjs";
 const HOST = "127.0.0.1";
 const CONNECTOR_PORT = 19101;
 const HERMES_PORT = 19102;
-const ROOT = "/tmp/ekho-mobile-check";
+const ROOT = "/tmp/apollo-mobile-check";
 const PAIRING_FILE = join(ROOT, "pairing-link.txt");
 const STATE_FILE = join(ROOT, "connector-state.json");
-const ADMIN_SECRET = "ekho-fixture-admin";
+const ADMIN_SECRET = "apollo-fixture-admin";
 
 const sessions = new Map([
   ["fixture-session", { id: "fixture-session", title: "Fixture thread", source: "fixture", message_count: 0, last_active: Date.now() / 1000 }],
@@ -118,9 +118,9 @@ const hermes = createServer(async (req, res) => {
 await rm(ROOT, { recursive: true, force: true });
 await mkdir(ROOT, { recursive: true, mode: 0o700 });
 await new Promise((resolve, reject) => hermes.listen(HERMES_PORT, HOST, (error) => error ? reject(error) : resolve()));
-const connector = createConnectorServer({ host: HOST, port: CONNECTOR_PORT, hermesUrl: `http://${HOST}:${HERMES_PORT}`, hermesApiKey: "fixture-hermes", adminSecret: ADMIN_SECRET, statePath: STATE_FILE, label: "Ekho mobile fixture", generateThreadTitle: async (input) => `Fixture: ${input.slice(0, 36)}` });
+const connector = createConnectorServer({ host: HOST, port: CONNECTOR_PORT, hermesUrl: `http://${HOST}:${HERMES_PORT}`, hermesApiKey: "fixture-hermes", adminSecret: ADMIN_SECRET, statePath: STATE_FILE, label: "Apollo mobile fixture", generateThreadTitle: async (input) => `Fixture: ${input.slice(0, 36)}` });
 await connector.start();
-const pairResponse = await fetch(`http://${HOST}:${CONNECTOR_PORT}/admin/pair`, { method: "POST", headers: { "x-ekho-admin-secret": ADMIN_SECRET, "content-type": "application/json" }, body: JSON.stringify({ public_base_url: `http://${HOST}:${CONNECTOR_PORT}`, device_name: "Mobile simulator" }) });
+const pairResponse = await fetch(`http://${HOST}:${CONNECTOR_PORT}/admin/pair`, { method: "POST", headers: { "x-apollo-admin-secret": ADMIN_SECRET, "content-type": "application/json" }, body: JSON.stringify({ public_base_url: `http://${HOST}:${CONNECTOR_PORT}`, device_name: "Mobile simulator" }) });
 const pair = await pairResponse.json();
 await writeFile(PAIRING_FILE, `${pair.pairing_url}\n`, { mode: 0o600 });
 

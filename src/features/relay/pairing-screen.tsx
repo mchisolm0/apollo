@@ -60,12 +60,12 @@ export function PairingScreen({ pairing, initialMode = 'qr', state = 'ready', is
           <RelayButton tone="primary" disabled={isBusy} onPress={() => changeMode('manual')}>{isBusy ? 'Checking agent…' : 'Paste pairing link'}</RelayButton>
         </> : <View style={styles.manual}>
           <Text style={styles.fieldLabel}>Pairing link</Text>
-          <RelayInput autoCapitalize="none" autoCorrect={false} autoFocus={!failed} editable={!isBusy} value={manualValue} onChangeText={setManualValue} placeholder="ekho://pair…" accessibilityLabel="Pairing link" onSubmitEditing={submit} returnKeyType="go" />
+          <RelayInput autoCapitalize="none" autoCorrect={false} autoFocus={!failed} editable={!isBusy} value={manualValue} onChangeText={setManualValue} placeholder="apollo://pair…" accessibilityLabel="Pairing link" onSubmitEditing={submit} returnKeyType="go" />
           <RelayButton tone="primary" disabled={!manualValue.trim() || isBusy} onPress={submit}>{isBusy ? 'Checking agent…' : 'Review agent'}</RelayButton>
           <Pressable accessibilityRole="button" disabled={isBusy} onPress={() => changeMode('qr')} style={styles.inline}><Text style={styles.link}>Scan a code instead</Text></Pressable>
         </View>}
         <Pressable accessibilityRole="button" accessibilityState={{ expanded: showHelp }} onPress={() => setShowHelp(!showHelp)} style={styles.helpToggle}><Text style={styles.helpTitle}>{showHelp ? '⌄' : '›'} Where do I get a code?</Text></Pressable>
-        {showHelp ? <Text style={styles.helper}>On the computer running Hermes, run your Ekho connector pairing command. Keep both devices on your private network.</Text> : null}
+        {showHelp ? <Text style={styles.helper}>On the computer running Hermes, run your Apollo connector pairing command. Keep both devices on your private network.</Text> : null}
         <Text style={styles.helper}>You will review the agent name and address before connecting.</Text>
       </>}
 

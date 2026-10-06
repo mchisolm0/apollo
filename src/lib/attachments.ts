@@ -38,19 +38,27 @@ export function isDraftAttachment(value: unknown): value is DraftAttachment {
     && (item.uploaded === undefined || isAttachment(item.uploaded));
 }
 
-const attachmentInstructions = '\n</ekho-attachments>\nThe user attached these files on this machine. Read the files at their paths as needed; for images, use your image-reading tool.';
+const attachmentInstructions = '\n</apollo-attachments>\nThe user attached these files on this machine. Read the files at their paths as needed; for images, use your image-reading tool.';
 
 /** File paths are sent to Hermes, while the chat renders the attachment metadata. */
 export function attachmentMessage(text: string, attachments: readonly Attachment[] = []): string {
   if (!attachments.length) return text;
-  return `${text}\n\n<ekho-attachments>\n${JSON.stringify(attachments)}${attachmentInstructions}`;
+  return `${text}\n\n<apollo-attachments>\n${JSON.stringify(attachments)}${attachmentInstructions}`;
 }
 
+/** Hermes history outlives the Ekho rename, so older messages still use the ekho tag. */
+const attachmentFormats = ['apollo', 'ekho'].map((tag) => ({
+  marker: `\n\n<${tag}-attachments>\n`,
+  instructions: attachmentInstructions.replace('apollo', tag),
+}));
+
 export function splitAttachmentMessage(content: string): { text: string; attachments: Attachment[] } {
-  const marker = '\n\n<ekho-attachments>\n';
+  const format = attachmentFormats.find(({ instructions }) => content.endsWith(instructions));
+  if (!format) return { text: content, attachments: [] };
+  const { marker, instructions } = format;
   const index = content.lastIndexOf(marker);
-  const end = content.length - attachmentInstructions.length;
-  if (index < 0 || end < index || !content.endsWith(attachmentInstructions)) return { text: content, attachments: [] };
+  const end = content.length - instructions.length;
+  if (index < 0 || end < index) return { text: content, attachments: [] };
   try {
     const value: unknown = JSON.parse(content.slice(index + marker.length, end));
     if (Array.isArray(value) && value.length > 0 && value.length <= MAX_ATTACHMENTS && value.every(isAttachment)) return { text: content.slice(0, index), attachments: value };

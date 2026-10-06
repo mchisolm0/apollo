@@ -59,10 +59,10 @@ export function createExpoPushSender({ url = "https://exp.host/--/api/v2/push/se
 
 function notificationFor(kind, agentId, run) {
   const copy = kind === "approval"
-    ? { title: "Approval needed", body: "Open Ekho to review this request." }
+    ? { title: "Approval needed", body: "Open Apollo to review this request." }
     : kind === "completed"
       ? { title: "Run finished", body: "Your agent finished working." }
-      : { title: "Run failed", body: "Open Ekho to review the run." };
+      : { title: "Run failed", body: "Open Apollo to review the run." };
   return {
     ...copy,
     data: { kind, agent_id: agentId, session_id: run.session_id, run_id: run.run_id },
