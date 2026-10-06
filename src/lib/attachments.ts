@@ -46,11 +46,19 @@ export function attachmentMessage(text: string, attachments: readonly Attachment
   return `${text}\n\n<apollo-attachments>\n${JSON.stringify(attachments)}${attachmentInstructions}`;
 }
 
+/** Hermes history outlives the Ekho rename, so older messages still use the ekho tag. */
+const attachmentFormats = ['apollo', 'ekho'].map((tag) => ({
+  marker: `\n\n<${tag}-attachments>\n`,
+  instructions: attachmentInstructions.replace('apollo', tag),
+}));
+
 export function splitAttachmentMessage(content: string): { text: string; attachments: Attachment[] } {
-  const marker = '\n\n<apollo-attachments>\n';
+  const format = attachmentFormats.find(({ instructions }) => content.endsWith(instructions));
+  if (!format) return { text: content, attachments: [] };
+  const { marker, instructions } = format;
   const index = content.lastIndexOf(marker);
-  const end = content.length - attachmentInstructions.length;
-  if (index < 0 || end < index || !content.endsWith(attachmentInstructions)) return { text: content, attachments: [] };
+  const end = content.length - instructions.length;
+  if (index < 0 || end < index) return { text: content, attachments: [] };
   try {
     const value: unknown = JSON.parse(content.slice(index + marker.length, end));
     if (Array.isArray(value) && value.length > 0 && value.length <= MAX_ATTACHMENTS && value.every(isAttachment)) return { text: content.slice(0, index), attachments: value };
