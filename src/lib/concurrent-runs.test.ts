@@ -5,7 +5,7 @@ import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { createElement } from 'react';
 import ts from 'typescript';
-import type { EkhoContextValue } from './ekho-context';
+import type { ApolloContextValue } from './apollo-context';
 import type { HermesModel, HermesRunEvent, HermesRunStatus, HermesSession, StartRunOptions } from './types';
 import { createOutboxRuntime } from './outbox.ts';
 import * as runState from './run-state.ts';
@@ -74,11 +74,11 @@ function providerFixture(sessions: readonly HermesSession[] = []) {
   const nativeRequire = createRequire(import.meta.url);
   const react = nativeRequire('react') as typeof import('react');
   let stateIndex = 0;
-  let latestRuntime: EkhoContextValue['runtime'] = {};
-  const source = ts.transpileModule(readFileSync(new URL('./ekho-context.tsx', import.meta.url), 'utf8'), {
+  let latestRuntime: ApolloContextValue['runtime'] = {};
+  const source = ts.transpileModule(readFileSync(new URL('./apollo-context.tsx', import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
   }).outputText;
-  const exports: { EkhoProvider?: React.ComponentType<React.PropsWithChildren<{ catalog: unknown }>>; useEkho?: () => EkhoContextValue } = {};
+  const exports: { ApolloProvider?: React.ComponentType<React.PropsWithChildren<{ catalog: unknown }>>; useApollo?: () => ApolloContextValue } = {};
   runInNewContext(source, {
     exports, clearTimeout, AbortController,
     // Open subscriptions arm a quiet-stream check; it must not keep the test process alive.
@@ -88,7 +88,7 @@ function providerFixture(sessions: readonly HermesSession[] = []) {
         const [value, setValue] = react.useState(initial);
         const runtimeState = ++stateIndex === 2;
         return [value, (next: unknown) => {
-          if (runtimeState) latestRuntime = next as EkhoContextValue['runtime'];
+          if (runtimeState) latestRuntime = next as ApolloContextValue['runtime'];
           setValue(next);
         }];
       } };
@@ -118,9 +118,9 @@ function providerFixture(sessions: readonly HermesSession[] = []) {
   });
   function mount() {
     stateIndex = 0;
-    let api: EkhoContextValue | undefined;
-    function Capture() { api = exports.useEkho!(); return null; }
-    renderToString(createElement(exports.EkhoProvider!, { catalog }, createElement(Capture)));
+    let api: ApolloContextValue | undefined;
+    function Capture() { api = exports.useApollo!(); return null; }
+    renderToString(createElement(exports.ApolloProvider!, { catalog }, createElement(Capture)));
     return api!;
   }
   return { mount, streams, stopped, approved, removal, requests, locks, resolveDetail: detail.resolve,
@@ -178,7 +178,7 @@ test('concurrent threads retain independent streams, controls, and saved run IDs
 });
 
 
-function queueFor(api: EkhoContextValue, initial: string | null = null) {
+function queueFor(api: ApolloContextValue, initial: string | null = null) {
   let saved = initial;
   return createOutboxRuntime({
     storage: { getItem: async () => saved, setItem: async (_, value) => { saved = value; } },

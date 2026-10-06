@@ -41,7 +41,7 @@ function routeFixture(id: string) {
       };
       if (name === 'expo-router') return { useFocusEffect() {}, useRouter: () => ({ setParams() {} }) };
       if (name === 'react-native') return { AppState: { currentState: 'active' } };
-      if (name === '@/lib') return { useEkho: () => api };
+      if (name === '@/lib') return { useApollo: () => api };
       if (name === '@/lib/outbox-context') return { useOutbox: () => ({ loaded: true, items: [], enqueue: async (value: unknown) => { order.push('enqueue'); queued.push(value); } }) };
       if (name.endsWith('/use-session-draft')) return { useSessionDraft: () => ({ draft: '[QA] tiny', attachments: [], loaded: true, prepareSend: async () => ({ id: 'message', sessionId: id === 'new' ? 'created' : id, text: '[QA] tiny', attachments: [] }), move: async () => {}, clear: async () => {} }) };
       if (name.endsWith('/use-session-inbox')) return { useSessionInbox: () => ({ markRead: async () => {}, sessions: [] }) };

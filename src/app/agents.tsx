@@ -5,12 +5,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ConnectionMark, RelayHeader } from '@/features/relay';
 import { IconButton, useThemedStyles, type RelayPalette } from '@/features/relay/relay-ui';
-import { useEkho } from '@/lib';
+import { useApollo } from '@/lib';
 
 export default function AgentsRoute() {
   const styles = useThemedStyles(createStyles);
   const router = useRouter();
-  const { agents, runtime } = useEkho();
+  const { agents, runtime } = useApollo();
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>

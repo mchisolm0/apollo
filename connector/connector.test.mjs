@@ -55,7 +55,7 @@ test("notification history compaction retains active and undelivered runs", asyn
 });
 
 async function fixture(options = {}) {
-  const directory = await mkdtemp(join(tmpdir(), "ekho-connector-"));
+  const directory = await mkdtemp(join(tmpdir(), "apollo-connector-"));
   const hermes = await startHermesStub();
   const connector = createConnectorServer({ port: 0, hermesUrl: hermes.url, hermesApiKey: "hermes-secret", adminSecret: "admin-secret", statePath: join(directory, "nested", "state.json"), label: "Test Hermes", ...options });
   const address = await connector.start();
@@ -67,7 +67,7 @@ async function startHermesStub() {
   const seen = [];
   const runStatuses = new Map();
   const server = (await import("node:http")).createServer(async (req, res) => {
-    seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization, cookie: req.headers.cookie, forwarded: req.headers["x-forwarded-for"], device: req.headers["x-ekho-device-id"] });
+    seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization, cookie: req.headers.cookie, forwarded: req.headers["x-forwarded-for"], device: req.headers["x-apollo-device-id"] });
     if (req.url === "/v1/capabilities") return send(res, 200, { object: "hermes.api_server.capabilities", features: ["runs"] });
     if (req.url === "/v1/health") return send(res, 200, { status: "ok" });
     if (req.method === "POST" && req.url === "/v1/runs") return send(res, 202, { run_id: "run_test", status: "started" });
@@ -81,11 +81,11 @@ async function startHermesStub() {
 
 function send(res, status, value) { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(value)); }
 async function req(base, path, init = {}) { const response = await fetch(`${base}${path}`, init); return { response, body: await response.json().catch(() => null) }; }
-function admin(init = {}) { return { ...init, headers: { "x-ekho-admin-secret": "admin-secret", "content-type": "application/json", ...(init.headers ?? {}) } }; }
+function admin(init = {}) { return { ...init, headers: { "x-apollo-admin-secret": "admin-secret", "content-type": "application/json", ...(init.headers ?? {}) } }; }
 
 test("descriptor is public and includes live Hermes capabilities", async (t) => {
   const f = await fixture(); t.after(async () => { await f.connector.close(); await f.hermes.close(); });
-  const result = await req(f.base, "/.well-known/ekho/agent");
+  const result = await req(f.base, "/.well-known/apollo/agent");
   assert.equal(result.response.status, 200);
   assert.equal(result.body.label, "Test Hermes");
   assert.deepEqual(result.body.capabilities.features, ["runs"]);
@@ -96,7 +96,7 @@ test("pairing is single-use, device tokens are hashed, and revocation works", as
   const f = await fixture(); t.after(async () => { await f.connector.close(); await f.hermes.close(); });
   const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: JSON.stringify({ public_base_url: "https://agent.example" }) }));
   assert.equal(pair.response.status, 201);
-  assert.match(pair.body.pairing_url, /^ekho:\/\/pair\?host=/u);
+  assert.match(pair.body.pairing_url, /^apollo:\/\/pair\?host=/u);
   const exchanged = await req(f.base, "/v1/pair/exchange", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: pair.body.pairing_token, device_name: "Matthew phone" }) });
   assert.equal(exchanged.response.status, 201);
   const replay = await req(f.base, "/v1/pair/exchange", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: pair.body.pairing_token }) });
@@ -157,7 +157,7 @@ test("model inventory is device-authenticated and GET-only", async (t) => {
 test("thread titles require device authentication and tolerate unavailable Codex", async (t) => {
   const f = await fixture({ generateThreadTitle: async (input) => input === "unavailable" ? undefined : "Count files by extension" });
   t.after(async () => { await f.connector.close(); await f.hermes.close(); });
-  const submit = (input, token) => req(f.base, "/v1/ekho/thread-title", { method: "POST", headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ input }) });
+  const submit = (input, token) => req(f.base, "/v1/apollo/thread-title", { method: "POST", headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify({ input }) });
   assert.equal((await submit("Count files")).response.status, 401);
   const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
   const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
@@ -170,7 +170,7 @@ test("thread titles require device authentication and tolerate unavailable Codex
 test("attachments preserve bytes privately and require an active device token", async (t) => {
   const f = await fixture();
   t.after(async () => { await f.connector.close(); await f.hermes.close(); });
-  const path = "/v1/ekho/attachments";
+  const path = "/v1/apollo/attachments";
   const bytes = Buffer.from([0, 255, 127, 10, 65]);
   const body = JSON.stringify({ name: "../../metadata.json", mimeType: "application/octet-stream", data: bytes.toString("base64") });
   assert.equal((await req(f.base, path, { method: "POST", body })).response.status, 401);
@@ -250,7 +250,7 @@ test("inbox config stores per-session auto-settle opt-outs and rejects malformed
 
 test("notification registration is device-authenticated and validates its boundary", async (t) => {
   const f = await fixture({ sendPush: async () => ({ status: "ok" }) }); t.after(async () => { await f.connector.close(); await f.hermes.close(); });
-  const path = "/v1/ekho/notifications";
+  const path = "/v1/apollo/notifications";
   assert.equal((await req(f.base, path)).response.status, 401);
   const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
   const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
@@ -286,7 +286,7 @@ test("run notifications are deduplicated and invalid push tokens are removed", a
   const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
   const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
   const headers = { authorization: `Bearer ${exchange.body.access_token}`, "content-type": "application/json" };
-  await req(f.base, "/v1/ekho/notifications", { method: "PUT", headers, body: JSON.stringify({ expo_push_token: "ExpoPushToken[device_123]" }) });
+  await req(f.base, "/v1/apollo/notifications", { method: "PUT", headers, body: JSON.stringify({ expo_push_token: "ExpoPushToken[device_123]" }) });
   f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "waiting_for_approval", session_id: "session_test", updated_at: 10, approval: { request_id: "approval_1", command: "private command" } });
   assert.equal((await req(f.base, "/v1/runs", { method: "POST", headers, body: JSON.stringify({ input: "private input", session_id: "session_test" }) })).response.status, 202);
   await waitFor(() => sent.length === 1);
@@ -299,7 +299,7 @@ test("run notifications are deduplicated and invalid push tokens are removed", a
   f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "completed", session_id: "session_test", updated_at: 20, output: "private output" });
   await waitFor(() => sent.length === 2);
   assert.equal(sent[1].notification.data.kind, "completed");
-  await waitFor(async () => (await req(f.base, "/v1/ekho/notifications", { headers })).body.registered === false);
+  await waitFor(async () => (await req(f.base, "/v1/apollo/notifications", { headers })).body.registered === false);
   const state = JSON.parse(await readFile(f.statePath, "utf8"));
   assert.deepEqual(state.notification_runs.run_test.events.completed.delivered, [exchange.body.device_id]);
   assert.equal(JSON.stringify(state.notification_runs).includes("private"), false);

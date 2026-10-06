@@ -12,7 +12,7 @@ import { canSettleSession, isSessionSnoozed, type InboxSession } from './session
 import { useAutoSettleLedger, useSnoozeLedger } from './use-session-inbox';
 import type { ConnectionState } from './types';
 import { showThreadMenu } from './session-actions';
-import { useEkho } from '@/lib';
+import { useApollo } from '@/lib';
 
 type Props = {
   sessions: readonly InboxSession[];
@@ -117,7 +117,7 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
   const styles = useThemedStyles(createStyles);
   const { fontScale } = useWindowDimensions();
   const { factor } = useTextScale();
-  const { runtime, deleteSession, setPinned, forkSession, regenerateTitle } = useEkho();
+  const { runtime, deleteSession, setPinned, forkSession, regenerateTitle } = useApollo();
   const largeText = isLargeText(fontScale, factor);
   const swipe = useRef<SwipeableMethods>(null);
   const action = session.settled && onReopen ? { label: 'Reopen', run: () => onReopen(session.id) }

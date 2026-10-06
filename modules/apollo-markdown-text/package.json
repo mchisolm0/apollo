@@ -1,5 +1,5 @@
 {
-  "name": "@ekho/native-markdown-text",
+  "name": "@apollo/native-markdown-text",
   "version": "0.0.0",
   "private": true,
   "source": "./index.ts",

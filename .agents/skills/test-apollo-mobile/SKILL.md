@@ -1,9 +1,9 @@
 ---
-name: test-ekho-mobile
-description: Use AFTER implementing user-visible Apollo (Ekho) mobile changes, when asked for an integrated pass or to verify a change in the real app. Covers UI, theming, settings, pairing, runs, updates, and notifications. Not for unit tests or connector-only changes.
+name: test-apollo-mobile
+description: Use AFTER implementing user-visible Apollo (Apollo) mobile changes, when asked for an integrated pass or to verify a change in the real app. Covers UI, theming, settings, pairing, runs, updates, and notifications. Not for unit tests or connector-only changes.
 ---
 
-# Test Ekho mobile
+# Test Apollo mobile
 
 Run one focused verification pass against the real development app on an iOS
 simulator, driven through `agent-device`. Use Android only when Android is the
@@ -20,7 +20,7 @@ affected surface or explicitly requested.
 
 ## Identity
 
-- App: `Ekho Dev`, bundle `com.matthewchisolm.ekho.dev`, scheme `ekho-dev`
+- App: `Apollo Dev`, bundle `com.matthewchisolm.apollo.dev`, scheme `apollo-dev`
 - Metro: `pnpm start:dev` (development variant, dev client, port `8085`)
 - Simulator: a dedicated `Apollo QA` iPhone simulator. Never install into or
   reset simulators that belong to other projects (for example `Scryve *`).
@@ -53,14 +53,14 @@ rather than guessing.
    iPhone type).
 2. Metro health check before starting anything: inspect the process on port
    `8085` and its `/status`. Reuse it only when it is healthy, belongs to the
-   worktree under test, and runs `EKHO_APP_VARIANT=development` with
+   worktree under test, and runs `APOLLO_APP_VARIANT=development` with
    `--dev-client`. Never kill another worktree's Metro. If 8085 belongs to
    another worktree, stop only a Metro you started, or use a free explicit
    port and open the app against it.
 3. Otherwise run `pnpm start:dev` from the worktree root in the background and
    wait for the bundler.
 4. Open the app with one stable session for the whole pass:
-   `agent-device open com.matthewchisolm.ekho.dev --platform ios --session ekho-mobile-check`.
+   `agent-device open com.matthewchisolm.apollo.dev --platform ios --session apollo-mobile-check`.
    Use that same session for every snapshot, action, close, and reopen.
 
 ### Parallel worktrees
@@ -68,19 +68,19 @@ rather than guessing.
 When several worktrees verify at once, each uses its own simulator (for
 example `Apollo QA 2`, cloned from a paired `Apollo QA`) and its own Metro
 port. Start Metro with
-`EKHO_APP_VARIANT=development npx expo start --dev-client --port <port>` and
+`APOLLO_APP_VARIANT=development npx expo start --dev-client --port <port>` and
 point the dev client at it with
-`xcrun simctl openurl <udid> "exp+ekho://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A<port>"`.
+`xcrun simctl openurl <udid> "exp+apollo://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A<port>"`.
 Native rebuilds install only into the worktree's own simulator.
 
 ## Agent and backend
 
 The only Hermes on this machine is the user's daily driver. launchd runs it
 (`ai.hermes.gateway`) with the connector from `~/code/apollo`
-(`com.matthewchisolm.ekho-connector`, `127.0.0.1:8643`).
+(`com.matthewchisolm.apollo-connector`, `127.0.0.1:8643`).
 
 - Never restart, stop, reconfigure, or redeploy Hermes or the connector. Never
-  edit `~/.hermes/*` or `~/.config/ekho/*`. Never run `pair --tailscale` or
+  edit `~/.hermes/*` or `~/.config/apollo/*`. Never run `pair --tailscale` or
   change Tailscale Serve, Funnel, or ACLs.
 - The running connector is whatever `~/code/apollo` has checked out, not the
   worktree under test. Connector changes in a PR are not live. Test the app's
@@ -88,9 +88,9 @@ The only Hermes on this machine is the user's daily driver. launchd runs it
   route is missing, and report the connector side as skipped.
 - If the simulator needs pairing, create a short-lived local pairing without
   printing the secret:
-  `node ~/code/apollo/connector/cli.mjs pair --name "Apollo QA simulator" > "$TMPDIR/ekho-pair.txt"`
-  then extract the `ekho://pair?...` line into the simulator pasteboard
-  (`grep -m1 '^ekho://pair' "$TMPDIR/ekho-pair.txt" | xcrun simctl pbcopy booted`),
+  `node ~/code/apollo/connector/cli.mjs pair --name "Apollo QA simulator" > "$TMPDIR/apollo-pair.txt"`
+  then extract the `apollo://pair?...` line into the simulator pasteboard
+  (`grep -m1 '^apollo://pair' "$TMPDIR/apollo-pair.txt" | xcrun simctl pbcopy booted`),
   paste it on the app's connect screen, and delete the file. Keep an existing
   pairing whenever it still works.
 - Runs: keep prompts tiny and clearly labeled, for example
@@ -138,7 +138,7 @@ loop.
 
 Capture screenshots of each meaningful state. Record a short video only for
 motion, streaming, interruption, or timing changes. Save artifacts under
-`$TMPDIR/ekho-mobile-check/<branch>/`, never in the worktree, and reference
+`$TMPDIR/apollo-mobile-check/<branch>/`, never in the worktree, and reference
 them by path.
 
 ## Verify and clean up
@@ -161,10 +161,10 @@ logs or source when the flow was not observed.
 - **Old UI or stale errors:** verify Metro's worktree, variant, and port, then
   reload the bundle.
 - **App won't reach Metro:** confirm the installed app is
-  `com.matthewchisolm.ekho.dev`. Preview and production builds ignore Metro.
+  `com.matthewchisolm.apollo.dev`. Preview and production builds ignore Metro.
 - **Native module missing at runtime:** the dev client predates a native
   change. Rebuild the simulator client.
-- **Agent shows offline:** check `curl -s 127.0.0.1:8643/.well-known/ekho/agent`
+- **Agent shows offline:** check `curl -s 127.0.0.1:8643/.well-known/apollo/agent`
   without credentials. If the connector is down, report it. Do not restart it.
 - **New connector route returns 404:** expected until the user updates the
   running connector. Record as skipped and confirm the app degrades cleanly.

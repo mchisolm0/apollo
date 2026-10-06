@@ -6,7 +6,7 @@ import { AppState } from 'react-native';
 
 import { discardAttachment } from '../features/relay/pick-attachments';
 import type { DraftAttachment } from './attachments';
-import { useEkho } from './ekho-context';
+import { useApollo } from './apollo-context';
 import { createOutboxRuntime, type OutboxSnapshot } from './outbox';
 import { isRunActive } from './run-state';
 import { isJsonObject } from './protocol';
@@ -28,9 +28,9 @@ const noopSubscribe = () => () => {};
 const OutboxContext = createContext<OutboxContextValue | null>(null);
 
 export function OutboxProvider({ children }: PropsWithChildren) {
-  const ekho = useEkho();
-  const api = useRef(ekho);
-  useLayoutEffect(() => { api.current = ekho; }, [ekho]);
+  const apollo = useApollo();
+  const api = useRef(apollo);
+  useLayoutEffect(() => { api.current = apollo; }, [apollo]);
   const [outbox, setOutbox] = useState<Outbox>();
   const snapshot = useSyncExternalStore(outbox?.subscribe ?? noopSubscribe, outbox?.getSnapshot ?? emptySnapshot, emptySnapshot);
 
@@ -38,7 +38,7 @@ export function OutboxProvider({ children }: PropsWithChildren) {
     const queue = createOutboxRuntime({
       storage: AsyncStorage,
       referencedMessageIds: async () => {
-        const keys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith('ekho.draft.v2.'));
+        const keys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith('apollo.draft.v2.'));
         const drafts = await AsyncStorage.multiGet(keys);
         return drafts.flatMap(([, saved]) => {
           const record: unknown = saved === null ? null : JSON.parse(saved);
@@ -60,7 +60,7 @@ export function OutboxProvider({ children }: PropsWithChildren) {
         const available = () => {
           if (signal.aborted) throw new Error('Sending was interrupted. Try again.');
           if (!api.current.agents.some((agent) => agent.id === message.agentId)) throw Object.assign(new Error('This agent was removed.'), { status: 401 });
-          if (AppState.currentState !== 'active') throw new Error('Waiting until Ekho is open to send.');
+          if (AppState.currentState !== 'active') throw new Error('Waiting until Apollo is open to send.');
         };
         available();
         if (message.createsSession) {
@@ -102,8 +102,8 @@ export function OutboxProvider({ children }: PropsWithChildren) {
 
   // Removed agents must not leave credentials-free, indefinitely waiting messages.
   useEffect(() => {
-    if (!outbox || ekho.loading || !snapshot.loaded) return;
-    const removed = new Set(snapshot.items.filter((item) => !ekho.agents.some((agent) => agent.id === item.agentId)).map((item) => item.agentId));
+    if (!outbox || apollo.loading || !snapshot.loaded) return;
+    const removed = new Set(snapshot.items.filter((item) => !apollo.agents.some((agent) => agent.id === item.agentId)).map((item) => item.agentId));
     let current = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const cleanup = async () => {
@@ -112,7 +112,7 @@ export function OutboxProvider({ children }: PropsWithChildren) {
     };
     void cleanup();
     return () => { current = false; clearTimeout(timer); };
-  }, [outbox, ekho.agents, ekho.loading, snapshot.loaded, snapshot.items]);
+  }, [outbox, apollo.agents, apollo.loading, snapshot.loaded, snapshot.items]);
 
   const requireOutbox = () => {
     if (!outbox) throw new Error('The outbox is still loading. Try again.');

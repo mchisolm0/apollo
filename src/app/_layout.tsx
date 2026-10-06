@@ -6,7 +6,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StatusBar } from 'expo-status-bar';
 
 import { TextScaleProvider, useColors } from '@/features/relay/relay-ui';
-import { EkhoProvider } from '@/lib';
+import { ApolloProvider } from '@/lib';
 import { OutboxProvider } from '@/lib/outbox-context';
 import { IncomingShareProvider } from '@/features/sharing';
 import { NotificationNavigation } from '@/features/notifications';
@@ -47,7 +47,7 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
     <PostHogProvider client={posthog} autocapture={false}>
-    <EkhoProvider>
+    <ApolloProvider>
       <OutboxProvider>
       <IncomingShareProvider>
       <TextScaleProvider>
@@ -58,7 +58,7 @@ export default function RootLayout() {
       </TextScaleProvider>
       </IncomingShareProvider>
       </OutboxProvider>
-    </EkhoProvider>
+    </ApolloProvider>
     </PostHogProvider>
     </GestureHandlerRootView>
   );

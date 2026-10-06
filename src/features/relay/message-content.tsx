@@ -1,4 +1,4 @@
-import { SelectableMarkdownText, hasNativeSelectableMarkdownText, type NativeMarkdownTextStyle } from '@ekho/native-markdown-text';
+import { SelectableMarkdownText, hasNativeSelectableMarkdownText, type NativeMarkdownTextStyle } from '@apollo/native-markdown-text';
 import { memo, useMemo } from 'react';
 import { Alert, Linking, Platform, StyleSheet, View } from 'react-native';
 import type { MarkdownStyle } from 'react-native-enriched-markdown';

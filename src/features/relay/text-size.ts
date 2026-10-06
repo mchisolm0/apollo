@@ -6,9 +6,9 @@ export const TEXT_SIZE_DEFAULT = 17;
 export const CODE_SIZE_MIN = 10;
 export const CODE_SIZE_MAX = 18;
 export const CODE_SIZE_DEFAULT = 13;
-export const TEXT_SIZE_STORAGE_KEY = 'ekho:text-scale';
-export const CODE_SIZE_STORAGE_KEY = 'ekho:code-text-size';
-export const CODE_CUSTOM_STORAGE_KEY = 'ekho:code-text-custom';
+export const TEXT_SIZE_STORAGE_KEY = 'apollo:text-scale';
+export const CODE_SIZE_STORAGE_KEY = 'apollo:code-text-size';
+export const CODE_CUSTOM_STORAGE_KEY = 'apollo:code-text-custom';
 
 /**
  * App text size and Dynamic Type combine when deciding whether rows need more room.

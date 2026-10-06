@@ -13,9 +13,9 @@
         "simulator": false
       },
       "environment": "development",
-      "channel": "ekho-dev",
+      "channel": "apollo-dev",
       "env": {
-        "EKHO_APP_VARIANT": "development"
+        "APOLLO_APP_VARIANT": "development"
       }
     },
     "production:internal": {
@@ -28,7 +28,7 @@
       "environment": "preview",
       "channel": "preview",
       "env": {
-        "EKHO_APP_VARIANT": "preview"
+        "APOLLO_APP_VARIANT": "preview"
       },
       "autoIncrement": false,
       "android": {
@@ -40,7 +40,7 @@
       "environment": "production",
       "channel": "production",
       "env": {
-        "EKHO_APP_VARIANT": "production"
+        "APOLLO_APP_VARIANT": "production"
       },
       "autoIncrement": true,
       "ios": {

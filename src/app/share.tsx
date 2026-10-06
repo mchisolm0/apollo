@@ -4,13 +4,13 @@ import { useCallback, useState } from 'react';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useColors } from '@/features/relay/relay-ui';
-import { useEkho } from '@/lib';
+import { useApollo } from '@/lib';
 import { useIncomingShares } from '@/features/sharing';
 
 export default function ShareRoute() {
   const router = useRouter();
   const colors = useColors();
-  const { agents, runtime } = useEkho();
+  const { agents, runtime } = useApollo();
   const { pendingShares, error, refresh, discardShare } = useIncomingShares();
   const [selectedShareId, setSelectedShareId] = useState<string>();
   const share = pendingShares.find((candidate) => candidate.id === selectedShareId) ?? pendingShares[0];
@@ -21,7 +21,7 @@ export default function ShareRoute() {
   useFocusEffect(useCallback(() => { void refresh().catch(() => {}); }, [refresh]));
   const discard = () => { if (share) void discardShare(share.id).catch(() => {}); };
   return <SafeAreaView style={[styles.safe, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
-    <View style={[styles.header, { borderBottomColor: colors.line }]}><Pressable accessibilityRole="button" accessibilityLabel="Go back" onPress={() => router.back()}><Text style={[styles.back, { color: colors.primary }]}>‹</Text></Pressable><Text style={[styles.title, { color: colors.primary }]}>Share to Ekho</Text><View style={styles.spacer} /></View>
+    <View style={[styles.header, { borderBottomColor: colors.line }]}><Pressable accessibilityRole="button" accessibilityLabel="Go back" onPress={() => router.back()}><Text style={[styles.back, { color: colors.primary }]}>‹</Text></Pressable><Text style={[styles.title, { color: colors.primary }]}>Share to Apollo</Text><View style={styles.spacer} /></View>
     <ScrollView contentContainerStyle={styles.content}>
       {error ? <Text accessibilityRole="alert" style={[styles.error, { color: colors.red }]}>{error}</Text> : null}
       {!pendingShares.length ? <Text style={[styles.empty, { color: colors.secondary }]}>No pending share.</Text> : <>

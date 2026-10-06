@@ -18,7 +18,7 @@ export interface SecretStore {
   deleteItem(key: string): Promise<void>;
 }
 
-const metadataKey = 'ekho.agent-catalog.v1';
+const metadataKey = 'apollo.agent-catalog.v1';
 
 const defaultMetadataStore: MetadataStore = {
   getItem: (key) => AsyncStorage.getItem(key),
@@ -33,7 +33,7 @@ const defaultSecretStore: SecretStore = {
 };
 
 function secretKey(agentId: string): string {
-  return `ekho.agent-token.${encodeURIComponent(agentId)}`;
+  return `apollo.agent-token.${encodeURIComponent(agentId)}`;
 }
 
 function parseAgent(value: unknown): AgentRecord | undefined {

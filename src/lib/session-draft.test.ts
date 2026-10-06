@@ -49,7 +49,7 @@ test('deduplicates share receipts and keeps prepared identity after relaunch', a
 });
 
 test('editing resets identity, failures keep edits, and old keys migrate', async () => {
-  const storage = memory({ 'ekho.draft.a.new': 'old', 'ekho.draft.a.new:attachments': JSON.stringify([file]) });
+  const storage = memory({ 'apollo.draft.a.new': 'old', 'apollo.draft.a.new:attachments': JSON.stringify([file]) });
   let uuid = 0;
   const options = { storage, uuid: () => `next-${++uuid}` };
   const migrated = new SessionDraftStore('a', 'new', options); await migrated.load(); assert.equal(migrated.getSnapshot().draft, 'old');
@@ -59,7 +59,7 @@ test('editing resets identity, failures keep edits, and old keys migrate', async
 });
 
 test('concurrent load does not replace an edit made while storage is pending', async () => {
-  const values: Record<string, string> = { 'ekho.draft.v2.a.new': JSON.stringify({ version: 2, draft: 'saved', attachments: [], receipts: [] }) };
+  const values: Record<string, string> = { 'apollo.draft.v2.a.new': JSON.stringify({ version: 2, draft: 'saved', attachments: [], receipts: [] }) };
   const storage: DraftStorage = { getItem: async (key) => { await wait(); return values[key] ?? null; }, setItem: async (key, value) => { values[key] = value; }, removeItem: async (key) => { delete values[key]; } };
   const store = new SessionDraftStore('a', 'new', { storage, uuid: () => 'id' });
   const first = store.load(); const second = store.load(); store.setDraft('edited'); await Promise.all([first, second]); await wait();
@@ -72,8 +72,8 @@ test('concurrent share imports retain both receipts and both payloads', async ()
   await store.load();
   await Promise.all([store.appendShare('one', 'first', []), store.appendShare('two', 'second', [])]);
   assert.equal(store.getSnapshot().draft, 'first\n\nsecond');
-  assert.match(storage.values['ekho.draft.v2.concurrent.new'], /"one"/);
-  assert.match(storage.values['ekho.draft.v2.concurrent.new'], /"two"/);
+  assert.match(storage.values['apollo.draft.v2.concurrent.new'], /"one"/);
+  assert.match(storage.values['apollo.draft.v2.concurrent.new'], /"two"/);
 });
 
 test('moving updates an already loaded destination store', async () => {
@@ -86,10 +86,10 @@ test('moving updates an already loaded destination store', async () => {
 });
 
 test('unreadable records stay untouched and block preparation', async () => {
-  const storage = memory({ 'ekho.draft.v2.bad.new': '{broken' });
+  const storage = memory({ 'apollo.draft.v2.bad.new': '{broken' });
   const store = new SessionDraftStore('bad', 'new', { storage, uuid: () => 'id' });
   await store.load(); store.setDraft('keep in memory'); await wait();
-  assert.equal(storage.values['ekho.draft.v2.bad.new'], '{broken');
+  assert.equal(storage.values['apollo.draft.v2.bad.new'], '{broken');
   await assert.rejects(store.prepareSend());
 });
 
@@ -115,8 +115,8 @@ test('a delayed restore merges disk receipts without replacing an overlapping ed
   read.resolve(JSON.stringify({ version: 2, draft: 'old disk text', attachments: [], receipts: ['kept-receipt'] }));
   await loading; await wait();
   assert.equal(store.getSnapshot().draft, 'typed while loading');
-  assert.deepEqual(JSON.parse(values['ekho.draft.v2.load-race.new']).receipts, ['kept-receipt']);
-  assert.equal(JSON.parse(values['ekho.draft.v2.load-race.new']).draft, 'typed while loading');
+  assert.deepEqual(JSON.parse(values['apollo.draft.v2.load-race.new']).receipts, ['kept-receipt']);
+  assert.equal(JSON.parse(values['apollo.draft.v2.load-race.new']).draft, 'typed while loading');
 });
 
 test('an edit during share persistence wins without losing the share receipt', async () => {
@@ -136,7 +136,7 @@ test('an edit during share persistence wins without losing the share receipt', a
   store.setDraft('shared\n\ntyped');
   blocked.resolve();
   await appending; await wait();
-  const saved = JSON.parse(storage.values['ekho.draft.v2.share-race.new']);
+  const saved = JSON.parse(storage.values['apollo.draft.v2.share-race.new']);
   assert.equal(saved.draft, 'shared\n\ntyped');
   assert.deepEqual(saved.receipts, ['receipt']);
 });
@@ -154,7 +154,7 @@ test('an edit during prepare rejects the stale send and persists the edit', asyn
   blocked.resolve();
   await assert.rejects(preparing, /changed while preparing/);
   await wait();
-  const saved = JSON.parse(storage.values['ekho.draft.v2.prepare-race.new']);
+  const saved = JSON.parse(storage.values['apollo.draft.v2.prepare-race.new']);
   assert.equal(saved.draft, 'after');
   assert.equal(saved.prepared, undefined);
 });
@@ -184,7 +184,7 @@ test('failed clear and move operations leave the prepared draft retryable', asyn
   const moveSetItem = moveStorage.setItem;
   let failMove = true;
   moveStorage.setItem = async (key, value) => {
-    if (failMove && key === 'ekho.draft.v2.move-retry.thread') throw new Error('disk full');
+    if (failMove && key === 'apollo.draft.v2.move-retry.thread') throw new Error('disk full');
     await moveSetItem(key, value);
   };
   await assert.rejects(moveStore.move('thread', '', []), /Try opening the thread again/);
@@ -196,10 +196,10 @@ test('failed clear and move operations leave the prepared draft retryable', asyn
 });
 
 test('share receipt history stays within the persisted record limit', async () => {
-  const storage = memory({ 'ekho.draft.v2.receipts.new': JSON.stringify({ version: 2, draft: '', attachments: [], receipts: Array.from({ length: 1000 }, (_, index) => `old-${index}`) }) });
+  const storage = memory({ 'apollo.draft.v2.receipts.new': JSON.stringify({ version: 2, draft: '', attachments: [], receipts: Array.from({ length: 1000 }, (_, index) => `old-${index}`) }) });
   const store = new SessionDraftStore('receipts', 'new', { storage, uuid: () => 'id' });
   await store.load(); await store.appendShare('latest', 'shared', []);
-  const saved = JSON.parse(storage.values['ekho.draft.v2.receipts.new']);
+  const saved = JSON.parse(storage.values['apollo.draft.v2.receipts.new']);
   assert.equal(saved.receipts.length, 1000);
   assert.equal(saved.receipts.at(-1), 'latest');
 });
@@ -214,6 +214,6 @@ test('a new composer after promotion cannot overwrite the previous thread draft'
   const next = getSessionDraftStore('promotion', 'new', options);
   assert.notEqual(next, original);
   await next.load(); next.setDraft('second'); await wait();
-  assert.equal(JSON.parse(storage.values['ekho.draft.v2.promotion.thread-one']).draft, '');
-  assert.equal(JSON.parse(storage.values['ekho.draft.v2.promotion.new']).draft, 'second');
+  assert.equal(JSON.parse(storage.values['apollo.draft.v2.promotion.thread-one']).draft, '');
+  assert.equal(JSON.parse(storage.values['apollo.draft.v2.promotion.new']).draft, 'second');
 });

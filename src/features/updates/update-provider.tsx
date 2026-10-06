@@ -8,7 +8,7 @@ import { useOutbox } from '@/lib/outbox-context';
 import { withSessionDraftReloadSafety } from '@/lib/session-draft';
 import { createUpdateController, createUpdateNoticeTimer, shouldNoticeUpdate, updateState, type UpdateState } from './update-state';
 
-const NOTICED_KEY = 'ekho.update-noticed.v1';
+const NOTICED_KEY = 'apollo.update-noticed.v1';
 const enabled = !__DEV__ && Updates.isEnabled;
 type UpdateContextValue = {
   state: UpdateState;

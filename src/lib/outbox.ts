@@ -40,7 +40,7 @@ export type OutboxDependencies = {
   now?: () => number;
 };
 
-const OUTBOX_KEY = 'ekho.outbox.v1';
+const OUTBOX_KEY = 'apollo.outbox.v1';
 const MAX_QUEUED_MESSAGES = 100;
 // Hermes retains idempotency records for 24 hours. Leave an hour for clock skew.
 const SAFE_REPLAY_AGE = 23 * 60 * 60 * 1000;
@@ -103,7 +103,7 @@ function retryable(error: unknown): boolean {
   return true;
 }
 
-class OutboxEnvironment extends Context.Tag('ekho/OutboxEnvironment')<OutboxEnvironment, OutboxDependencies>() {}
+class OutboxEnvironment extends Context.Tag('apollo/OutboxEnvironment')<OutboxEnvironment, OutboxDependencies>() {}
 
 /** Owns durable queue mutations and concurrent delivery, with one in-flight message per thread. */
 export function createOutboxRuntime(dependencies: OutboxDependencies) {

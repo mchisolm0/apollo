@@ -14,7 +14,7 @@ This is a good product direction. T3 Code is the right reference for connection 
 - Pairing uses a short-lived bootstrap credential, then stores a revocable device credential.
 - A connection supervisor owns reconnects, network changes, and visible error states.
 
-Hermes already provides enough HTTP API for a useful first release. The missing piece is a small server-side Ekho connector that makes setup and device authentication safe. It should sit next to Hermes, not become a second agent backend.
+Hermes already provides enough HTTP API for a useful first release. The missing piece is a small server-side Apollo connector that makes setup and device authentication safe. It should sit next to Hermes, not become a second agent backend.
 
 ## Use Hermes HTTP and SSE, not the dashboard WebSocket
 
@@ -32,7 +32,7 @@ The [Runs API](https://hermes-agent.nousresearch.com/docs/user-guide/features/ap
 
 Persist the active `run_id` locally. Hermes discards an unconsumed event buffer after five minutes, although the run remains available through status polling and control endpoints ([source](https://github.com/NousResearch/hermes-agent/blob/63279301bcbdc185c1b07b98a9312eb0c862f26d/website/docs/user-guide/features/api-server.md#L472-L492)). On reconnect, fetch run status and session messages, then reopen the event stream if it is still available. Do not make an uninterrupted stream the source of truth.
 
-Do not connect the app to the dashboard's `/api/ws`. Hermes calls that an internal loopback bridge for its embedded TUI and says there is no general remote-attach mode. The API server intentionally does not expose that channel ([Hermes TUI docs](https://github.com/NousResearch/hermes-agent/blob/63279301bcbdc185c1b07b98a9312eb0c862f26d/website/docs/user-guide/tui.md#L282-L292)). The TUI gateway exposes more controls, but it would couple Ekho to a broader, more volatile protocol before the basic mobile experience needs them.
+Do not connect the app to the dashboard's `/api/ws`. Hermes calls that an internal loopback bridge for its embedded TUI and says there is no general remote-attach mode. The API server intentionally does not expose that channel ([Hermes TUI docs](https://github.com/NousResearch/hermes-agent/blob/63279301bcbdc185c1b07b98a9312eb0c862f26d/website/docs/user-guide/tui.md#L282-L292)). The TUI gateway exposes more controls, but it would couple Apollo to a broader, more volatile protocol before the basic mobile experience needs them.
 
 ## The auth gap is real
 
@@ -44,11 +44,11 @@ For a private prototype, a scanned URL containing the Hermes key is acceptable o
 
 ## The small connector Hermes needs
 
-The publishable setup should add a narrow Ekho connector on the Hermes host. It owns identity and access, then forwards authenticated requests to the loopback-only Hermes API using the root `API_SERVER_KEY` that never leaves the machine.
+The publishable setup should add a narrow Apollo connector on the Hermes host. It owns identity and access, then forwards authenticated requests to the loopback-only Hermes API using the root `API_SERVER_KEY` that never leaves the machine.
 
 Minimum responsibilities:
 
-1. Publish an unauthenticated descriptor such as `/.well-known/ekho/agent` with a stable agent ID, label, connector version, Hermes capabilities, and supported auth methods.
+1. Publish an unauthenticated descriptor such as `/.well-known/apollo/agent` with a stable agent ID, label, connector version, Hermes capabilities, and supported auth methods.
 2. Mint a high-entropy, single-use pairing token with a short TTL. The setup command prints a URL and QR code.
 3. Exchange the pairing token for a random per-device session token. Store only a hash server-side.
 4. Keep device name, creation time, last use, scopes, and revocation state.
@@ -60,7 +60,7 @@ This copies T3 Code's best idea. T3 issues a one-time owner token, exchanges it 
 A pairing URL can use this shape:
 
 ```text
-ekho://pair?host=https%3A%2F%2Fagent-name.tailnet.ts.net#token=ONE_TIME_TOKEN
+apollo://pair?host=https%3A%2F%2Fagent-name.tailnet.ts.net#token=ONE_TIME_TOKEN
 ```
 
 Keep the token in the fragment. T3 does the same so normal HTTP requests do not send it to the host ([pairing source](https://github.com/pingdotgg/t3code/blob/f1e90e388b86fe4b007a55c0e685a1fa878115e6/apps/mobile/src/features/connection/pairing.ts#L30-L43)). QR should be the primary path, with host and code entry as recovery. Normalize manual codes for case, whitespace, and display separators before exchange.
@@ -74,16 +74,16 @@ Run Hermes and the connector on loopback. Publish only the connector with Tailsc
 ```text
 Hermes API 127.0.0.1:8642
         ^
-Ekho connector 127.0.0.1:<port>
+Apollo connector 127.0.0.1:<port>
         ^
 Tailscale Serve HTTPS
         ^
-Ekho mobile app
+Apollo mobile app
 ```
 
 Tailscale Serve routes tailnet traffic to a local service over an automatically provisioned HTTPS endpoint. Tailnet access rules still apply ([Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve)). MagicDNS supplies the stable `machine.tailnet.ts.net` name, and HTTPS requires the fully qualified name rather than a bare hostname ([MagicDNS](https://tailscale.com/docs/features/magicdns), [HTTPS certificates](https://tailscale.com/docs/how-to/set-up-https-certificates)).
 
-Keep Tailscale out of the core environment type. T3 treats it as an endpoint provider; the same bearer-paired environment model works for LAN, Tailscale, other HTTPS tunnels, and relay connections ([T3 remote architecture](https://github.com/pingdotgg/t3code/blob/f1e90e388b86fe4b007a55c0e685a1fa878115e6/docs/internals/remote.md#L44-L70)). Ekho should save an agent plus one or more endpoints and remember the last successful route.
+Keep Tailscale out of the core environment type. T3 treats it as an endpoint provider; the same bearer-paired environment model works for LAN, Tailscale, other HTTPS tunnels, and relay connections ([T3 remote architecture](https://github.com/pingdotgg/t3code/blob/f1e90e388b86fe4b007a55c0e685a1fa878115e6/docs/internals/remote.md#L44-L70)). Apollo should save an agent plus one or more endpoints and remember the last successful route.
 
 Tailscale Serve adds identity headers and removes spoofed incoming copies. Tailscale recommends that a backend trusting them listen only on localhost ([identity headers](https://tailscale.com/docs/features/tailscale-serve#identity-headers)). The connector can record the tailnet login as pairing context, but device tokens should remain the application authentication layer. This keeps the model usable through non-Tailscale HTTPS later. Never use Funnel by accident. Serve stays private to the tailnet; Funnel is public.
 
@@ -95,10 +95,10 @@ Keep the app smaller than T3 Code. A sensible first cut has four deep modules:
 
 - `AgentCatalog`: persisted agents, endpoints, labels, and non-secret metadata.
 - `CredentialStore`: per-agent device tokens backed by Expo SecureStore.
-- `HermesClient`: typed request and event decoding for the exact endpoints Ekho uses.
+- `HermesClient`: typed request and event decoding for the exact endpoints Apollo uses.
 - `ConnectionSupervisor`: online state, active run recovery, explicit retry, and bounded backoff.
 
-T3 keeps its connection protocol and lifecycle in a shared client runtime, with the React Native screens acting as adapters. Its supervisor uses staged connection states and bounded retry delays of 3, 4, 8, and 16 seconds ([source](https://github.com/pingdotgg/t3code/blob/f1e90e388b86fe4b007a55c0e685a1fa878115e6/packages/client-runtime/src/connection/supervisor.ts#L30-L35)). That separation is worth copying. Its Effect-based machinery is not required for Ekho. Plain TypeScript state machines plus focused tests can preserve the same boundaries.
+T3 keeps its connection protocol and lifecycle in a shared client runtime, with the React Native screens acting as adapters. Its supervisor uses staged connection states and bounded retry delays of 3, 4, 8, and 16 seconds ([source](https://github.com/pingdotgg/t3code/blob/f1e90e388b86fe4b007a55c0e685a1fa878115e6/packages/client-runtime/src/connection/supervisor.ts#L30-L35)). That separation is worth copying. Its Effect-based machinery is not required for Apollo. Plain TypeScript state machines plus focused tests can preserve the same boundaries.
 
 Store only credentials in SecureStore. Expo SDK 57 stores values in Android Keystore-backed encrypted preferences and iOS Keychain, but warns about size limits, platform-specific uninstall behavior, and treating it as the only source of truth for critical data ([Expo SecureStore](https://docs.expo.dev/versions/v57.0.0/sdk/securestore/)). Put messages and agent metadata in SQLite or normal app storage. T3 also wraps `expo-secure-store` behind a tiny platform storage interface ([source](https://github.com/pingdotgg/t3code/blob/f1e90e388b86fe4b007a55c0e685a1fa878115e6/apps/mobile/src/persistence/mobile-secure-storage.ts#L1-L51)).
 

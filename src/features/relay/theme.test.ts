@@ -46,5 +46,5 @@ test('code keeps its default appearance and storage key', () => {
   assert.equal(THEME_PALETTES.code.background, '#000000');
   assert.equal(THEME_PALETTES.code.primary, '#ffffff');
   assert.equal(THEME_PALETTES.code.cyan, '#a7c8ff');
-  assert.equal(THEME_STORAGE_KEY, 'ekho:theme');
+  assert.equal(THEME_STORAGE_KEY, 'apollo:theme');
 });

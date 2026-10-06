@@ -14,7 +14,7 @@ RELEASE_NOTES=$'Update notices\nNative build information in Settings' pnpm updat
 RELEASE_NOTES=$'Update notices\nNative build information in Settings' pnpm update:production --message "Update notices"
 ```
 
-These publish to `ekho-dev`, `preview`, and `production`, respectively. Run the
+These publish to `apollo-dev`, `preview`, and `production`, respectively. Run the
 checks and verify a preview build before publishing production. Development
 clients connected to Metro skip OTA checks and notices; use a release build to
 verify an actual download.

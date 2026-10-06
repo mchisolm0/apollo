@@ -4,8 +4,8 @@ import test from 'node:test';
 import { attachmentCacheIdentity } from './attachment-cache.ts';
 
 test('cache identity scopes attachment IDs by origin and path without URL secrets', () => {
-  const identity = attachmentCacheIdentity('https://one.example/v1/ekho/attachments/same?token=secret', 'same');
-  assert.equal(identity, 'https://one.example/v1/ekho/attachments/same\0same');
-  assert.notEqual(identity, attachmentCacheIdentity('https://two.example/v1/ekho/attachments/same', 'same'));
+  const identity = attachmentCacheIdentity('https://one.example/v1/apollo/attachments/same?token=secret', 'same');
+  assert.equal(identity, 'https://one.example/v1/apollo/attachments/same\0same');
+  assert.notEqual(identity, attachmentCacheIdentity('https://two.example/v1/apollo/attachments/same', 'same'));
   assert.ok(!identity.includes('secret'));
 });

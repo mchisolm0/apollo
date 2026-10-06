@@ -10,7 +10,7 @@ import { ConnectionAction, IconButton, useThemedStyles, useColors, type RelayPal
 import { AgentPicker } from '@/features/relay/agent-picker';
 import { SessionList } from '@/features/relay/session-list';
 import { useSessionInbox } from '@/features/relay/use-session-inbox';
-import { useEkho } from '@/lib';
+import { useApollo } from '@/lib';
 
 export default function SessionsRoute() {
   const styles = useThemedStyles(createStyles);
@@ -19,7 +19,7 @@ export default function SessionsRoute() {
   const { pendingShares } = useIncomingShares();
   const { agentId } = useLocalSearchParams<{ agentId?: string }>();
   const router = useRouter();
-  const { agents, runtime, loading, retryAgent } = useEkho();
+  const { agents, runtime, loading, retryAgent } = useApollo();
   const agent = agents.find((candidate) => candidate.id === agentId) ?? agents[0];
   const state = agent ? runtime[agent.id] : undefined;
   const inbox = useSessionInbox(agent?.id ?? '', state);

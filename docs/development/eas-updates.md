@@ -1,14 +1,14 @@
 # Builds, versions, and OTA updates
 
-Ekho uses fingerprint runtimes and EAS-managed native build numbers, following Scryve's setup.
+Apollo uses fingerprint runtimes and EAS-managed native build numbers, following Scryve's setup.
 
 | App | Build profile | EAS environment | Update channel | Bundle ID / Android package | URL scheme |
 | --- | --- | --- | --- | --- | --- |
-| Ekho Dev | `development:device` | `development` | `ekho-dev` | `com.matthewchisolm.ekho.dev` | `ekho-dev` |
-| Ekho Preview | `preview:device` | `preview` | `preview` | `com.matthewchisolm.ekho.preview` | `ekho-preview` |
-| Ekho | `production` or `production:internal` | `production` | `production` | `com.matthewchisolm.ekho` | `ekho` |
+| Apollo Dev | `development:device` | `development` | `apollo-dev` | `com.matthewchisolm.apollo.dev` | `apollo-dev` |
+| Apollo Preview | `preview:device` | `preview` | `preview` | `com.matthewchisolm.apollo.preview` | `apollo-preview` |
+| Apollo | `production` or `production:internal` | `production` | `production` | `com.matthewchisolm.apollo` | `apollo` |
 
-Each app has separate pairing and draft storage. Preview is a Release build that runs without Metro. It now installs alongside Ekho Dev instead of replacing it. Production internal builds use the production identity and update channel.
+Each app has separate pairing and draft storage. Preview is a Release build that runs without Metro. It now installs alongside Apollo Dev instead of replacing it. Production internal builds use the production identity and update channel.
 
 ## First build
 
@@ -32,7 +32,7 @@ pnpm update:production --message "Describe the change"
 
 These commands publish both platforms. Add `--platform ios` or `--platform android` to target one. Review on preview first, then publish the same source revision to production with its own command. The app identities produce different runtimes, so publish separately for each variant.
 
-The scripts select both `EKHO_APP_VARIANT` and the matching EAS environment. Build profiles supply the same variant. Do not set a conflicting `EKHO_APP_VARIANT` in EAS environment variables. SDK 57 update exports use the selected EAS environment; configure any required app variables there.
+The scripts select both `APOLLO_APP_VARIANT` and the matching EAS environment. Build profiles supply the same variant. Do not set a conflicting `APOLLO_APP_VARIANT` in EAS environment variables. SDK 57 update exports use the selected EAS environment; configure any required app variables there.
 
 Launch the installed app online to download a compatible update, then close and reopen it to apply it. The app does not force a reload during a task. An update with a different fingerprint will not load in that binary. Build and install a new binary when native inputs change.
 
@@ -58,4 +58,4 @@ REACT_NATIVE_PACKAGER_HOSTNAME=mini pnpm start:dev
 
 Tailscale must be running and connected before this command. On the phone, open `http://mini:8085` in the development client. This installed development build permits the short local hostname; its App Transport Security policy rejected the full MagicDNS name and Tailscale IP in the simulator. Use a separate localhost Metro port for simulator checks when the Mac's short-name DNS resolves elsewhere. A localhost hostname override makes Expo advertise `127.0.0.1` in the manifest even when the phone connects through MagicDNS. On a phone, that bundle address points at the phone itself. After correcting the server hostname, use the development client's Go home action and open the server again to replace the cached bundle URL.
 
-Use `pnpm update:dev --message "Describe the change"` to publish to the dedicated `ekho-dev` channel for compatible development clients.
+Use `pnpm update:dev --message "Describe the change"` to publish to the dedicated `apollo-dev` channel for compatible development clients.

@@ -6,13 +6,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AgentSettingsScreen } from '@/features/relay';
 import type { RelayAgent } from '@/features/relay';
-import { useEkho } from '@/lib';
+import { useApollo } from '@/lib';
 
 export default function SettingsRoute() {
   const styles = useThemedStyles(createStyles);
   const { agentId } = useLocalSearchParams<{ agentId: string }>();
   const router = useRouter();
-  const { agents, runtime, refreshAgent, removeAgent } = useEkho();
+  const { agents, runtime, refreshAgent, removeAgent } = useApollo();
   const agent = agents.find((candidate) => candidate.id === agentId);
   if (!agent) return <Redirect href="/" />;
   const status = runtime[agent.id]?.status;
@@ -49,7 +49,7 @@ export default function SettingsRoute() {
         agent={relayAgent}
         defaultModel={(runtime[agentId]?.capabilities ?? agent.capabilities)?.model}
         platform={(runtime[agentId]?.capabilities ?? agent.capabilities)?.platform}
-        deviceName={agent.deviceName ?? Device.deviceName ?? 'Ekho mobile'}
+        deviceName={agent.deviceName ?? Device.deviceName ?? 'Apollo mobile'}
         pairedAt={new Date(agent.createdAt).toLocaleDateString()}
         onBack={() => router.back()}
         onTestConnection={() => void refreshAgent(agent.id)}

@@ -14,7 +14,7 @@ test('attachment prompts round-trip text and file-only messages for history rend
 });
 
 test('ordinary or malformed marker text stays visible', () => {
-  for (const content of ['hello', '\n\n<ekho-attachments>\nnot JSON\n</ekho-attachments>', attachmentMessage('hello', [file]) + '\nMore user text', attachmentMessage('hello', [{ ...file, path: 'relative/path' }])]) {
+  for (const content of ['hello', '\n\n<apollo-attachments>\nnot JSON\n</apollo-attachments>', attachmentMessage('hello', [file]) + '\nMore user text', attachmentMessage('hello', [{ ...file, path: 'relative/path' }])]) {
     assert.deepEqual(splitAttachmentMessage(content), { text: content, attachments: [] });
   }
 });

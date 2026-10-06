@@ -11,7 +11,7 @@ T3 Code has substantially modified and renamed the implementation, integrated
 its markdown renderer, and owns the resulting module going forward. This is not
 an upstream package dependency or a compatibility fork.
 
-Ekho ported that T3 Code module at commit
+Apollo ported that T3 Code module at commit
 `08463e2c401ce87858aaaebcb70ed86fb002fb5f`. T3 Code's MIT license is included
 as `T3CODE_LICENSE`. Native identifiers retain the `T3MarkdownText` name so the
 port remains easy to audit and update.

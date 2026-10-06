@@ -1,9 +1,9 @@
 export function redirectSystemPath({ path }: { path: string; initial: boolean }): string {
   try {
-    const url = new URL(path, 'ekho://app');
-    if (['ekho:', 'ekho-dev:', 'ekho-preview:'].includes(url.protocol) && url.hostname === 'expo-sharing') return '/share';
-    if (['ekho:', 'ekho-dev:', 'ekho-preview:'].includes(url.protocol) && url.hostname === 'pair') {
-      return `/connect?link=${encodeURIComponent(path.replace(/^ekho-(?:dev|preview):/, 'ekho:'))}`;
+    const url = new URL(path, 'apollo://app');
+    if (['apollo:', 'apollo-dev:', 'apollo-preview:'].includes(url.protocol) && url.hostname === 'expo-sharing') return '/share';
+    if (['apollo:', 'apollo-dev:', 'apollo-preview:'].includes(url.protocol) && url.hostname === 'pair') {
+      return `/connect?link=${encodeURIComponent(path.replace(/^apollo-(?:dev|preview):/, 'apollo:'))}`;
     }
     return path;
   } catch {

@@ -2,19 +2,19 @@ import type { ConfigContext, ExpoConfig } from 'expo/config';
 
 /** Each variant has its own installation, pairing, and draft storage. */
 export default function configure({ config }: ConfigContext): ExpoConfig {
-  const variant = process.env.EKHO_APP_VARIANT ?? 'production';
+  const variant = process.env.APOLLO_APP_VARIANT ?? 'production';
   if (!['development', 'preview', 'production'].includes(variant)) {
-    throw new Error(`Unknown EKHO_APP_VARIANT: ${variant}`);
+    throw new Error(`Unknown APOLLO_APP_VARIANT: ${variant}`);
   }
   const suffix = variant === 'development' ? '.dev' : variant === 'preview' ? '.preview' : '';
   return {
     ...config,
-    name: variant === 'development' ? 'Ekho Dev' : variant === 'preview' ? 'Ekho Preview' : config.name ?? 'Ekho',
-    slug: config.slug ?? 'ekho',
-    scheme: variant === 'development' ? 'ekho-dev' : variant === 'preview' ? 'ekho-preview' : 'ekho',
+    name: variant === 'development' ? 'Apollo Dev' : variant === 'preview' ? 'Apollo Preview' : config.name ?? 'Apollo',
+    slug: config.slug ?? 'apollo',
+    scheme: variant === 'development' ? 'apollo-dev' : variant === 'preview' ? 'apollo-preview' : 'apollo',
     updates: {
       ...config.updates,
-      requestHeaders: { 'expo-channel-name': variant === 'development' ? 'ekho-dev' : variant },
+      requestHeaders: { 'expo-channel-name': variant === 'development' ? 'apollo-dev' : variant },
     },
     extra: {
       ...config.extra,
@@ -23,10 +23,10 @@ export default function configure({ config }: ConfigContext): ExpoConfig {
       posthogHost: process.env.POSTHOG_HOST,
     },
     plugins: [...(config.plugins ?? []), 'expo-notifications', ['expo-sharing', {
-      ios: { enabled: true, extensionBundleIdentifier: `com.matthewchisolm.ekho${suffix}.sharing`, appGroupId: `group.com.matthewchisolm.ekho${suffix}`, activationRule: { supportsText: true, supportsWebUrlWithMaxCount: 1, supportsImageWithMaxCount: 4, supportsFileWithMaxCount: 4 } },
+      ios: { enabled: true, extensionBundleIdentifier: `com.matthewchisolm.apollo${suffix}.sharing`, appGroupId: `group.com.matthewchisolm.apollo${suffix}`, activationRule: { supportsText: true, supportsWebUrlWithMaxCount: 1, supportsImageWithMaxCount: 4, supportsFileWithMaxCount: 4 } },
       android: { enabled: true, singleShareMimeTypes: ['*/*'], multipleShareMimeTypes: ['*/*'] },
     }]],
-    ios: { ...config.ios, bundleIdentifier: `com.matthewchisolm.ekho${suffix}` },
-    android: { ...config.android, package: `com.matthewchisolm.ekho${suffix}` },
+    ios: { ...config.ios, bundleIdentifier: `com.matthewchisolm.apollo${suffix}` },
+    android: { ...config.android, package: `com.matthewchisolm.apollo${suffix}` },
   };
 }

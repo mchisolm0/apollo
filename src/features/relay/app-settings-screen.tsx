@@ -56,7 +56,7 @@ export function AppSettingsScreen({ onBack }: { onBack?: () => void }) {
 
         <SettingSection label="Code">
           <View style={styles.terminal}>
-            <Text style={[styles.terminalLine, { color: colors.green, fontSize: monoSize, lineHeight: monoSize + 6 }]}>{'$ ekho status'}</Text>
+            <Text style={[styles.terminalLine, { color: colors.green, fontSize: monoSize, lineHeight: monoSize + 6 }]}>{'$ apollo status'}</Text>
             <Text style={[styles.terminalLine, { color: colors.primary, fontSize: monoSize, lineHeight: monoSize + 6 }]}>{'agent: luna · connected'}</Text>
             <Text style={[styles.terminalLine, { color: colors.amber, fontSize: monoSize, lineHeight: monoSize + 6 }]}>{'⟳ run 4f2a · streaming…'}</Text>
             <Text style={[styles.terminalLine, { color: colors.muted, fontSize: monoSize, lineHeight: monoSize + 6 }]}>{'# done in 1.2s'}</Text>

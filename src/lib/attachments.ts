@@ -38,16 +38,16 @@ export function isDraftAttachment(value: unknown): value is DraftAttachment {
     && (item.uploaded === undefined || isAttachment(item.uploaded));
 }
 
-const attachmentInstructions = '\n</ekho-attachments>\nThe user attached these files on this machine. Read the files at their paths as needed; for images, use your image-reading tool.';
+const attachmentInstructions = '\n</apollo-attachments>\nThe user attached these files on this machine. Read the files at their paths as needed; for images, use your image-reading tool.';
 
 /** File paths are sent to Hermes, while the chat renders the attachment metadata. */
 export function attachmentMessage(text: string, attachments: readonly Attachment[] = []): string {
   if (!attachments.length) return text;
-  return `${text}\n\n<ekho-attachments>\n${JSON.stringify(attachments)}${attachmentInstructions}`;
+  return `${text}\n\n<apollo-attachments>\n${JSON.stringify(attachments)}${attachmentInstructions}`;
 }
 
 export function splitAttachmentMessage(content: string): { text: string; attachments: Attachment[] } {
-  const marker = '\n\n<ekho-attachments>\n';
+  const marker = '\n\n<apollo-attachments>\n';
   const index = content.lastIndexOf(marker);
   const end = content.length - attachmentInstructions.length;
   if (index < 0 || end < index || !content.endsWith(attachmentInstructions)) return { text: content, attachments: [] };
