@@ -522,10 +522,12 @@ test("a failed cloud revoke is kept and retried until the cloud accepts it", asy
   assert.equal(f.cloud.seen.at(-1).url, `/v1/device-tokens/${f.exchange.body.device_id}`);
 });
 
-test("revoking a cloud-paired phone while cloud config is absent deletes its token once config returns", async (t) => {
+test("revoking a phone while cloud config is absent deletes its cloud token once config returns", async (t) => {
   const f = await cloudFixture(); t.after(f.close);
   const deviceId = f.exchange.body.device_id;
   await f.connector.close();
+  // Devices paired by older connectors carry no cloud marker; revoke must not depend on one.
+  assert.equal(Object.keys(JSON.parse(await readFile(f.statePath, "utf8")).devices[0]).some((key) => key.startsWith("cloud")), false);
   const restart = async (cloud) => {
     f.connector = createConnectorServer({ port: 0, hermesUrl: f.hermes.url, hermesApiKey: "hermes-secret", adminSecret: "admin-secret", statePath: f.statePath, cloud, cloudRetryInterval: 10 });
     return `http://127.0.0.1:${(await f.connector.start()).port}`;

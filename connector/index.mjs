@@ -232,13 +232,7 @@ export function createConnectorServer(options = {}) {
   async function cloudCredentials(deviceId) {
     if (!cloud) return null;
     const credentials = await perDevice(deviceId, async () => {
-      // Marked before minting so revoke deletes the token even if this response is lost or the config is later removed.
-      const paired = await store.update((state) => {
-        const device = state.devices.find((candidate) => candidate.id === deviceId && !candidate.revoked_at);
-        if (device) device.cloud_token = true;
-        return Boolean(device);
-      });
-      if (!paired) return null;
+      if (!await isPaired(deviceId)) return null;
       let minted;
       try { minted = await cloud.mintDeviceToken(deviceId); } catch { return null; }
       if (typeof minted?.token !== "string") return null;
@@ -366,8 +360,8 @@ export function createConnectorServer(options = {}) {
         if (found && !found.revoked_at) {
           found.revoked_at = isoNow();
           removeNotificationRegistration(state, found);
-          // Queued even without cloud config; it drains once config is back.
-          if (found.cloud_token) queueCloudRevocation(state, found.id);
+          // Always queued, even without cloud config: it drains once config is present, and a 404 clears it.
+          queueCloudRevocation(state, found.id);
         }
         return found;
       });
