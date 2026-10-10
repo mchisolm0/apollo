@@ -12,7 +12,7 @@ import { useApollo } from '@/lib/apollo-context';
 import type { Card, CardResponse } from '../../../cloud/src/contract';
 import { applyCard, applyStreamMessage, mergeSnapshot, parseCards, parseStreamMessage } from './cards';
 import { CloudRequestError, createCloudClient, pushRegistrationKey, type CloudCredential } from './cloud-client';
-import { ACK_KEY, CARD_CACHE_KEY, cloudCredentialStore, loadCloudCredential, saveCloudCredential } from './cloud-credentials';
+import { CARD_CACHE_KEY, cloudCredentialStore, loadCloudCredential, saveCloudCredential } from './cloud-credentials';
 import { ensureCloudChannels, respondQueue } from './cloud-runtime';
 import { withPendingResponses, type InboxCard } from './inbox-rows';
 
@@ -51,7 +51,6 @@ export function CloudProvider({ children }: PropsWithChildren) {
   // Cards belong to the inbox they came from, so a new credential never shows another inbox's cards.
   // `fresh` marks that a snapshot landed, after which the cache may no longer replace anything.
   const [inbox, setInbox] = useState<{ url: string; cards: readonly Card[]; ready: boolean; fresh: boolean }>();
-  const [acks, setAcks] = useState<Readonly<Record<string, string>>>({});
   const [connection, setConnection] = useState<{ url: string; status: Exclude<CloudStatus, 'off' | 'connecting'> }>();
   const [active, setActive] = useState(AppState.currentState === 'active');
   const [pushRevision, setPushRevision] = useState(0);
@@ -72,11 +71,6 @@ export function CloudProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     void loadCloudCredential();
     void respondQueue.load();
-    void AsyncStorage.getItem(ACK_KEY).then((saved) => {
-      const value: unknown = saved ? JSON.parse(saved) : undefined;
-      if (!value || typeof value !== 'object') return;
-      setAcks(Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string')));
-    }).catch(() => undefined);
     const appState = AppState.addEventListener('change', (next) => setActive(next === 'active'));
     const token = Platform.OS === 'web' ? undefined : Notifications.addPushTokenListener(() => {
       registered.current = undefined;
@@ -241,18 +235,7 @@ export function CloudProvider({ children }: PropsWithChildren) {
       return;
     }
     void respondQueue.flush();
-    // A morning card stays open after Keep or Skip; remember the answer so its buttons stay hidden.
-    const card = inbox?.cards.find((candidate) => candidate.id === cardId);
-    if (card?.kind === 'briefing' && response.actionId !== undefined) {
-      const actionId = response.actionId;
-      setAcks((current) => {
-        const live = new Set(inbox?.cards.map((candidate) => candidate.id));
-        const next = { ...Object.fromEntries(Object.entries(current).filter(([id]) => live.has(id))), [cardId]: actionId };
-        void AsyncStorage.setItem(ACK_KEY, JSON.stringify(next)).catch(() => undefined);
-        return next;
-      });
-    }
-  }, [inbox]);
+  }, []);
   const dismissError = useCallback(() => {
     respondQueue.clearError();
     setSaveError(undefined);
@@ -265,7 +248,7 @@ export function CloudProvider({ children }: PropsWithChildren) {
   }, [cloudGrant]);
 
   const current = url && inbox?.url === url ? inbox : undefined;
-  const inboxCards = useMemo(() => withPendingResponses(current?.cards ?? [], queue.items, acks), [current, queue.items, acks]);
+  const inboxCards = useMemo(() => withPendingResponses(current?.cards ?? [], queue.items), [current, queue.items]);
   const status: CloudStatus = !credential ? 'off' : queue.paused ? 'revoked' : connection?.url === credential.url ? connection.status : 'connecting';
   const value = useMemo<CloudContextValue>(() => ({
     status,

@@ -6,8 +6,6 @@ import { normalizeCloudUrl, type CloudCredential } from './cloud-client';
 const KEY = 'apollo.cloud-credential.v1';
 /** The provider's offline copy of cards. Cleared with the credential it belongs to. */
 export const CARD_CACHE_KEY = 'apollo.cloud-cards.v1';
-/** Morning cards this phone already answered (card id -> action id), so they stay acknowledged after delivery. */
-export const ACK_KEY = 'apollo.cloud-acks.v1';
 
 type CredentialState = Readonly<{ loaded: boolean; credential?: CloudCredential }>;
 
@@ -48,7 +46,7 @@ export async function saveCloudCredential(credential: CloudCredential): Promise<
 
 export async function clearCloudCredential(): Promise<void> {
   await SecureStore.deleteItemAsync(KEY);
-  await AsyncStorage.multiRemove([CARD_CACHE_KEY, ACK_KEY]).catch(() => undefined);
+  await AsyncStorage.removeItem(CARD_CACHE_KEY).catch(() => undefined);
   publish(undefined);
 }
 

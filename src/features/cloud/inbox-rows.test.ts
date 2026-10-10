@@ -63,6 +63,8 @@ test('queued responses show right away: picks flip, an approval says so, a morni
   assert.equal(cards[1].pendingAction, 'approve');
   const rows = buildInboxRows({ sessions: [], cards, isSnoozed: () => false, collapsed });
   assert.deepEqual(layout(rows), ['briefing:morning', '[Needs you 1]', 'card:preview']);
-  // Once delivered, the local acknowledgement keeps the morning card in its acknowledged state.
-  assert.equal(withPendingResponses([morning], [], { morning: 'skip' })[0].acknowledged, 'skip');
+  // Once delivered, the server's resolution (first answer, possibly from another device) wins.
+  const resolved = { ...morning, resolution: { actionId: 'skip', by: 'ipad', at: '2026-10-09T08:05:00Z' } };
+  assert.equal(withPendingResponses([resolved], [])[0].acknowledged, 'skip');
+  assert.equal(withPendingResponses([resolved], [{ cardId: 'morning', response: { actionId: 'keep' } }])[0].acknowledged, 'skip');
 });
