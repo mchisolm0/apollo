@@ -1,16 +1,28 @@
 import type { Card, CardResponse } from '../../../cloud/src/contract.ts';
 import type { InboxSession } from '../relay/session-inbox.ts';
 
-/** A card as the inbox shows it: queued responses applied on top of the server's copy. */
-export type InboxCard = Card & { pendingAction?: string };
+/**
+ * A card as the inbox shows it: queued responses applied on top of the server's copy.
+ * `pendingAction` is an action still on its way. A morning card stays open after Keep or
+ * Skip so its picks stay tappable; `acknowledged` names the action already taken on it.
+ */
+export type InboxCard = Card & { pendingAction?: string; acknowledged?: string };
 
 /** Overlays responses that have not reached the server yet, so taps show immediately and survive offline. */
-export function withPendingResponses(cards: readonly Card[], pending: readonly { cardId: string; response: CardResponse }[]): InboxCard[] {
-  return cards.map((card) => pending.reduce<InboxCard>((current, { cardId, response }) => {
-    if (cardId !== current.id) return current;
-    if (response.actionId !== undefined) return { ...current, pendingAction: response.actionId };
-    return { ...current, picks: current.picks?.map((pick) => pick.n === response.pick ? { ...pick, done: response.done } : pick) };
-  }, card));
+export function withPendingResponses(
+  cards: readonly Card[],
+  pending: readonly { cardId: string; response: CardResponse }[],
+  acknowledged: Readonly<Record<string, string>> = {},
+): InboxCard[] {
+  return cards.map((card) => {
+    const overlaid = pending.reduce<InboxCard>((current, { cardId, response }) => {
+      if (cardId !== current.id) return current;
+      if (response.actionId !== undefined) return current.kind === 'briefing' ? { ...current, acknowledged: response.actionId } : { ...current, pendingAction: response.actionId };
+      return { ...current, picks: current.picks?.map((pick) => pick.n === response.pick ? { ...pick, done: response.done } : pick) };
+    }, card);
+    const ack = overlaid.acknowledged ?? acknowledged[card.id] ?? card.resolution?.actionId;
+    return card.kind === 'briefing' && ack ? { ...overlaid, acknowledged: ack } : overlaid;
+  });
 }
 
 export type InboxRowSession = Pick<InboxSession, 'id' | 'title' | 'preview' | 'settled' | 'status' | 'pendingApproval'>;
@@ -47,7 +59,7 @@ export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isS
   const inBucket = (id: 'open' | 'snoozed' | 'settled') => sessions.filter((session) => bucket(session) === id && matches(session.title, session.preview));
 
   const briefing = search || attentionOnly ? undefined
-    : visible.filter((card) => card.kind === 'briefing' && card.pendingAction === undefined).sort(newest('createdAt'))[0];
+    : visible.filter((card) => card.kind === 'briefing').sort(newest('createdAt'))[0];
   const approvals = visible.filter((card) => card.kind === 'approval' && matches(card.title, card.body)).sort(newest('createdAt'));
   const open = inBucket('open');
   const waiting = open.filter((session) => session.pendingApproval);

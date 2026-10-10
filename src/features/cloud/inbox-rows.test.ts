@@ -50,14 +50,19 @@ test('search and the attention filter hide the morning card and narrow cards', (
   assert.deepEqual(layout(buildInboxRows({ ...input, query: 'disk' })), ['[Updates 1]', 'card:disk']);
 });
 
-test('queued responses show right away: picks flip, a done morning card leaves, an approval says so', () => {
+test('queued responses show right away: picks flip, an approval says so, a morning card stays acknowledged', () => {
   const morning = card('morning', 'briefing', { picks: [{ n: 1, text: 'Merge', done: false }, { n: 2, text: 'Review', done: false }] });
   const cards = withPendingResponses([morning, card('preview', 'approval')], [
     { cardId: 'morning', response: { pick: 2, done: true } },
     { cardId: 'preview', response: { actionId: 'approve' } },
+    { cardId: 'morning', response: { actionId: 'keep' } },
   ]);
   assert.deepEqual(cards[0].picks?.map((pick) => pick.done), [false, true]);
+  assert.equal(cards[0].acknowledged, 'keep');
+  assert.equal(cards[0].pendingAction, undefined);
   assert.equal(cards[1].pendingAction, 'approve');
-  const rows = buildInboxRows({ sessions: [], cards: withPendingResponses(cards, [{ cardId: 'morning', response: { actionId: 'done' } }]), isSnoozed: () => false, collapsed });
-  assert.deepEqual(layout(rows), ['[Needs you 1]', 'card:preview']);
+  const rows = buildInboxRows({ sessions: [], cards, isSnoozed: () => false, collapsed });
+  assert.deepEqual(layout(rows), ['briefing:morning', '[Needs you 1]', 'card:preview']);
+  // Once delivered, the local acknowledgement keeps the morning card in its acknowledged state.
+  assert.equal(withPendingResponses([morning], [], { morning: 'skip' })[0].acknowledged, 'skip');
 });

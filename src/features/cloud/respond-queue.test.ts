@@ -69,6 +69,45 @@ test('toggles coalesce so only the latest value is sent, with a new key only whe
   assert.deepEqual(setup.sent.map((item) => [item.key, item.response.done]), [['on', true], ['off', false]]);
 });
 
+test('a toggle sent while an older one is in flight still ends on the latest value', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let firstAttempt = true;
+  const setup = fixture(async () => {
+    if (!firstAttempt) return card;
+    firstAttempt = false;
+    await gate;
+    throw new Error('Network request failed');
+  });
+  await setup.queue.enqueue({ key: 'k1', cardId: 'card_1', response: { pick: 1, done: true } });
+  const flushing = setup.queue.flush();
+  await setup.queue.enqueue({ key: 'k2', cardId: 'card_1', response: { pick: 1, done: false } });
+  release();
+  await flushing;
+  // k1 is backing off at the head, k2 waits behind it, and the user taps again.
+  await setup.queue.enqueue({ key: 'k3', cardId: 'card_1', response: { pick: 1, done: true } });
+  assert.deepEqual(setup.queue.getSnapshot().items.map((item) => [item.key, item.response.done]), [['k1', true], ['k3', true]]);
+  setup.advance(60_000);
+  await setup.queue.flush();
+  assert.equal(setup.sent.at(-1)?.response.done, true);
+  assert.deepEqual(setup.queue.getSnapshot().items, []);
+});
+
+test('401 pauses the queue without dropping it until credentials change', async () => {
+  let revoked = true;
+  const setup = fixture(async () => { if (revoked) throw Object.assign(new Error('Unauthorized'), { status: 401 }); return card; });
+  await setup.queue.enqueue({ key: 'a', cardId: 'card_1', response: { actionId: 'keep' } });
+  await setup.queue.enqueue({ key: 'b', cardId: 'card_2', response: { actionId: 'approve' } });
+  await setup.queue.flush();
+  assert.equal(setup.queue.getSnapshot().paused, true);
+  assert.deepEqual(setup.queue.getSnapshot().items.map((item) => item.key), ['a', 'b']);
+  assert.equal(setup.sent.length, 1);
+  revoked = false;
+  setup.queue.resume();
+  await setup.queue.flush();
+  assert.deepEqual(setup.queue.getSnapshot(), { items: [] });
+});
+
 test('an enqueue that cannot be saved is rejected and never shows as queued', async () => {
   const setup = fixture(offline, { failWrites: () => true });
   await assert.rejects(setup.queue.enqueue({ key: 'k', cardId: 'card_1', response: { actionId: 'approve' } }), /Disk full/);

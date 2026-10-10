@@ -10,7 +10,8 @@ export type QueuedResponse = Readonly<{
   nextAttemptAt?: number;
 }>;
 
-export type RespondQueueSnapshot = Readonly<{ items: readonly QueuedResponse[]; error?: string }>;
+/** `paused` means the server rejected the credentials; items wait until they change. */
+export type RespondQueueSnapshot = Readonly<{ items: readonly QueuedResponse[]; error?: string; paused?: boolean }>;
 
 export type RespondQueueDependencies = {
   storage: { getItem(key: string): Promise<string | null>; setItem(key: string, value: string): Promise<void> };
@@ -70,8 +71,9 @@ export function createRespondQueue(dependencies: RespondQueueDependencies) {
   let inFlight: string | undefined;
   let lock = Promise.resolve();
 
+  let paused = false;
   const publish = (items: readonly QueuedResponse[], error = snapshot.error) => {
-    snapshot = { items, ...(error ? { error } : {}) };
+    snapshot = { items, ...(error ? { error } : {}), ...(paused ? { paused } : {}) };
     listeners.forEach((listener) => listener());
   };
   /** Serializes read-modify-write so concurrent enqueues and deliveries never drop each other. */
@@ -98,6 +100,7 @@ export function createRespondQueue(dependencies: RespondQueueDependencies) {
   const without = (key: string) => (items: readonly QueuedResponse[]) => items.filter((item) => item.key !== key);
 
   const deliverOnce = async () => {
+    if (paused) return false;
     const at = now();
     if (snapshot.items.some((item) => item.key !== inFlight && at - item.createdAt > MAX_AGE_MS)) {
       await update((items) => items.filter((item) => item.key === inFlight || at - item.createdAt <= MAX_AGE_MS), 'Some responses could not be delivered in time.');
@@ -120,6 +123,11 @@ export function createRespondQueue(dependencies: RespondQueueDependencies) {
         await update(without(item.key));
         const { card } = failure;
         if (card) cardListeners.forEach((listener) => listener(card));
+      } else if (failure.status === 401 || failure.status === 403) {
+        // Revoked or wrong credentials: keep every intent and wait for new ones.
+        paused = true;
+        publish(snapshot.items, 'Cloud access was revoked. Reconnect it in agent settings.');
+        return false;
       } else if (failure.status === undefined || failure.status === 408 || failure.status === 429 || failure.status >= 500) {
         const attempts = item.attempts + 1;
         const nextAttemptAt = now() + Math.min(1000 * 2 ** attempts, 60_000);
@@ -163,13 +171,14 @@ export function createRespondQueue(dependencies: RespondQueueDependencies) {
     flush,
     /**
      * Adds one intent and resolves only once it is saved; it rejects if storage fails, so
-     * the caller can keep the card actionable. Re-enqueueing a key is a no-op. A pick for
-     * the same card and pick as an unsent entry updates that entry in place: it keeps its
-     * key when the body is unchanged and takes the new key when `done` differs.
+     * the caller can keep the card actionable. Re-enqueueing a key is a no-op. A pick merges
+     * into the latest entry for the same card and pick unless that entry is in flight: it
+     * keeps its key when the body is unchanged and takes the new key when `done` differs.
      */
     enqueue: (input: Pick<QueuedResponse, 'key' | 'cardId' | 'response'>) => load().then(() => exclusive(async () => {
       if (snapshot.items.some((item) => item.key === input.key)) return;
-      const pending = snapshot.items.find((item) => item.key !== inFlight && item.cardId === input.cardId && samePick(item.response, input.response));
+      const latest = snapshot.items.findLast((item) => item.cardId === input.cardId && samePick(item.response, input.response));
+      const pending = latest?.key === inFlight ? undefined : latest;
       const items = !pending ? [...snapshot.items, { ...input, createdAt: now(), attempts: 0 }].slice(-MAX_ITEMS)
         : JSON.stringify(pending.response) === JSON.stringify(input.response) ? snapshot.items
           : snapshot.items.map((item) => item === pending ? { ...item, key: input.key, response: input.response } : item);
@@ -183,6 +192,12 @@ export function createRespondQueue(dependencies: RespondQueueDependencies) {
     },
     clearError() {
       if (snapshot.error) publish(snapshot.items, '');
+    },
+    /** Call when credentials change, so a queue paused on 401/403 tries again. */
+    resume() {
+      if (!paused) return;
+      paused = false;
+      publish(snapshot.items, '');
     },
   };
 }

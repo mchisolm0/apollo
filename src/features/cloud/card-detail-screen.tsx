@@ -4,7 +4,7 @@ import { MessageContent } from '@/features/relay/message-content';
 import { RelayButton, RelayHeader, useColors, useRelayStyles, useTextScale, useThemedStyles, type RelayPalette } from '@/features/relay/relay-ui';
 
 import type { CardPick } from '../../../cloud/src/contract';
-import { actionLabel, cardActions, cardAge, CardPicks, openCardLink, runAction, sourceLabels } from './card-ui';
+import { acknowledgedLabel, actionLabel, cardActions, cardAge, CardPicks, openCardLink, runAction, sourceLabels } from './card-ui';
 import { useCloud } from './cloud-context';
 
 /** Full card: long bodies (digests, job matches), meta, picks and every action. */
@@ -29,9 +29,10 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
   const pick = (_: unknown, value: CardPick) => { void cloud.respond(card.id, { pick: value.n, done: !value.done }); };
   const actions = cardActions(card);
   const link = card.url && !actions.some((action) => action.url === card.url) ? card.url : undefined;
-  const outcome = card.pendingAction ? `${actionLabel(card, card.pendingAction)}, sending`
-    : card.resolution ? `${actionLabel(card, card.resolution.actionId)} by ${card.resolution.by} · ${new Date(card.resolution.at).toLocaleString()}`
-      : open ? undefined : 'Settled';
+  const outcome = card.acknowledged ? acknowledgedLabel(card, card.acknowledged)
+    : card.pendingAction ? `${actionLabel(card, card.pendingAction)}, sending`
+      : card.resolution ? `${actionLabel(card, card.resolution.actionId)} by ${card.resolution.by} · ${new Date(card.resolution.at).toLocaleString()}`
+        : open ? undefined : 'Settled';
   return <View style={uiStyles.screen}>
     <RelayHeader title={sourceLabels[card.source]} detail={cardAge(card)} onBack={onBack} />
     <ScrollView contentContainerStyle={[uiStyles.content, styles.content]}>
@@ -45,7 +46,7 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
       </View> : null}
       {card.picks?.length ? <View style={styles.picks}><CardPicks card={card} onPick={open ? pick : () => {}} /></View> : null}
       {card.body ? <MessageContent text={card.body} /> : null}
-      {open && !card.pendingAction && actions.length ? <View style={styles.actions}>
+      {open && !card.pendingAction && !card.acknowledged && actions.length ? <View style={styles.actions}>
         {actions.map((action) => <RelayButton key={action.id} tone={action.style === 'primary' ? 'primary' : action.style === 'destructive' ? 'destructive' : 'default'} onPress={() => runAction(card, action, respond)}>{action.label}</RelayButton>)}
       </View> : null}
       {link ? <RelayButton onPress={() => openCardLink(link)}>Open link</RelayButton> : null}

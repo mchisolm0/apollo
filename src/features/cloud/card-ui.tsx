@@ -26,6 +26,13 @@ export function actionLabel(card: Card, actionId: string): string {
   return actionId === 'approve' ? 'Approved' : actionId === 'reject' ? 'Rejected' : label ?? actionId;
 }
 
+/** "Kept", "Skipped", or the action's own label for anything else. */
+export function acknowledgedLabel(card: Card, actionId: string): string {
+  if (actionId === 'keep') return 'Kept';
+  if (actionId === 'skip') return 'Skipped';
+  return cardActions(card).find((action) => action.id === actionId)?.label ?? actionId;
+}
+
 export function cardAge(card: Card): string {
   return dateLabel(Math.floor(Date.parse(card.updatedAt) / 1000));
 }
@@ -66,7 +73,10 @@ export function CardPicks({ card, onPick }: { card: InboxCard; onPick: (card: In
   </View>;
 }
 
-/** The morning card pinned to the top of the inbox: date and calendar, then up to three picks. */
+/**
+ * The morning card pinned to the top of the inbox: date and calendar, then up to three picks.
+ * After Keep or Skip it stays open with a compact "Kept · 1 of 3 done" header and live picks.
+ */
 export const BriefingCard = memo(function BriefingCard({ card, onOpen, onPick, onAction }: {
   card: InboxCard;
   onOpen: (card: InboxCard) => void;
@@ -77,12 +87,15 @@ export const BriefingCard = memo(function BriefingCard({ card, onOpen, onPick, o
   const { factor } = useTextScale();
   const { calendar, ...meta } = card.meta ?? {};
   const date = new Date(card.createdAt).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }).toLocaleUpperCase();
+  const picks = card.picks?.slice(0, 3) ?? [];
+  const summary = card.acknowledged ? `${acknowledgedLabel(card, card.acknowledged)} · ${picks.filter((pick) => pick.done).length} of ${picks.length} done` : undefined;
   return <View style={styles.briefing}>
     <View style={styles.briefingHeader}>
       <Pressable accessibilityRole="button" accessibilityLabel={`${card.title}, ${date}${calendar ? `, ${calendar}` : ''}. Open card`} onPress={() => onOpen(card)} style={styles.briefingDate}>
         <Text style={[styles.briefingDateText, { fontSize: 13 * factor, lineHeight: 18 * factor }]} numberOfLines={1}>{calendar ? `${date} · ${calendar}` : date}</Text>
       </Pressable>
-      {cardActions(card).map((action) => <Pressable key={action.id} accessibilityRole="button" accessibilityLabel={`${action.label} morning card`} onPress={() => onAction(card, action)} style={({ pressed }) => [styles.textAction, pressed && { opacity: 0.6 }]}>
+      {summary ? <Text style={[styles.summary, { fontSize: 13 * factor }]} numberOfLines={1}>{summary}</Text> : null}
+      {summary ? null : cardActions(card).map((action) => <Pressable key={action.id} accessibilityRole="button" accessibilityLabel={`${action.label} morning card`} onPress={() => onAction(card, action)} style={({ pressed }) => [styles.textAction, pressed && { opacity: 0.6 }]}>
         <Text style={[styles.textActionLabel, action.style === 'destructive' && styles.destructive, { fontSize: 15 * factor }]}>{action.label}</Text>
       </Pressable>)}
     </View>
@@ -134,6 +147,7 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   briefingHeader: { flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 44 },
   briefingDate: { flex: 1, minHeight: 44, justifyContent: 'center' },
   briefingDateText: { color: colors.muted, fontWeight: '600', letterSpacing: 0.3 },
+  summary: { color: colors.secondary, fontWeight: '600' },
   textAction: { minHeight: 44, minWidth: 44, paddingHorizontal: 6, alignItems: 'center', justifyContent: 'center' },
   textActionLabel: { color: colors.cyan, fontWeight: '600' },
   destructive: { color: colors.red },

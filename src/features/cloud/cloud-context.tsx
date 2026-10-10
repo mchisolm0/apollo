@@ -12,7 +12,7 @@ import { useApollo } from '@/lib/apollo-context';
 import type { Card, CardResponse } from '../../../cloud/src/contract';
 import { applyCard, applyStreamMessage, mergeSnapshot, parseCards, parseStreamMessage } from './cards';
 import { CloudRequestError, createCloudClient, pushRegistrationKey, type CloudCredential } from './cloud-client';
-import { CARD_CACHE_KEY, cloudCredentialStore, loadCloudCredential, saveCloudCredential } from './cloud-credentials';
+import { ACK_KEY, CARD_CACHE_KEY, cloudCredentialStore, loadCloudCredential, saveCloudCredential } from './cloud-credentials';
 import { ensureCloudChannels, respondQueue } from './cloud-runtime';
 import { withPendingResponses, type InboxCard } from './inbox-rows';
 
@@ -49,7 +49,9 @@ export function CloudProvider({ children }: PropsWithChildren) {
   const { loaded, credential } = useSyncExternalStore(cloudCredentialStore.subscribe, cloudCredentialStore.getSnapshot);
   const queue = useSyncExternalStore(respondQueue.subscribe, respondQueue.getSnapshot);
   // Cards belong to the inbox they came from, so a new credential never shows another inbox's cards.
-  const [inbox, setInbox] = useState<{ url: string; cards: readonly Card[]; ready: boolean }>();
+  // `fresh` marks that a snapshot landed, after which the cache may no longer replace anything.
+  const [inbox, setInbox] = useState<{ url: string; cards: readonly Card[]; ready: boolean; fresh: boolean }>();
+  const [acks, setAcks] = useState<Readonly<Record<string, string>>>({});
   const [connection, setConnection] = useState<{ url: string; status: Exclude<CloudStatus, 'off' | 'connecting'> }>();
   const [active, setActive] = useState(AppState.currentState === 'active');
   const [pushRevision, setPushRevision] = useState(0);
@@ -58,17 +60,23 @@ export function CloudProvider({ children }: PropsWithChildren) {
   const [saveError, setSaveError] = useState<string>();
 
   const url = credential?.url;
-  const setCards = useCallback((update: (current: readonly Card[]) => readonly Card[], ready?: boolean) => {
+  const setCards = useCallback((update: (current: readonly Card[]) => readonly Card[], source?: 'cache' | 'snapshot') => {
     if (!url) return;
     setInbox((current) => {
-      const base = current?.url === url ? current : { url, cards: [], ready: false };
-      return { url, cards: update(base.cards), ready: ready ?? base.ready };
+      const base = current?.url === url ? current : { url, cards: [], ready: false, fresh: false };
+      if (source === 'cache' && base.fresh) return base;
+      return { url, cards: update(base.cards), ready: base.ready || source !== undefined, fresh: base.fresh || source === 'snapshot' };
     });
   }, [url]);
 
   useEffect(() => {
     void loadCloudCredential();
     void respondQueue.load();
+    void AsyncStorage.getItem(ACK_KEY).then((saved) => {
+      const value: unknown = saved ? JSON.parse(saved) : undefined;
+      if (!value || typeof value !== 'object') return;
+      setAcks(Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string')));
+    }).catch(() => undefined);
     const appState = AppState.addEventListener('change', (next) => setActive(next === 'active'));
     const token = Platform.OS === 'web' ? undefined : Notifications.addPushTokenListener(() => {
       registered.current = undefined;
@@ -79,6 +87,9 @@ export function CloudProvider({ children }: PropsWithChildren) {
 
   useEffect(() => respondQueue.onCard((card) => setCards((current) => applyCard(current, card))), [setCards]);
 
+  // New credentials (Reconnect, re-pair) resume a queue paused on 401/403.
+  useEffect(() => { if (credential) respondQueue.resume(); }, [credential]);
+
   // Cached cards keep the inbox from jumping while the first snapshot loads, and work offline.
   useEffect(() => {
     if (!url) return;
@@ -88,7 +99,8 @@ export function CloudProvider({ children }: PropsWithChildren) {
       const value: unknown = JSON.parse(saved);
       if (!value || typeof value !== 'object' || !('url' in value) || value.url !== url || !('cards' in value)) return;
       const cached = parseCards(value.cards);
-      setCards((local) => local.length ? local : cached, true);
+      // Cards the stream already delivered win over the cache by rev.
+      setCards((local) => local.reduce<readonly Card[]>((cards, card) => applyCard(cards, card), cached), 'cache');
     }).catch(() => undefined);
     return () => { current = false; };
   }, [url, setCards]);
@@ -111,6 +123,12 @@ export function CloudProvider({ children }: PropsWithChildren) {
     // Set while a snapshot is in flight, so a stream removal is not undone by a stale snapshot.
     let removedDuringSync: Set<string> | undefined;
 
+    // Revoked access stops reconnecting until new credentials arrive (Settings offers Reconnect).
+    const markRevoked = () => {
+      revoked = true;
+      setConnection({ url: credential.url, status: 'revoked' });
+      socket?.close();
+    };
     const sync = async () => {
       const removed = new Set<string>();
       removedDuringSync = removed;
@@ -118,15 +136,11 @@ export function CloudProvider({ children }: PropsWithChildren) {
         const snapshot = await client.cards();
         if (closed) return;
         synced = true;
-        setCards((local) => mergeSnapshot(local, snapshot, removed), true);
+        setCards((local) => mergeSnapshot(local, snapshot, removed), 'snapshot');
         void respondQueue.flush();
       } catch (cause) {
         if (closed) return;
-        if (cause instanceof CloudRequestError && (cause.status === 401 || cause.status === 403)) {
-          revoked = true;
-          setConnection({ url: credential.url, status: 'revoked' });
-          socket?.close();
-        }
+        if (cause instanceof CloudRequestError && (cause.status === 401 || cause.status === 403)) markRevoked();
       } finally {
         if (removedDuringSync === removed) removedDuringSync = undefined;
       }
@@ -136,7 +150,12 @@ export function CloudProvider({ children }: PropsWithChildren) {
       if (closed || revoked) return;
       const next = new HeaderWebSocket(client.streamUrl(), undefined, { headers: { Authorization: `Bearer ${credential.token}` } });
       socket = next;
+      let opened = false;
+      let refused = false;
+      // React Native reports a refused upgrade as an error whose message carries the status.
+      next.onerror = (event) => { if ('message' in event && typeof event.message === 'string' && /\b40[13]\b/u.test(event.message)) refused = true; };
       next.onopen = () => {
+        opened = true;
         attempt = 0;
         lastHeard = Date.now();
         setConnection({ url: credential.url, status: 'live' });
@@ -157,15 +176,18 @@ export function CloudProvider({ children }: PropsWithChildren) {
       next.onclose = () => {
         clearInterval(ping);
         if (closed || socket !== next) return;
+        if (refused) return markRevoked();
         if (!revoked) setConnection({ url: credential.url, status: 'offline' });
-        // Without a stream, still show what the server has.
-        if (!synced) void sync();
-        retry = setTimeout(open, Math.min(1000 * 2 ** attempt++, 30_000));
+        // A refused upgrade can mean revoked access, and without a stream the inbox still
+        // needs the server's cards: the snapshot answers both before the next attempt.
+        void (opened ? Promise.resolve() : sync()).then(() => {
+          if (!closed && !revoked) retry = setTimeout(open, Math.min(1000 * 2 ** attempt++, 30_000));
+        });
       };
     };
     open();
     // A handshake that hangs should not leave the inbox empty until the OS gives up on it.
-    const fallback = setTimeout(() => { if (!synced) void sync(); }, 5_000);
+    const fallback = setTimeout(() => { if (!synced && !revoked) void sync(); }, 5_000);
     return () => {
       closed = true;
       setConnection(undefined);
@@ -219,7 +241,18 @@ export function CloudProvider({ children }: PropsWithChildren) {
       return;
     }
     void respondQueue.flush();
-  }, []);
+    // A morning card stays open after Keep or Skip; remember the answer so its buttons stay hidden.
+    const card = inbox?.cards.find((candidate) => candidate.id === cardId);
+    if (card?.kind === 'briefing' && response.actionId !== undefined) {
+      const actionId = response.actionId;
+      setAcks((current) => {
+        const live = new Set(inbox?.cards.map((candidate) => candidate.id));
+        const next = { ...Object.fromEntries(Object.entries(current).filter(([id]) => live.has(id))), [cardId]: actionId };
+        void AsyncStorage.setItem(ACK_KEY, JSON.stringify(next)).catch(() => undefined);
+        return next;
+      });
+    }
+  }, [inbox]);
   const dismissError = useCallback(() => {
     respondQueue.clearError();
     setSaveError(undefined);
@@ -232,8 +265,8 @@ export function CloudProvider({ children }: PropsWithChildren) {
   }, [cloudGrant]);
 
   const current = url && inbox?.url === url ? inbox : undefined;
-  const inboxCards = useMemo(() => withPendingResponses(current?.cards ?? [], queue.items), [current, queue.items]);
-  const status: CloudStatus = !credential ? 'off' : connection?.url === credential.url ? connection.status : 'connecting';
+  const inboxCards = useMemo(() => withPendingResponses(current?.cards ?? [], queue.items, acks), [current, queue.items, acks]);
+  const status: CloudStatus = !credential ? 'off' : queue.paused ? 'revoked' : connection?.url === credential.url ? connection.status : 'connecting';
   const value = useMemo<CloudContextValue>(() => ({
     status,
     credential,
