@@ -18,18 +18,33 @@ The admin secret is a Worker secret. Only the token CLI (`cloud/cli`) uses it, t
 
 ## Endpoints
 
-| Method | Path | Role | Purpose |
+Errors are `ApiError` (`{ error: { code, message } }`) with a matching HTTP status.
+
+| Method | Path | Role | Request → response |
 | --- | --- | --- | --- |
-| `POST` | `/v1/cards` | producer | Upsert a `CardInput` by `(source, key)`. Returns the `Card`. Pushes only on first insert. |
-| `PATCH` | `/v1/cards/:id` | producer | Change `state`, `title`, `body`, `picks`, `meta` or `expiresAt`, e.g. resolve an approval handled elsewhere. |
-| `GET` | `/v1/cards?since=<iso>` | device | Open cards plus anything updated since `since`. |
-| `GET` | `/v1/stream` | device | WebSocket of `StreamMessage`s (hibernatable). |
-| `POST` | `/v1/cards/:id/respond` | device | Body `CardResponse`. Idempotent with `Idempotency-Key`. An action resolves the card; a pick toggles it. Appends an `InboxEvent`. |
-| `GET` | `/v1/events?after=<seq>&source=<s>` | producer | Response log, oldest first. Producers keep their own cursor. |
-| `POST` | `/v1/devices` | device | Register a `DeviceRegistration` for push. |
-| `DELETE` | `/v1/devices/self` | device | Stop push to this device. |
-| `POST` | `/v1/device-tokens` | connector | Mint a `device` token for a phone the connector already trusts. Returns `{ token, name }`. |
+| `POST` | `/v1/cards` | producer | `CardInput` → `Card`. Upserts by `(source, key)`; see Rules. |
+| `PATCH` | `/v1/cards/:id` | producer | `CardPatch` → `Card`. Resolving a card that is already closed is a no-op that returns it. |
+| `GET` | `/v1/cards` | device | → `Card[]`: every open card, plus cards closed in the last 7 days. The phone replaces its whole set with this. |
+| `GET` | `/v1/stream` | device | WebSocket of `StreamMessage`s (hibernatable). Auth uses the `Authorization` header. A text `ping` is answered with `pong`. |
+| `POST` | `/v1/cards/:id/respond` | device | `CardResponse` → `Card`. Requires `Idempotency-Key`. `409 card_closed` (with `error.card`) if the card isn't open. |
+| `GET` | `/v1/events?after=<seq>&source=<s>` | producer | → `InboxEvent[]`, oldest first, at most 500. Page with the last `seq`. |
+| `POST` | `/v1/devices` | device | `DeviceRegistration` → 204. |
+| `DELETE` | `/v1/devices/self` | device | → 204. Stops push to this device. |
+| `POST` | `/v1/device-tokens` | connector | `DeviceTokenRequest` → `DeviceTokenResponse`. Revokes any earlier token with that name. |
+| `DELETE` | `/v1/device-tokens/:name` | connector | → 204. Called when the connector revokes a phone. |
+| `POST` / `GET` | `/admin/tokens` | admin secret | Create or list tokens (`{ role, name }` → `{ id, token, role, name }`). |
+| `DELETE` | `/admin/tokens/:id` | admin secret | → 204. |
 | `GET` | `/v1/health` | none | Liveness. |
+
+## Rules
+
+- **One writer.** The Durable Object handles one request at a time, so every check below happens in the same transaction as the write it guards.
+- **Responding.** Only open cards accept responses. An action resolves the card and appends one `action` event; the first response wins and later ones get `409 card_closed`. A pick sets `done` and appends one `pick` event; it never toggles.
+- **Idempotency.** `Idempotency-Key` is scoped to the token and kept for 24 hours alongside the event it produced. A replay returns the stored response and appends nothing. Reusing a key with a different body is `422 idempotency_mismatch`.
+- **Upserts.** An upsert never changes `state`, `resolution` or push status. A closed card stays closed and is returned as is. For an open card the producer's fields are replaced, but a pick keeps its `done` value when a pick with the same `n` and `text` existed.
+- **Events.** `seq` increases across the whole inbox and is never reused, even after retention deletes old events.
+- **Push.** A card is pushed once. Delivery state is stored on the card, and the object's alarm retries a failed Expo send up to 5 times over 10 minutes. Upserts never trigger another push.
+- **Reconciling.** The phone does a full `GET /v1/cards` on launch, on foreground and after the stream reconnects, then drops anything it holds that isn't in the result.
 
 ## Push
 
@@ -38,15 +53,15 @@ The Worker sends through the Expo push API. Each push carries `data: { cardId, s
 - `apollo.approval` for approval cards. Buttons: Approve (`approve`), Open (opens the app), Reject (`reject`, destructive).
 - `apollo.briefing` for the morning card. Tapping opens the inbox.
 
-`passive` maps to the iOS passive interruption level. Updates default to passive.
+`passive` maps to the iOS passive interruption level and, on Android, to an `updates` channel with low importance and no sound. Alerts use the `alerts` channel. Updates default to passive.
 
 ## Flows
 
 - **Producer posts.** `POST /v1/cards`. If the Worker can't be reached, producers fall back to Discord through `hermes send`. Discord is failover only.
 - **Phone responds.** `POST /v1/cards/:id/respond`, from the inbox or a notification button. The producer sees it on its next `GET /v1/events` and acts (approves a deployment, updates picks), then may `PATCH` the card.
 - **Hermes approvals.** The connector posts an approval card with source `hermes` and key `<runId>:<requestId>`, reads `approve`/`reject` events, and answers Hermes with `once`/`deny`. If the approval is answered in the app thread instead, the connector resolves the card.
-- **Pairing.** During pair exchange, or when an already paired phone calls the connector, the connector mints a device token and returns `{ cloudUrl, cloudToken }`. One QR code pairs both.
+- **Pairing.** During pair exchange, or when an already paired phone calls the connector, the connector mints a device token named after its own device id and returns `{ cloudUrl, cloudToken }`. One QR code pairs both. Revoking the phone on the connector also deletes its cloud token.
 
 ## Retention
 
-Settled and resolved cards and their events are deleted after 30 days. Expired cards settle on their own through the object's alarm.
+Closed cards and their events are deleted after 30 days. Event sequence numbers keep counting. Expired cards settle on their own through the object's alarm.

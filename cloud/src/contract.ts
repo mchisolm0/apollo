@@ -67,8 +67,18 @@ export interface Card extends Omit<CardInput, 'push'> {
   updatedAt: string;
 }
 
-/** What the phone sends to POST /v1/cards/:id/respond. */
-export type CardResponse = { actionId: string } | { pick: number; done: boolean };
+/** What a producer sends to PATCH /v1/cards/:id. Omitted fields stay as they are. */
+export type CardPatch = Partial<Pick<CardInput, 'title' | 'body' | 'meta' | 'expiresAt'>> & {
+  state?: 'resolved' | 'settled';
+};
+
+/**
+ * What the phone sends to POST /v1/cards/:id/respond. A pick response sets
+ * `done` to the given value; it never toggles.
+ */
+export type CardResponse =
+  | { actionId: string; pick?: never; done?: never }
+  | { pick: number; done: boolean; actionId?: never };
 
 /** One row of the response log producers read from GET /v1/events. */
 export type InboxEvent = {
@@ -85,6 +95,19 @@ export type InboxEvent = {
 export type StreamMessage = { type: 'card'; card: Card } | { type: 'remove'; id: string };
 
 export type TokenRole = 'device' | 'producer' | 'connector';
+
+/** POST /v1/device-tokens. `name` is the connector's device id; minting again for it revokes the old token. */
+export interface DeviceTokenRequest {
+  name: string;
+}
+export interface DeviceTokenResponse {
+  token: string;
+  name: string;
+}
+
+export interface ApiError {
+  error: { code: string; message: string; card?: Card };
+}
 
 export interface DeviceRegistration {
   expoPushToken: string;
