@@ -15,10 +15,12 @@ export type AgentSettingsScreenProps = {
   onToolsets?: () => void;
   defaultModel?: string;
   platform?: string;
+  /** Cloud inbox status for this phone; `onPress` sets it up or reconnects. */
+  cloudInbox?: { value: string; action?: string; onPress?: () => void };
 };
 
 /** One agent's connection and pairing details, opened from the agent picker. App-wide preferences live in AppSettingsScreen. */
-export function AgentSettingsScreen({ agent, deviceName, pairedAt, onBack, onTestConnection, onForgetAgent, onNotifications, onToolsets, defaultModel, platform }: AgentSettingsScreenProps) {
+export function AgentSettingsScreen({ agent, deviceName, pairedAt, onBack, onTestConnection, onForgetAgent, onNotifications, onToolsets, defaultModel, platform, cloudInbox }: AgentSettingsScreenProps) {
   const styles = useThemedStyles(createStyles);
   const uiStyles = useRelayStyles();
   const colors = useColors();
@@ -48,6 +50,7 @@ export function AgentSettingsScreen({ agent, deviceName, pairedAt, onBack, onTes
         <SettingSection label="This device">
           <SettingRow label="Name" value={deviceName} />
           <SettingRow label="Notifications" value="Configure" onPress={onNotifications} />
+          {cloudInbox ? <SettingRow label="Cloud inbox" value={cloudInbox.value} action={cloudInbox.action} onPress={cloudInbox.onPress} /> : null}
           {pairedAt ? <SettingRow label="Paired" value={pairedAt} /> : null}
         </SettingSection>
         <View style={styles.dangerSection}>

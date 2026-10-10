@@ -1,3 +1,4 @@
+import { parseCloudGrant } from '../features/cloud/cloud-client.ts';
 import { normalizeEndpoint } from './endpoint.ts';
 import type {
   PairingDescriptor,
@@ -126,11 +127,13 @@ export class PairingClient {
     if (!isJsonObject(body)) throw new Error('Pairing exchange returned an invalid response');
     const accessToken = stringValue(body.access_token) ?? stringValue(body.token);
     if (!accessToken) throw new Error('Pairing exchange did not return an access token');
+    const cloud = parseCloudGrant(body);
     return {
       descriptor,
       accessToken,
       deviceId: stringValue(body.device_id),
       expiresIn: numberValue(body.expires_in),
+      ...(cloud ? { cloud } : {}),
     };
   }
 }

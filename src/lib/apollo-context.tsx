@@ -1,5 +1,7 @@
 import { posthog } from '@/config/posthog';
 import { createNotificationRegistrationClient, type NotificationRegistrationClient } from '@/features/notifications/notifications';
+import { CloudRequestError, createCloudClient, parseCloudGrant } from '@/features/cloud/cloud-client';
+import { clearCloudCredential, loadCloudCredential, saveCloudCredential } from '@/features/cloud/cloud-credentials';
 import { attachmentMessage, type Attachment, type AttachmentSource } from './attachments';
 import {
   createContext,
@@ -15,6 +17,7 @@ import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { reconcileHistory } from './message-history';
+import { errorMessage } from './protocol';
 import { AgentCatalog } from './catalog';
 import { eventTransportIdentity, isRunActive, statusAfterEvent } from './run-state';
 import { PairingClient, parsePairingLink } from './pairing';
@@ -76,6 +79,8 @@ export interface ApolloContextValue {
   removeAgent(agentId: string): Promise<void>;
   hasSession(agentId: string, sessionId: string): boolean;
   notificationClient(agentId: string): Promise<NotificationRegistrationClient>;
+  /** Asks this agent's connector for a cloud inbox token. Undefined when the connector has no cloud configured. */
+  cloudGrant(agentId: string): Promise<{ url: string; token: string } | undefined>;
 }
 
 // Several missed keepalives: long enough that a quiet but healthy run rarely pays for a status request.
@@ -378,6 +383,7 @@ export function ApolloProvider({
         capabilities: result.descriptor.capabilities,
       };
       await catalog.upsert(agent, result.accessToken);
+      if (result.cloud) await saveCloudCredential({ ...result.cloud, agentId: agent.id }).catch(() => undefined);
       setAgents(catalog.list());
       updateRuntime(agent.id, { status: 'idle', capabilities: result.descriptor.capabilities });
       await refreshAgent(agent.id);
@@ -688,12 +694,33 @@ export function ApolloProvider({
     return createNotificationRegistrationClient({ endpoint: agent.endpoint.url, accessToken });
   }, [catalog]);
 
+  const cloudGrant = useCallback(async (agentId: string) => {
+    const agent = catalog.get(agentId);
+    const accessToken = await catalog.credentials.get(agentId);
+    if (!agent || !accessToken) throw new Error('Pair this device again to use the cloud inbox.');
+    const response = await fetch(`${agent.endpoint.url.replace(/\/+$/u, '')}/v1/apollo/cloud-token`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json' },
+      credentials: 'omit',
+      redirect: 'error',
+    });
+    const body: unknown = await response.json().catch(() => undefined);
+    if (response.status === 404) throw new CloudRequestError('Update the connector on this agent to use the cloud inbox.', { status: 404 });
+    if (!response.ok) throw new CloudRequestError(errorMessage(body, `The connector could not grant a cloud token (${response.status}).`), { status: response.status });
+    return parseCloudGrant(body);
+  }, [catalog]);
+
   const removeAgent = useCallback(async (agentId: string) => {
     const client = await notificationClient(agentId);
     try { await client.unregister(); }
     catch (error) {
       // Revoked credentials and older connectors have no registration to remove.
       if (!(error && typeof error === 'object' && 'status' in error && [401, 404].includes(Number(error.status)))) throw error;
+    }
+    const cloud = await loadCloudCredential();
+    if (cloud?.agentId === agentId) {
+      await createCloudClient(cloud).unregisterDevice().catch(() => undefined);
+      await clearCloudCredential();
     }
     const modelKeys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith(`apollo.thread-model.[${JSON.stringify(agentId)},`));
     await AsyncStorage.multiRemove(modelKeys);
@@ -748,8 +775,9 @@ export function ApolloProvider({
     approveRun,
     removeAgent,
     notificationClient,
+    cloudGrant,
     hasSession,
-  }), [toolsets, sessionDetail, resolveThreadModel, setSessionModel, saveModelSelection, steerRun, notificationClient, hasSession, saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, deleteSession, setPinned, forkSession, regenerateTitle, models, error, loading, messages, pair, refreshAgent, removeAgent, retryAgent, runtime, sessionMessages, skills, startRun, stopRun]);
+  }), [cloudGrant, toolsets, sessionDetail, resolveThreadModel, setSessionModel, saveModelSelection, steerRun, notificationClient, hasSession, saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, deleteSession, setPinned, forkSession, regenerateTitle, models, error, loading, messages, pair, refreshAgent, removeAgent, retryAgent, runtime, sessionMessages, skills, startRun, stopRun]);
 
   return <ApolloContext.Provider value={value}>{children}</ApolloContext.Provider>;
 }

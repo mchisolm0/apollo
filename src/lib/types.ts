@@ -39,6 +39,8 @@ export interface PairingResult {
   accessToken: string;
   deviceId?: string;
   expiresIn?: number;
+  /** The cloud inbox grant, when the connector has one configured. */
+  cloud?: { url: string; token: string };
 }
 
 export interface HermesCapabilities {
