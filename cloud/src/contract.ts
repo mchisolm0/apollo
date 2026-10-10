@@ -64,6 +64,7 @@ export interface Card extends Omit<CardInput, 'push'> {
   rev: number;
   push: PushLevel;
   state: CardState;
+  /** The first action taken. A briefing keeps state `open` after it so picks still work. */
   resolution?: { actionId: string; by: string; at: string };
   createdAt: string;
   updatedAt: string;

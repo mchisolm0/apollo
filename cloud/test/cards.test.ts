@@ -124,6 +124,63 @@ describe('respond', () => {
   });
 });
 
+describe('briefing actions', () => {
+  const morning = (key: string): CardInput => ({
+    ...briefing([{ n: 1, text: 'Ship #335', done: false }]),
+    key,
+    actions: [
+      { id: 'keep', label: 'Keep' },
+      { id: 'skip', label: 'Skip' },
+    ],
+  });
+
+  it('records Keep as the resolution but leaves the card open for picks', async () => {
+    mockExpo();
+    const card = await postCard(producer, morning('2026-10-10'));
+
+    const kept = await (await respond(device, card.id, { actionId: 'keep' })).json<Card>();
+    expect(kept).toMatchObject({ state: 'open', resolution: { actionId: 'keep', by: 'phone' } });
+    expect(kept.rev).toBeGreaterThan(card.rev);
+
+    const picked = await respond(device, card.id, { pick: 1, done: true });
+    expect(picked.status).toBe(200);
+    expect(await picked.json<Card>()).toMatchObject({ state: 'open', resolution: { actionId: 'keep' }, picks: [{ n: 1, done: true }] });
+  });
+
+  it('treats a later action as a no-op', async () => {
+    mockExpo();
+    const card = await postCard(producer, morning('2026-10-11'));
+    const kept = await (await respond(device, card.id, { actionId: 'keep' })).json<Card>();
+
+    const skip = await respond(device, card.id, { actionId: 'skip' });
+    expect(skip.status).toBe(200);
+    expect(await skip.json<Card>()).toEqual(kept);
+
+    const events = await (await call('/v1/events?source=morning', { token: producer })).json<InboxEvent[]>();
+    expect(events.filter((e) => e.cardId === card.id && e.type === 'action')).toEqual([expect.objectContaining({ actionId: 'keep' })]);
+  });
+
+  it('keeps the Idempotency-Key of a no-op action, so a different body with it gets 422', async () => {
+    mockExpo();
+    const card = await postCard(producer, morning('2026-10-12'));
+    await respond(device, card.id, { actionId: 'keep' });
+    expect((await respond(device, card.id, { actionId: 'skip' }, 'noop-key')).status).toBe(200);
+
+    const reused = await respond(device, card.id, { pick: 1, done: true }, 'noop-key');
+    expect(reused.status).toBe(422);
+    expect((await reused.json<ApiError>()).error.code).toBe('idempotency_mismatch');
+  });
+
+  it('answers actions on a settled briefing with 409', async () => {
+    mockExpo();
+    const card = await postCard(producer, morning('2026-10-13'));
+    await call(`/v1/cards/${card.id}`, { method: 'PATCH', token: producer, body: { state: 'settled' } });
+    const response = await respond(device, card.id, { actionId: 'keep' });
+    expect(response.status).toBe(409);
+    expect((await response.json<ApiError>()).error.code).toBe('card_closed');
+  });
+});
+
 describe('events', () => {
   it('pages oldest first from a cursor and filters by source', async () => {
     mockExpo();
