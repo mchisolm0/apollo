@@ -69,6 +69,10 @@ export function createCloudClient({ url, token, fetchImpl = fetch }) {
 }
 
 const CHOICE = { approve: "once", reject: "deny" };
+// Hermes ids are `run_<hex>` and `<hex>`; the separator can't appear in either part.
+const ID = "[A-Za-z0-9._~-]{1,256}";
+const APPROVAL_KEY = new RegExp(`^(${ID}):(${ID})$`, "u");
+const VALID_ID = new RegExp(`^${ID}$`, "u");
 // Hermes approvals time out within minutes; this only bounds cards whose resolve kept failing.
 const ENTRY_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -111,28 +115,33 @@ export function createApprovalBridge({ store, client, agentId, answer, pollInter
 
   async function poll() {
     const stale = (entry) => Date.now() - Date.parse(entry.created_at) > ENTRY_TTL_MS;
-    let tracked = Object.entries((await store.read()).cloud_approvals ?? {});
-    for (const [key, entry] of tracked) {
+    for (const [key, entry] of Object.entries((await store.read()).cloud_approvals ?? {})) {
       if (stale(entry) || (entry.resolve && !entry.card_id)) await forget(key);
       else if (entry.resolve) {
-        try { await client.patchCard(entry.card_id, { state: "resolved" }); }
-        catch (cause) { if (cause.status !== 404) throw cause; }
-        await forget(key);
+        // Per card, so a failing cleanup never blocks answering approvals below.
+        try {
+          await client.patchCard(entry.card_id, { state: "resolved" });
+          await forget(key);
+        } catch (cause) {
+          if (cause.status === 404) await forget(key);
+        }
       }
     }
     if (!Object.keys((await store.read()).cloud_approvals ?? {}).length) return false;
     const events = await client.events("hermes", (await store.read()).cloud_events_after ?? 0);
     if (!Array.isArray(events)) throw new Error("cloud events response was invalid");
     for (const event of events) {
-      const choice = event.type === "action" ? CHOICE[event.actionId] : undefined;
-      const split = typeof event.key === "string" ? event.key.indexOf(":") : -1;
-      if (choice && split > 0) {
-        const entry = (await store.read()).cloud_approvals?.[event.key];
-        // Throws on a transient Hermes failure, before the cursor moves, so the event is retried.
-        await answer(entry?.run_id ?? event.key.slice(0, split), choice, entry ? entry.request_id : event.key.slice(split + 1));
+      if (!Number.isSafeInteger(event?.seq)) {
+        console.warn("apollo-connector: skipped a cloud event without a valid seq");
+        continue;
       }
+      const choice = event.type === "action" ? CHOICE[event.actionId] : undefined;
+      const parsed = choice && typeof event.key === "string" ? APPROVAL_KEY.exec(event.key) : null;
+      if (choice && !parsed) console.warn(`apollo-connector: skipped malformed cloud event ${event.seq}`);
+      // Throws on a transient Hermes failure, before the cursor moves, so the event is retried.
+      if (parsed) await answer(parsed[1], choice, parsed[2]);
       await store.update((state) => {
-        if (choice) delete state.cloud_approvals?.[event.key];
+        if (parsed) delete state.cloud_approvals?.[event.key];
         state.cloud_events_after = Math.max(state.cloud_events_after ?? 0, event.seq);
       });
     }
@@ -164,13 +173,13 @@ export function createApprovalBridge({ store, client, agentId, answer, pollInter
   async function post(runId, key, status) {
     const approval = status.approval;
     try {
-      const card = await client.upsertCard(approvalCard({ agentId, runId, sessionId: status.session_id, approval: { ...approval, request_id: key.slice(runId.length + 1) } }));
+      const card = await client.upsertCard(approvalCard({ agentId, runId, sessionId: status.session_id, approval }));
       if (typeof card?.id !== "string") throw new Error("cloud card response was invalid");
       failingSince.delete(key);
       // If the run moved on mid-post, the entry is gone or marked; either way the loop resolves this card.
       await store.update((state) => {
         state.cloud_approvals ??= {};
-        state.cloud_approvals[key] = { ...(state.cloud_approvals[key] ?? { run_id: runId, request_id: approval.request_id ?? null, created_at: new Date().toISOString(), resolve: true }), card_id: card.id };
+        state.cloud_approvals[key] = { ...(state.cloud_approvals[key] ?? { run_id: runId, request_id: approval.request_id, created_at: new Date().toISOString(), resolve: true }), card_id: card.id };
       });
       return false;
     } catch (cause) {
@@ -192,7 +201,9 @@ export function createApprovalBridge({ store, client, agentId, answer, pollInter
      */
     async runStatus(runId, status) {
       const approval = status.status === "waiting_for_approval" ? status.approval : null;
-      const key = approval ? `${runId}:${approval.request_id ?? status.updated_at}` : null;
+      // Without a usable request id a card could only answer blindly, so that approval is pushed directly.
+      const blind = Boolean(approval) && !(typeof approval.request_id === "string" && VALID_ID.test(approval.request_id));
+      const key = approval && !blind ? `${runId}:${approval.request_id}` : null;
       try {
         const needsPost = await store.update((state) => {
           state.cloud_approvals ??= {};
@@ -200,13 +211,13 @@ export function createApprovalBridge({ store, client, agentId, answer, pollInter
             if (entry.run_id === runId && other !== key) entry.resolve = true;
           }
           if (!key) return false;
-          state.cloud_approvals[key] ??= { run_id: runId, request_id: approval.request_id ?? null, card_id: null, created_at: new Date().toISOString() };
+          state.cloud_approvals[key] ??= { run_id: runId, request_id: approval.request_id, card_id: null, created_at: new Date().toISOString() };
           return !state.cloud_approvals[key].card_id;
         });
         ensurePolling();
-        return { fallback: needsPost ? await post(runId, key, status) : false };
+        return { fallback: needsPost ? await post(runId, key, status) : blind };
       } catch {
-        return { fallback: false };
+        return { fallback: blind };
       }
     },
     close() {

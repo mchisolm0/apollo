@@ -335,14 +335,14 @@ async function startCloudStub() {
   const seen = [];
   const events = [];
   // hold[pathname]: a promise the stub awaits before answering that path.
-  const stub = { seen, events, fail: false, hold: {} };
+  const stub = { seen, events, fail: false, failMethod: null, hold: {} };
   const server = (await import("node:http")).createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : undefined;
     seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization, body });
     await stub.hold[new URL(req.url, "http://cloud").pathname];
-    if (stub.fail) return send(res, 500, { error: { code: "down", message: "down" } });
+    if (stub.fail || stub.failMethod === req.method) return send(res, 503, { error: { code: "down", message: "down" } });
     const url = new URL(req.url, "http://cloud");
     if (req.method === "POST" && url.pathname === "/v1/device-tokens") return send(res, 200, { token: `cloud-${seen.length}`, name: body.name });
     if (req.method === "DELETE" && url.pathname.startsWith("/v1/device-tokens/")) { res.writeHead(204); return res.end(); }
@@ -454,14 +454,43 @@ test("a response that lands before the card post finishes still answers Hermes, 
   let release;
   f.cloud.hold["/v1/cards"] = new Promise((resolve) => { release = resolve; });
   f.cloud.events.push({ seq: 3, cardId: "card", source: "hermes", key: "run_test:req_1", at: new Date().toISOString(), by: "phone", type: "action", actionId: "reject" });
-  f.hermes.approvalStatuses.push(503);
+  f.hermes.approvalStatuses.push(503, 429, 408);
   f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "waiting_for_approval", session_id: "session_test", approval: { request_id: "req_1", command: "git push" } });
   await req(f.base, "/v1/runs", { method: "POST", headers: f.headers, body: JSON.stringify({ input: "ship", session_id: "session_test" }) });
+  // 503, 429 and 408 are transient: the cursor holds until Hermes takes the answer.
   const answers = () => f.hermes.seen.filter((request) => request.url === "/v1/runs/run_test/approval");
-  await waitFor(() => answers().length === 2);
+  await waitFor(() => answers().length === 4);
   assert.equal((await f.connector.store.read()).cloud_events_after, 3);
-  assert.deepEqual(JSON.parse(answers()[1].body), { choice: "deny", request_id: "req_1" });
+  assert.deepEqual(JSON.parse(answers()[3].body), { choice: "deny", request_id: "req_1" });
   release();
+});
+
+test("a failing resolve of an old card never blocks answering the current approval", async (t) => {
+  const f = await cloudFixture(); t.after(f.close);
+  f.cloud.failMethod = "PATCH";
+  f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "waiting_for_approval", session_id: "session_test", approval: { request_id: "req_1", command: "git push" } });
+  await req(f.base, "/v1/runs", { method: "POST", headers: f.headers, body: JSON.stringify({ input: "ship", session_id: "session_test" }) });
+  await waitFor(() => f.cloud.seen.some((request) => request.body?.key === "run_test:req_1"));
+  f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "waiting_for_approval", session_id: "session_test", approval: { request_id: "req_2", command: "git push --force" } });
+  await waitFor(() => f.cloud.seen.some((request) => request.body?.key === "run_test:req_2") && f.cloud.seen.some((request) => request.method === "PATCH"));
+  f.cloud.events.push({ seq: 1, cardId: "card", source: "hermes", key: "run_test:req_2", at: new Date().toISOString(), by: "phone", type: "action", actionId: "approve" });
+  await waitFor(() => f.hermes.seen.some((request) => request.url === "/v1/runs/run_test/approval"));
+  assert.deepEqual(JSON.parse(f.hermes.seen.find((request) => request.url === "/v1/runs/run_test/approval").body), { choice: "once", request_id: "req_2" });
+  assert.equal((await f.connector.store.read()).cloud_approvals["run_test:req_1"].resolve, true);
+});
+
+test("malformed event keys are skipped without answering Hermes and the cursor moves past them", async (t) => {
+  const f = await cloudFixture(); t.after(f.close);
+  const warn = t.mock.method(console, "warn", () => {});
+  const event = (seq, key) => ({ seq, cardId: "card", source: "hermes", key, at: new Date().toISOString(), by: "phone", type: "action", actionId: "approve" });
+  f.cloud.events.push(event(1, "run_test:"), event(2, "\ud800:req_1"), event(3, "run_test:req_1:extra"), event(4, "run_test:req_1"));
+  f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "waiting_for_approval", session_id: "session_test", approval: { request_id: "req_1", command: "git push" } });
+  await req(f.base, "/v1/runs", { method: "POST", headers: f.headers, body: JSON.stringify({ input: "ship", session_id: "session_test" }) });
+  await waitFor(async () => (await f.connector.store.read()).cloud_events_after === 4);
+  const answers = f.hermes.seen.filter((request) => request.url.endsWith("/approval"));
+  assert.deepEqual(answers.map((request) => [request.url, JSON.parse(request.body)]), [["/v1/runs/run_test/approval", { choice: "once", request_id: "req_1" }]]);
+  assert.equal(warn.mock.callCount(), 3);
+  assert.equal(warn.mock.calls.some((call) => call.arguments.join(" ").includes("run_test")), false);
 });
 
 test("a mint that finishes after revoke deletes the new token instead of returning it", async (t) => {

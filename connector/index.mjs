@@ -253,8 +253,8 @@ export function createConnectorServer(options = {}) {
       redirect: "error",
       signal: AbortSignal.timeout(10_000),
     });
-    // 4xx: the run or approval is gone (answered in the app thread or timed out) or the request can never succeed.
-    if (response.status >= 400 && response.status < 500) return false;
+    // Other 4xx: the run or approval is gone (answered in the app thread or timed out) or the request can never succeed.
+    if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) return false;
     if (!response.ok) throw new Error(`Hermes approval failed (${response.status})`);
     return true;
   }
