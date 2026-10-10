@@ -220,16 +220,16 @@ export class Inbox extends DurableObject<Env> {
   }
 
   /**
-   * Records a phone's answer. On approvals and updates the first action
-   * resolves the card and later ones get 409. A briefing stays open so picks
-   * keep working; each of its actions is recorded once and a repeat returns
-   * the card unchanged. A replayed Idempotency-Key returns the stored response.
+   * Records a phone's answer. The first action sets the card's resolution:
+   * approvals and updates resolve and later actions get 409; a briefing stays
+   * open so picks keep working, and later actions return it unchanged. A
+   * replayed Idempotency-Key returns the stored response.
    */
   async respond(tokenHash: string, id: string, response: CardResponse, idempotency: { key: string; bodyHash: string }): Promise<Reply<Card>> {
     const who = this.#authorize(tokenHash, DEVICE);
     if ('status' in who) return who;
 
-    const result = this.ctx.storage.transactionSync((): Failure | { card: Card; replay: boolean } => {
+    const result = this.ctx.storage.transactionSync((): Failure | { card: Card; changed: boolean } => {
       const [prior] = this.sql
         .exec<{ body_hash: string; response: string }>(
           'SELECT body_hash, response FROM idempotency WHERE token_id = ? AND key = ? AND created_at > ?',
@@ -240,7 +240,7 @@ export class Inbox extends DurableObject<Env> {
         .toArray();
       if (prior) {
         return prior.body_hash === idempotency.bodyHash
-          ? { card: parseCard({ data: prior.response }), replay: true }
+          ? { card: parseCard({ data: prior.response }), changed: false }
           : fail(422, 'idempotency_mismatch', 'this Idempotency-Key was used with a different body');
       }
 
@@ -251,17 +251,20 @@ export class Inbox extends DurableObject<Env> {
       const at = iso();
       const base = { cardId: card.id, source: card.source, key: card.key, at, by: who.name };
       let next: Card;
-      let event: WithoutSeq<InboxEvent>;
+      // Undefined when the card is returned unchanged.
+      let event: WithoutSeq<InboxEvent> | undefined;
       if ('actionId' in response) {
         const action = card.actions?.find((a) => a.id === response.actionId && !a.url);
         if (!action) return fail(400, 'unknown_action', 'card has no such recordable action');
-        if (card.kind === 'briefing') {
-          if (this.#actionRecorded(card.id, action.id)) return { card, replay: true };
+        const resolution = { actionId: action.id, by: who.name, at };
+        if (card.kind === 'briefing' && card.resolution) {
+          // The first answer wins. Later ones return the card as it is.
           next = card;
         } else {
-          next = this.#commit({ ...card, state: 'resolved', resolution: { actionId: action.id, by: who.name, at } });
+          // A briefing stays open so picks keep working.
+          next = this.#commit({ ...card, state: card.kind === 'briefing' ? 'open' : 'resolved', resolution });
+          event = { ...base, type: 'action', actionId: action.id };
         }
-        event = { ...base, type: 'action', actionId: action.id };
       } else {
         if (!card.picks?.some((p) => p.n === response.pick)) return fail(400, 'unknown_pick', 'card has no such pick');
         const picks = card.picks.map((p) => (p.n === response.pick ? { ...p, done: response.done } : p));
@@ -269,7 +272,8 @@ export class Inbox extends DurableObject<Env> {
         event = { ...base, type: 'pick', pick: response.pick, done: response.done };
       }
 
-      this.sql.exec('INSERT INTO events (card_id, source, data) VALUES (?, ?, ?)', card.id, card.source, JSON.stringify(event));
+      if (event) this.sql.exec('INSERT INTO events (card_id, source, data) VALUES (?, ?, ?)', card.id, card.source, JSON.stringify(event));
+      // Stored even for a no-op, so the key can't later carry a different body.
       this.sql.exec(
         'INSERT OR REPLACE INTO idempotency (token_id, key, body_hash, response, created_at) VALUES (?, ?, ?, ?, ?)',
         who.id,
@@ -278,14 +282,13 @@ export class Inbox extends DurableObject<Env> {
         JSON.stringify(next),
         Date.now(),
       );
-      return { card: next, replay: false };
+      return { card: next, changed: event !== undefined };
     });
 
     if ('status' in result) return result;
-    if (!result.replay) {
+    if (result.changed) {
       this.#broadcast({ type: 'card', card: result.card });
-      // A resolved card now waits on retention. (A briefing action leaves the
-      // card as it was; the broadcast and check are harmless.)
+      // A resolved card now waits on retention.
       await this.#scheduleAlarm();
     }
     return ok(result.card);
@@ -461,18 +464,6 @@ export class Inbox extends DurableObject<Env> {
   #cardBy(where: string, ...bindings: string[]): Card | undefined {
     const [row] = this.sql.exec<CardRow>(`SELECT data FROM cards WHERE ${where}`, ...bindings).toArray();
     return row && parseCard(row);
-  }
-
-  #actionRecorded(cardId: string, actionId: string) {
-    return (
-      this.sql
-        .exec(
-          `SELECT 1 FROM events WHERE card_id = ? AND json_extract(data, '$.type') = 'action' AND json_extract(data, '$.actionId') = ? LIMIT 1`,
-          cardId,
-          actionId,
-        )
-        .toArray().length > 0
-    );
   }
 
   #rev() {
