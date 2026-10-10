@@ -1,0 +1,23 @@
+{
+  "name": "@apollo/cloud",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types",
+    "typecheck": "wrangler types --check && tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
+    "test": "vitest run",
+    "tokens": "node cli.ts"
+  },
+  "dependencies": {
+    "arktype": "^2.2.8"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.4.0",
+    "@types/node": "^26.4.1",
+    "typescript": "~6.0.3",
+    "vitest": "^5.0.3",
+    "wrangler": "^4.149.0"
+  }
+}
