@@ -60,7 +60,7 @@ The Worker sends through the Expo push API. Each push carries `data: { cardId, s
 - **Producer posts.** `POST /v1/cards`. If the Worker can't be reached, producers fall back to Discord through `hermes send`. Discord is failover only.
 - **Phone responds.** `POST /v1/cards/:id/respond`, from the inbox or a notification button. The producer sees it on its next `GET /v1/events` and acts (approves a deployment, updates picks), then may `PATCH` the card.
 - **Hermes approvals.** The connector posts an approval card with source `hermes` and key `<runId>:<requestId>`, reads `approve`/`reject` events, and answers Hermes with `once`/`deny`. If the approval is answered in the app thread instead, the connector resolves the card.
-- **Pairing.** During pair exchange, or when an already paired phone calls the connector, the connector mints a device token named after its own device id and returns `{ cloudUrl, cloudToken }`. One QR code pairs both. Revoking the phone on the connector also deletes its cloud token.
+- **Pairing.** During pair exchange, or when an already paired phone calls the connector, the connector mints a device token named after its own device id and includes `cloud: { url, token }` in its response (both pair exchange and `POST /v1/apollo/cloud-token`). One QR code pairs both. Revoking the phone on the connector also deletes its cloud token.
 
 ## Retention
 
