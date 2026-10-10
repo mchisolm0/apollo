@@ -193,7 +193,7 @@ export function createRespondQueue(dependencies: RespondQueueDependencies) {
     clearError() {
       if (snapshot.error) publish(snapshot.items, '');
     },
-    /** Call when credentials change, so a queue paused on 401/403 tries again. */
+    /** Call when credentials change or are proven to work again, so a queue paused on 401/403 tries again. */
     resume() {
       if (!paused) return;
       paused = false;

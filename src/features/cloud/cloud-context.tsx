@@ -131,6 +131,8 @@ export function CloudProvider({ children }: PropsWithChildren) {
         if (closed) return;
         synced = true;
         setCards((local) => mergeSnapshot(local, snapshot, removed), 'snapshot');
+        // These credentials work, so a 401/403 seen earlier (a Worker deploy) no longer holds responses.
+        respondQueue.resume();
         void respondQueue.flush();
       } catch (cause) {
         if (closed) return;
@@ -145,9 +147,6 @@ export function CloudProvider({ children }: PropsWithChildren) {
       const next = new HeaderWebSocket(client.streamUrl(), undefined, { headers: { Authorization: `Bearer ${credential.token}` } });
       socket = next;
       let opened = false;
-      let refused = false;
-      // React Native reports a refused upgrade as an error whose message carries the status.
-      next.onerror = (event) => { if ('message' in event && typeof event.message === 'string' && /\b40[13]\b/u.test(event.message)) refused = true; };
       next.onopen = () => {
         opened = true;
         attempt = 0;
@@ -170,10 +169,9 @@ export function CloudProvider({ children }: PropsWithChildren) {
       next.onclose = () => {
         clearInterval(ping);
         if (closed || socket !== next) return;
-        if (refused) return markRevoked();
         if (!revoked) setConnection({ url: credential.url, status: 'offline' });
-        // A refused upgrade can mean revoked access, and without a stream the inbox still
-        // needs the server's cards: the snapshot answers both before the next attempt.
+        // A connection that never opened may be revoked access, which the snapshot's 401
+        // reveals; it also keeps the inbox current while the stream is down.
         void (opened ? Promise.resolve() : sync()).then(() => {
           if (!closed && !revoked) retry = setTimeout(open, Math.min(1000 * 2 ** attempt++, 30_000));
         });

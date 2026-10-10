@@ -108,6 +108,27 @@ test('401 pauses the queue without dropping it until credentials change', async 
   assert.deepEqual(setup.queue.getSnapshot(), { items: [] });
 });
 
+test('a one-off 401 resumes in order once the same credentials work again, and resume is otherwise a no-op', async () => {
+  let unauthorized = true;
+  const setup = fixture(async (item) => {
+    if (item.key === 'bad') throw Object.assign(new Error('Unknown card'), { status: 404 });
+    if (unauthorized) { unauthorized = false; throw Object.assign(new Error('Unauthorized'), { status: 401 }); }
+    return card;
+  });
+  await setup.queue.enqueue({ key: 'pick', cardId: 'card_1', response: { pick: 1, done: true } });
+  await setup.queue.enqueue({ key: 'keep', cardId: 'card_1', response: { actionId: 'keep' } });
+  await setup.queue.flush();
+  assert.equal(setup.queue.getSnapshot().paused, true);
+  // A successful snapshot with the same credentials calls resume.
+  setup.queue.resume();
+  await setup.queue.flush();
+  assert.deepEqual(setup.sent.map((item) => item.key), ['pick', 'pick', 'keep']);
+  await setup.queue.enqueue({ key: 'bad', cardId: 'missing', response: { actionId: 'approve' } });
+  await setup.queue.flush();
+  setup.queue.resume();
+  assert.deepEqual(setup.queue.getSnapshot(), { items: [], error: 'Unknown card' });
+});
+
 test('an enqueue that cannot be saved is rejected and never shows as queued', async () => {
   const setup = fixture(offline, { failWrites: () => true });
   await assert.rejects(setup.queue.enqueue({ key: 'k', cardId: 'card_1', response: { actionId: 'approve' } }), /Disk full/);
