@@ -27,7 +27,10 @@ export function parseCloudUrl(value) {
 export async function loadCloudConfig({ path, env = process.env }) {
   let saved = {};
   try { saved = JSON.parse(await readFile(path, "utf8")); }
-  catch (cause) { if (cause.code !== "ENOENT") throw new Error(`Invalid cloud config at ${path}: ${cause.message}`); }
+  catch (cause) {
+    // Parser messages can quote the file, token included.
+    if (cause.code !== "ENOENT") throw new Error(`Invalid cloud config at ${path}`);
+  }
   const url = env.APOLLO_CLOUD_URL || saved.url;
   const token = env.APOLLO_CLOUD_TOKEN || saved.token;
   if (!url || !token) return null;
@@ -89,10 +92,13 @@ function approvalCard({ agentId, runId, sessionId, approval }) {
 
 /**
  * Turns Hermes approvals into cloud approval cards and cloud responses back into
- * Hermes approval answers. Open cards and the event cursor live in connector state
- * (`cloud_approvals`, `cloud_events_after`) so a restart picks up where it left off.
- * `answer(runId, choice, requestId)` resolves true when Hermes took the answer and
- * false when the approval is no longer pending.
+ * Hermes approval answers. Approvals are tracked in connector state as
+ * `cloud_approvals[<runId>:<requestId>] = { run_id, request_id, card_id, resolve }`,
+ * saved before the card is posted, with the event cursor in `cloud_events_after`.
+ * The poll loop runs while any are tracked: it resolves cards whose approval moved
+ * on and answers Hermes from each approve/reject event's own key.
+ * `answer(runId, choice, requestId)` resolves true when Hermes took the answer, false
+ * when the approval no longer exists, and throws on a transient failure.
  */
 export function createApprovalBridge({ store, client, agentId, answer, pollInterval = 3_000, fallbackAfter = 30_000 }) {
   let closed = false;
@@ -101,32 +107,33 @@ export function createApprovalBridge({ store, client, agentId, answer, pollInter
   let loop = null;
   let pending = false;
 
-  async function resolveCard(key, entry) {
-    try { await client.patchCard(entry.card_id, { state: "resolved" }); }
-    catch (cause) { if (cause.status !== 404) throw cause; }
-    await store.update((state) => { delete state.cloud_approvals?.[key]; });
-  }
+  const forget = (key) => store.update((state) => { delete state.cloud_approvals?.[key]; });
 
   async function poll() {
     const stale = (entry) => Date.now() - Date.parse(entry.created_at) > ENTRY_TTL_MS;
-    let state = await store.read();
-    if (Object.values(state.cloud_approvals ?? {}).some(stale)) {
-      state = await store.update((current) => {
-        for (const [key, entry] of Object.entries(current.cloud_approvals ?? {})) if (stale(entry)) delete current.cloud_approvals[key];
-        return current;
-      });
+    let tracked = Object.entries((await store.read()).cloud_approvals ?? {});
+    for (const [key, entry] of tracked) {
+      if (stale(entry) || (entry.resolve && !entry.card_id)) await forget(key);
+      else if (entry.resolve) {
+        try { await client.patchCard(entry.card_id, { state: "resolved" }); }
+        catch (cause) { if (cause.status !== 404) throw cause; }
+        await forget(key);
+      }
     }
-    if (!Object.keys(state.cloud_approvals ?? {}).length) return false;
-    const events = await client.events("hermes", state.cloud_events_after ?? 0);
+    if (!Object.keys((await store.read()).cloud_approvals ?? {}).length) return false;
+    const events = await client.events("hermes", (await store.read()).cloud_events_after ?? 0);
     if (!Array.isArray(events)) throw new Error("cloud events response was invalid");
     for (const event of events) {
-      const entry = (await store.read()).cloud_approvals?.[event.key];
       const choice = event.type === "action" ? CHOICE[event.actionId] : undefined;
-      // A transient Hermes failure throws before the cursor moves, so the event is retried.
-      if (entry && choice) await answer(entry.run_id, choice, entry.request_id);
-      await store.update((current) => {
-        if (entry && choice) delete current.cloud_approvals?.[event.key];
-        current.cloud_events_after = Math.max(current.cloud_events_after ?? 0, event.seq);
+      const split = typeof event.key === "string" ? event.key.indexOf(":") : -1;
+      if (choice && split > 0) {
+        const entry = (await store.read()).cloud_approvals?.[event.key];
+        // Throws on a transient Hermes failure, before the cursor moves, so the event is retried.
+        await answer(entry?.run_id ?? event.key.slice(0, split), choice, entry ? entry.request_id : event.key.slice(split + 1));
+      }
+      await store.update((state) => {
+        if (choice) delete state.cloud_approvals?.[event.key];
+        state.cloud_events_after = Math.max(state.cloud_events_after ?? 0, event.seq);
       });
     }
     return true;
@@ -154,41 +161,52 @@ export function createApprovalBridge({ store, client, agentId, answer, pollInter
     });
   }
 
+  async function post(runId, key, status) {
+    const approval = status.approval;
+    try {
+      const card = await client.upsertCard(approvalCard({ agentId, runId, sessionId: status.session_id, approval: { ...approval, request_id: key.slice(runId.length + 1) } }));
+      if (typeof card?.id !== "string") throw new Error("cloud card response was invalid");
+      failingSince.delete(key);
+      // If the run moved on mid-post, the entry is gone or marked; either way the loop resolves this card.
+      await store.update((state) => {
+        state.cloud_approvals ??= {};
+        state.cloud_approvals[key] = { ...(state.cloud_approvals[key] ?? { run_id: runId, request_id: approval.request_id ?? null, created_at: new Date().toISOString(), resolve: true }), card_id: card.id };
+      });
+      return false;
+    } catch (cause) {
+      const outage = cause.status === undefined || cause.status >= 500;
+      if (outage && !failingSince.has(key)) failingSince.set(key, Date.now());
+      return outage && Date.now() - failingSince.get(key) >= fallbackAfter;
+    }
+  }
+
   return {
     start() {
       ensurePolling();
     },
     /**
-     * Called with each polled run status. Posts a card for a new approval and resolves
-     * cards whose approval was answered elsewhere. `synced` is true once nothing is left
-     * to sync. `fallback` is true while the cloud has refused the current card for
-     * `fallbackAfter`, so the caller should push the approval directly.
+     * Called with each polled run status. Posts a card for a new approval and marks
+     * cards whose approval moved on for resolution. Resolves `{ fallback }`, true while
+     * the cloud has refused the current card for `fallbackAfter`, so the caller should
+     * push the approval directly.
      */
     async runStatus(runId, status) {
       const approval = status.status === "waiting_for_approval" ? status.approval : null;
-      const requestId = approval?.request_id ?? (approval ? status.updated_at : null);
-      const currentKey = approval ? `${runId}:${requestId}` : null;
-      const open = Object.entries((await store.read()).cloud_approvals ?? {});
-      let synced = true;
-      for (const [key, entry] of open) {
-        if (entry.run_id !== runId || key === currentKey) continue;
-        try { await resolveCard(key, entry); } catch { synced = false; }
-      }
-      if (!currentKey || open.some(([key]) => key === currentKey)) return { synced, fallback: false };
+      const key = approval ? `${runId}:${approval.request_id ?? status.updated_at}` : null;
       try {
-        const card = await client.upsertCard(approvalCard({ agentId, runId, sessionId: status.session_id, approval: { ...approval, request_id: String(requestId) } }));
-        if (typeof card?.id !== "string") throw new Error("cloud card response was invalid");
-        await store.update((state) => {
+        const needsPost = await store.update((state) => {
           state.cloud_approvals ??= {};
-          state.cloud_approvals[currentKey] = { card_id: card.id, run_id: runId, request_id: approval.request_id ?? null, created_at: new Date().toISOString() };
+          for (const [other, entry] of Object.entries(state.cloud_approvals)) {
+            if (entry.run_id === runId && other !== key) entry.resolve = true;
+          }
+          if (!key) return false;
+          state.cloud_approvals[key] ??= { run_id: runId, request_id: approval.request_id ?? null, card_id: null, created_at: new Date().toISOString() };
+          return !state.cloud_approvals[key].card_id;
         });
-        failingSince.delete(currentKey);
         ensurePolling();
-        return { synced, fallback: false };
-      } catch (cause) {
-        const outage = cause.status === undefined || cause.status >= 500;
-        if (outage && !failingSince.has(currentKey)) failingSince.set(currentKey, Date.now());
-        return { synced: false, fallback: outage && Date.now() - failingSince.get(currentKey) >= fallbackAfter };
+        return { fallback: needsPost ? await post(runId, key, status) : false };
+      } catch {
+        return { fallback: false };
       }
     },
     close() {

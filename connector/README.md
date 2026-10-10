@@ -52,8 +52,8 @@ node connector/cli.mjs cloud status
 
 When configured:
 
-- Pair exchange mints a cloud `device` token named after the device id and returns `cloud: { url, token }`. Already paired phones call the device-authenticated `POST /v1/apollo/cloud-token` for a fresh one. A cloud failure never fails pairing. Revoking a device deletes its cloud token.
-- A run waiting for approval becomes a `hermes` approval card keyed `<runId>:<requestId>` instead of a direct approval push, and runs are watched even when no device registered for connector push. The connector polls `GET /v1/events` while any card is open, answers Hermes with `once` for approve and `deny` for reject, and resolves cards answered in the app thread. Open cards and the event cursor live in the state file.
+- Pair exchange mints a cloud `device` token named after the device id and returns `cloud: { url, token }`. Already paired phones call the device-authenticated `POST /v1/apollo/cloud-token` for a fresh one. A cloud failure never fails pairing. Revoking a device deletes its cloud token; failed deletes are kept in the state file and retried every minute and at startup.
+- A run waiting for approval becomes a `hermes` approval card keyed `<runId>:<requestId>` instead of a direct approval push, and runs are watched even when no device registered for connector push. The connector polls `GET /v1/events` while any card is open, answers Hermes from each event's key with `once` for approve and `deny` for reject, and resolves cards answered in the app thread. Approvals are saved to the state file before their card is posted, and the event cursor only moves after Hermes takes or definitively rejects the answer.
 - If the cloud refuses a new card with a network error or 5xx for 30 seconds, the connector sends the direct approval push to devices registered with it, and keeps retrying the card.
 - Completion and failure pushes still go directly through Expo.
 

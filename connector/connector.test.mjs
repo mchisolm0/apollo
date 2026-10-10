@@ -67,10 +67,12 @@ async function fixture(options = {}) {
 async function startHermesStub() {
   const seen = [];
   const runStatuses = new Map();
+  const approvalStatuses = [];
   const server = (await import("node:http")).createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
     seen.push({ method: req.method, url: req.url, body, authorization: req.headers.authorization, cookie: req.headers.cookie, forwarded: req.headers["x-forwarded-for"], device: req.headers["x-apollo-device-id"] });
+    if (req.url.endsWith("/approval") && approvalStatuses.length) return send(res, approvalStatuses.shift(), {});
     if (req.url === "/v1/capabilities") return send(res, 200, { object: "hermes.api_server.capabilities", features: ["runs"] });
     if (req.url === "/v1/health") return send(res, 200, { status: "ok" });
     if (req.method === "POST" && req.url === "/v1/runs") return send(res, 202, { run_id: "run_test", status: "started" });
@@ -79,7 +81,7 @@ async function startHermesStub() {
     return send(res, 200, { ok: true });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { server, seen, runStatuses, url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((resolve) => server.close(resolve)) };
+  return { server, seen, runStatuses, approvalStatuses, url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((resolve) => server.close(resolve)) };
 }
 
 function send(res, status, value) { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(value)); }
@@ -332,12 +334,14 @@ async function waitFor(predicate, timeout = 1_000) {
 async function startCloudStub() {
   const seen = [];
   const events = [];
-  const stub = { seen, events, fail: false };
+  // hold[pathname]: a promise the stub awaits before answering that path.
+  const stub = { seen, events, fail: false, hold: {} };
   const server = (await import("node:http")).createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : undefined;
     seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization, body });
+    await stub.hold[new URL(req.url, "http://cloud").pathname];
     if (stub.fail) return send(res, 500, { error: { code: "down", message: "down" } });
     const url = new URL(req.url, "http://cloud");
     if (req.method === "POST" && url.pathname === "/v1/device-tokens") return send(res, 200, { token: `cloud-${seen.length}`, name: body.name });
@@ -403,7 +407,8 @@ test("a Hermes approval becomes a cloud card and an approve event answers Hermes
   f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "completed", session_id: "session_test" });
   await waitFor(() => pushes.includes("completed"));
   assert.deepEqual(pushes, ["completed"]);
-  assert.deepEqual((await f.connector.store.read()).cloud_approvals, {});
+  // A status read just before the answer can re-post the card; the closed card is then resolved again as a no-op.
+  await waitFor(async () => !Object.keys((await f.connector.store.read()).cloud_approvals).length);
 });
 
 test("a cloud outage falls back to the direct approval push and the card still arrives later", async (t) => {
@@ -442,6 +447,48 @@ test("cloud config is a 0600 file that env overrides, and needs HTTPS", async ()
   assert.deepEqual(await loadCloudConfig({ path, env: {} }), { url: "https://inbox.example", token: "file-token" });
   assert.deepEqual(await loadCloudConfig({ path, env: { APOLLO_CLOUD_TOKEN: "env-token" } }), { url: "https://inbox.example", token: "env-token" });
   await assert.rejects(saveCloudConfig(path, { url: "http://inbox.example", token: "x" }), /HTTPS/u);
+});
+
+test("a response that lands before the card post finishes still answers Hermes, retrying transient failures", async (t) => {
+  const f = await cloudFixture(); t.after(f.close);
+  let release;
+  f.cloud.hold["/v1/cards"] = new Promise((resolve) => { release = resolve; });
+  f.cloud.events.push({ seq: 3, cardId: "card", source: "hermes", key: "run_test:req_1", at: new Date().toISOString(), by: "phone", type: "action", actionId: "reject" });
+  f.hermes.approvalStatuses.push(503);
+  f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "waiting_for_approval", session_id: "session_test", approval: { request_id: "req_1", command: "git push" } });
+  await req(f.base, "/v1/runs", { method: "POST", headers: f.headers, body: JSON.stringify({ input: "ship", session_id: "session_test" }) });
+  const answers = () => f.hermes.seen.filter((request) => request.url === "/v1/runs/run_test/approval");
+  await waitFor(() => answers().length === 2);
+  assert.equal((await f.connector.store.read()).cloud_events_after, 3);
+  assert.deepEqual(JSON.parse(answers()[1].body), { choice: "deny", request_id: "req_1" });
+  release();
+});
+
+test("a mint that finishes after revoke deletes the new token instead of returning it", async (t) => {
+  const f = await cloudFixture(); t.after(f.close);
+  let release;
+  f.cloud.hold["/v1/device-tokens"] = new Promise((resolve) => { release = resolve; });
+  const minting = req(f.base, "/v1/apollo/cloud-token", { method: "POST", headers: f.headers });
+  await waitFor(() => f.cloud.seen.filter((request) => request.url === "/v1/device-tokens").length === 2);
+  const revoking = req(f.base, `/admin/devices/${f.exchange.body.device_id}/revoke`, admin({ method: "POST", body: "{}" }));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  delete f.cloud.hold["/v1/device-tokens"];
+  release();
+  const [minted, revoked] = await Promise.all([minting, revoking]);
+  assert.equal(revoked.response.status, 200);
+  assert.equal(minted.body.cloud, undefined);
+  const mintAt = f.cloud.seen.findLastIndex((request) => request.url === "/v1/device-tokens");
+  assert.ok(f.cloud.seen.findIndex((request) => request.method === "DELETE") > mintAt);
+});
+
+test("a failed cloud revoke is kept and retried until the cloud accepts it", async (t) => {
+  const f = await cloudFixture({ cloudRetryInterval: 10 }); t.after(f.close);
+  f.cloud.fail = true;
+  await req(f.base, `/admin/devices/${f.exchange.body.device_id}/revoke`, admin({ method: "POST", body: "{}" }));
+  assert.deepEqual((await f.connector.store.read()).cloud_revocations, [f.exchange.body.device_id]);
+  f.cloud.fail = false;
+  await waitFor(async () => (await f.connector.store.read()).cloud_revocations.length === 0);
+  assert.equal(f.cloud.seen.at(-1).url, `/v1/device-tokens/${f.exchange.body.device_id}`);
 });
 
 test("without cloud config pairing and approvals are unchanged", async (t) => {

@@ -199,16 +199,50 @@ export function createConnectorServer(options = {}) {
   // Set in start(): options.cloud ({ url, token } or null), else APOLLO_CLOUD_* env or the cloud file.
   let cloud = null;
   let approvalBridge = null;
+  let revocationTimer = null;
+
+  // Cloud mint and revoke for one device run one at a time, in call order.
+  const deviceQueues = new Map();
+  function perDevice(deviceId, task) {
+    const run = (deviceQueues.get(deviceId) ?? Promise.resolve()).then(task);
+    const tail = run.catch(() => {});
+    deviceQueues.set(deviceId, tail);
+    tail.then(() => { if (deviceQueues.get(deviceId) === tail) deviceQueues.delete(deviceId); });
+    return run;
+  }
+
+  const isPaired = async (deviceId) => (await store.read()).devices.some((device) => device.id === deviceId && !device.revoked_at);
+  const queueCloudRevocation = (state, deviceId) => {
+    state.cloud_revocations = [...new Set([...(state.cloud_revocations ?? []), deviceId])];
+  };
+
+  /** Deletes queued cloud device tokens. A 404 counts as done; other failures stay queued for the timer. */
+  async function flushCloudRevocations() {
+    if (!cloud) return;
+    for (const deviceId of (await store.read()).cloud_revocations ?? []) {
+      await perDevice(deviceId, async () => {
+        try { await cloud.revokeDeviceToken(deviceId); }
+        catch (cause) { if (cause.status !== 404) return; }
+        await store.update((state) => { state.cloud_revocations = (state.cloud_revocations ?? []).filter((id) => id !== deviceId); });
+      });
+    }
+  }
 
   /** Mints a cloud device token for a paired phone. Pairing never fails because of the cloud. */
   async function cloudCredentials(deviceId) {
     if (!cloud) return null;
-    try {
-      const minted = await cloud.mintDeviceToken(deviceId);
-      return typeof minted?.token === "string" ? { url: cloud.url, token: minted.token } : null;
-    } catch {
+    const credentials = await perDevice(deviceId, async () => {
+      if (!await isPaired(deviceId)) return null;
+      let minted;
+      try { minted = await cloud.mintDeviceToken(deviceId); } catch { return null; }
+      if (typeof minted?.token !== "string") return null;
+      if (await isPaired(deviceId)) return { url: cloud.url, token: minted.token };
+      // Revoked while minting: the new token must not outlive the device.
+      await store.update((state) => queueCloudRevocation(state, deviceId));
       return null;
-    }
+    });
+    if (!credentials) await flushCloudRevocations().catch(() => {});
+    return credentials;
   }
 
   async function answerApproval(runId, choice, requestId) {
@@ -326,10 +360,11 @@ export function createConnectorServer(options = {}) {
         if (found && !found.revoked_at) {
           found.revoked_at = isoNow();
           removeNotificationRegistration(state, found);
+          if (cloud) queueCloudRevocation(state, found.id);
         }
         return found;
       });
-      if (device) await cloud?.revokeDeviceToken(device.id).catch(() => {});
+      if (device) await flushCloudRevocations().catch(() => {});
       return device ? json(res, 200, { device_id: device.id, revoked_at: device.revoked_at }) : error(res, 404, "device not found", "not_found");
     }
     return error(res, 404, "admin route not found", "not_found");
@@ -522,12 +557,18 @@ export function createConnectorServer(options = {}) {
       notificationMonitor = createRunNotificationMonitor({ store, agentId: state.agent_id, fetchRun, sendPush, approvals: approvalBridge, pollInterval: options.notificationPollInterval });
       await notificationMonitor.registrationsChanged();
       approvalBridge?.start();
+      if (cloud) {
+        flushCloudRevocations().catch(() => {});
+        revocationTimer = setInterval(() => flushCloudRevocations().catch(() => {}), options.cloudRetryInterval ?? 60_000);
+        revocationTimer.unref?.();
+      }
       await new Promise((resolve, reject) => { server.once("error", reject); server.listen(port, host, resolve); });
       return server.address();
     },
     async close() {
       notificationMonitor?.close();
       approvalBridge?.close();
+      clearInterval(revocationTimer);
       await new Promise((resolve, reject) => server.close((cause) => cause ? reject(cause) : resolve()));
     },
   };

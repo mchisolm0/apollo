@@ -184,15 +184,14 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
           }
         }
         let event = eventFromStatus(status);
-        let synced = true;
         if (approvals) {
+          // The bridge retries posting and resolving cards on its own; this only reports the run.
           const result = await approvals.runStatus(runId, { ...status, session_id: status.session_id ?? tracked.session_id });
-          synced = result.synced;
           // The card replaces the direct approval push unless the cloud has been down too long.
           if (event?.kind === "approval" && !result.fallback) event = null;
         }
         const delivered = event ? await deliver(runId, status, event) : true;
-        if (TERMINAL.has(status.status) && delivered && synced) {
+        if (TERMINAL.has(status.status) && delivered) {
           if (!event) await store.update((current) => {
             const run = current.notification_runs?.[runId];
             if (run) { run.status = status.status; run.updated_at = new Date().toISOString(); }
