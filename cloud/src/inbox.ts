@@ -301,15 +301,20 @@ export class Inbox extends DurableObject<Env> {
     const who = this.#authorize(tokenHash, DEVICE);
     if ('status' in who) return who;
 
-    this.sql.exec(
-      `INSERT INTO devices (expo_push_token, token_id, platform, name, created_at) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT (expo_push_token) DO UPDATE SET token_id = excluded.token_id, platform = excluded.platform, name = excluded.name`,
-      registration.expoPushToken,
-      who.id,
-      registration.platform,
-      registration.name ?? null,
-      iso(),
-    );
+    this.ctx.storage.transactionSync(() => {
+      // A push token that moves to a new device token leaves its old owner's
+      // pending pushes behind; the new owner decides from here on.
+      this.sql.exec('DELETE FROM push_recipients WHERE expo_push_token = ? AND token_id != ?', registration.expoPushToken, who.id);
+      this.sql.exec(
+        `INSERT INTO devices (expo_push_token, token_id, platform, name, created_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (expo_push_token) DO UPDATE SET token_id = excluded.token_id, platform = excluded.platform, name = excluded.name`,
+        registration.expoPushToken,
+        who.id,
+        registration.platform,
+        registration.name ?? null,
+        iso(),
+      );
+    });
     return noContent;
   }
 

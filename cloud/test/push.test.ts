@@ -89,3 +89,23 @@ it('never retries to a token revoked after the first send, even if the phone reg
 
   expect(recipientsOf(expo)).toEqual([['ExponentPushToken[a]', 'ExponentPushToken[c]'], ['ExponentPushToken[a]']]);
 });
+
+it('drops pending pushes when a push token moves to another device token that then unregisters', async () => {
+  const mint = async (name: string) => (await call('/v1/device-tokens', { token: connector, body: { name } })).json<DeviceTokenResponse>();
+  const register = (token: string) => call('/v1/devices', { token, body: { expoPushToken: 'ExponentPushToken[d]', platform: 'ios' } });
+  await register((await mint('d-old')).token);
+
+  const expo = mockExpo(() => new Response('unavailable', { status: 503 }));
+  const card = await postCard(producer, approval('moved:1'));
+  await vi.waitFor(async () => expect((await pushState(card.id)).push_attempts).toBe(1));
+
+  const { token: owner } = await mint('d-new');
+  await register(owner);
+  expect((await call('/v1/devices/self', { method: 'DELETE', token: owner })).status).toBe(204);
+  await retryNow(card.id);
+
+  const [first, retry] = recipientsOf(expo);
+  expect(first).toContain('ExponentPushToken[d]');
+  expect(retry).toContain('ExponentPushToken[a]');
+  expect(retry).not.toContain('ExponentPushToken[d]');
+});
