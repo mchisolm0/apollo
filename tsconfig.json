@@ -20,5 +20,11 @@
     "**/*.tsx",
     ".expo/types/**/*.ts",
     "expo-env.d.ts"
+  ],
+  "exclude": [
+    "${configDir}/node_modules",
+    "${configDir}/android",
+    "${configDir}/ios",
+    "${configDir}/cloud"
   ]
 }

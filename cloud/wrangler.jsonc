@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "apollo-cloud",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+  // Set with `wrangler secret put`. EXPO_ACCESS_TOKEN is optional and only
+  // needed when the Expo project enforces push security (see src/env.d.ts).
+  "secrets": { "required": ["ADMIN_SECRET"] },
+  "durable_objects": {
+    "bindings": [{ "name": "INBOX", "class_name": "Inbox" }]
+  },
+  // SQLite-backed Durable Objects must be declared with new_sqlite_classes.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Inbox"] }]
+}
