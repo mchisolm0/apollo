@@ -32,7 +32,8 @@ Errors are `ApiError` (`{ error: { code, message } }`) with a matching HTTP stat
 | `DELETE` | `/v1/devices/self` | device | → 204. Stops push to this device. |
 | `POST` | `/v1/device-tokens` | connector | `DeviceTokenRequest` → `DeviceTokenResponse`. Revokes any earlier token with that name. |
 | `DELETE` | `/v1/device-tokens/:name` | connector | → 204. Called when the connector revokes a phone. |
-| `POST` / `GET` | `/admin/tokens` | admin secret | Create or list tokens (`{ role, name }` → `{ id, token, role, name }`). |
+| `POST` | `/admin/tokens` | admin secret | `{ role, name }` → `{ id, token, role, name }`. The only time the raw token is shown. |
+| `GET` | `/admin/tokens` | admin secret | → `{ id, role, name, createdAt }[]`. |
 | `DELETE` | `/admin/tokens/:id` | admin secret | → 204. |
 | `GET` | `/v1/health` | none | Liveness. |
 
@@ -44,7 +45,8 @@ Errors are `ApiError` (`{ error: { code, message } }`) with a matching HTTP stat
 - **Upserts.** An upsert never changes `state`, `resolution` or push status. A closed card stays closed and is returned as is. For an open card the producer's fields are replaced, but a pick keeps its `done` value when a pick with the same `n` and `text` existed.
 - **Events.** `seq` increases across the whole inbox and is never reused, even after retention deletes old events.
 - **Push.** A card is pushed once. Delivery state is stored on the card, and the object's alarm retries a failed Expo send up to 5 times over 10 minutes. Upserts never trigger another push.
-- **Reconciling.** The phone does a full `GET /v1/cards` on launch, on foreground and after the stream reconnects, then drops anything it holds that isn't in the result.
+- **Reconciling.** Every card write bumps the inbox-wide `rev` counter. The phone opens the stream first, then does a full `GET /v1/cards` on launch, on foreground and after the stream reconnects. When merging, a card with a higher `rev` always wins, whether it came from the stream or the snapshot. A local card missing from the snapshot is dropped only if its `rev` is below the highest `rev` in the snapshot.
+- **Revocation.** Deleting a device token also closes its open WebSockets, deletes its push registrations and drops its pending pushes, all in one step.
 
 ## Push
 

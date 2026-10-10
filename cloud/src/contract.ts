@@ -60,6 +60,8 @@ export interface CardInput {
 
 export interface Card extends Omit<CardInput, 'push'> {
   id: string;
+  /** Inbox-wide counter bumped on every write to any card. Higher wins on the phone. */
+  rev: number;
   push: PushLevel;
   state: CardState;
   resolution?: { actionId: string; by: string; at: string };
