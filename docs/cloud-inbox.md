@@ -24,7 +24,7 @@ Errors are `ApiError` (`{ error: { code, message } }`) with a matching HTTP stat
 | --- | --- | --- | --- |
 | `POST` | `/v1/cards` | producer | `CardInput` → `Card`. Upserts by `(source, key)`; see Rules. |
 | `PATCH` | `/v1/cards/:id` | producer | `CardPatch` → `Card`. Resolving a card that is already closed is a no-op that returns it. |
-| `GET` | `/v1/cards` | device | → `Card[]`: every open card, plus cards closed in the last 7 days. The phone replaces its whole set with this. |
+| `GET` | `/v1/cards` | device | → `CardSnapshot` (`{ rev, cards }`): every open card plus cards closed in the last 7 days, read atomically with the inbox `rev`. |
 | `GET` | `/v1/stream` | device | WebSocket of `StreamMessage`s (hibernatable). Auth uses the `Authorization` header. A text `ping` is answered with `pong`. |
 | `POST` | `/v1/cards/:id/respond` | device | `CardResponse` → `Card`. Requires `Idempotency-Key`. `409 card_closed` (with `error.card`) if the card isn't open. |
 | `GET` | `/v1/events?after=<seq>&source=<s>` | producer | → `InboxEvent[]`, oldest first, at most 500. Page with the last `seq`. |
@@ -45,7 +45,7 @@ Errors are `ApiError` (`{ error: { code, message } }`) with a matching HTTP stat
 - **Upserts.** An upsert never changes `state`, `resolution` or push status. A closed card stays closed and is returned as is. For an open card the producer's fields are replaced, but a pick keeps its `done` value when a pick with the same `n` and `text` existed.
 - **Events.** `seq` increases across the whole inbox and is never reused, even after retention deletes old events.
 - **Push.** A card is pushed once. Delivery state is stored on the card, and the object's alarm retries a failed Expo send up to 5 times over 10 minutes. Upserts never trigger another push.
-- **Reconciling.** Every card write bumps the inbox-wide `rev` counter. The phone opens the stream first, then does a full `GET /v1/cards` on launch, on foreground and after the stream reconnects. When merging, a card with a higher `rev` always wins, whether it came from the stream or the snapshot. A local card missing from the snapshot is dropped only if its `rev` is below the highest `rev` in the snapshot.
+- **Reconciling.** Every card write bumps the inbox-wide `rev` counter. The phone opens the stream first, then does a full `GET /v1/cards` on launch, on foreground and after the stream reconnects. When merging, a card with a higher `rev` always wins, whether it came from the stream or the snapshot. A local card missing from the snapshot is dropped if its `rev` is at or below the snapshot's `rev`.
 - **Revocation.** Deleting a device token also closes its open WebSockets, deletes its push registrations and drops its pending pushes, all in one step.
 
 ## Push

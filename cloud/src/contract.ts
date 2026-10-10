@@ -93,6 +93,12 @@ export type InboxEvent = {
   by: string;
 } & ({ type: 'action'; actionId: string } | { type: 'pick'; pick: number; done: boolean });
 
+/** GET /v1/cards. `rev` is the inbox counter at the moment the snapshot was taken. */
+export interface CardSnapshot {
+  rev: number;
+  cards: Card[];
+}
+
 /** Messages the Worker sends on the device WebSocket (GET /v1/stream). */
 export type StreamMessage = { type: 'card'; card: Card } | { type: 'remove'; id: string };
 
