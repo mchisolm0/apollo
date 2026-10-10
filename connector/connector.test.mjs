@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StateStore, createConnectorServer } from "./index.mjs";
 import { createRunNotificationMonitor } from "./notifications.mjs";
+import { loadCloudConfig, saveCloudConfig } from "./cloud.mjs";
 
 test("terminal notification retries stop and stale push results preserve a newer token", async () => {
   for (const scenario of ["unroutable", "replaced-token", "push-failure"]) {
@@ -57,7 +58,7 @@ test("notification history compaction retains active and undelivered runs", asyn
 async function fixture(options = {}) {
   const directory = await mkdtemp(join(tmpdir(), "apollo-connector-"));
   const hermes = await startHermesStub();
-  const connector = createConnectorServer({ port: 0, hermesUrl: hermes.url, hermesApiKey: "hermes-secret", adminSecret: "admin-secret", statePath: join(directory, "nested", "state.json"), label: "Test Hermes", ...options });
+  const connector = createConnectorServer({ port: 0, hermesUrl: hermes.url, hermesApiKey: "hermes-secret", adminSecret: "admin-secret", statePath: join(directory, "nested", "state.json"), label: "Test Hermes", cloud: null, ...options });
   const address = await connector.start();
   const base = `http://127.0.0.1:${address.port}`;
   return { connector, hermes, base, statePath: join(directory, "nested", "state.json") };
@@ -67,7 +68,9 @@ async function startHermesStub() {
   const seen = [];
   const runStatuses = new Map();
   const server = (await import("node:http")).createServer(async (req, res) => {
-    seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization, cookie: req.headers.cookie, forwarded: req.headers["x-forwarded-for"], device: req.headers["x-apollo-device-id"] });
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    seen.push({ method: req.method, url: req.url, body, authorization: req.headers.authorization, cookie: req.headers.cookie, forwarded: req.headers["x-forwarded-for"], device: req.headers["x-apollo-device-id"] });
     if (req.url === "/v1/capabilities") return send(res, 200, { object: "hermes.api_server.capabilities", features: ["runs"] });
     if (req.url === "/v1/health") return send(res, 200, { status: "ok" });
     if (req.method === "POST" && req.url === "/v1/runs") return send(res, 202, { run_id: "run_test", status: "started" });
@@ -325,3 +328,112 @@ async function waitFor(predicate, timeout = 1_000) {
   }
   assert.fail("condition was not met before timeout");
 }
+
+async function startCloudStub() {
+  const seen = [];
+  const events = [];
+  const stub = { seen, events, fail: false };
+  const server = (await import("node:http")).createServer(async (req, res) => {
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    const body = raw ? JSON.parse(raw) : undefined;
+    seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization, body });
+    if (stub.fail) return send(res, 500, { error: { code: "down", message: "down" } });
+    const url = new URL(req.url, "http://cloud");
+    if (req.method === "POST" && url.pathname === "/v1/device-tokens") return send(res, 200, { token: `cloud-${seen.length}`, name: body.name });
+    if (req.method === "DELETE" && url.pathname.startsWith("/v1/device-tokens/")) { res.writeHead(204); return res.end(); }
+    if (req.method === "POST" && url.pathname === "/v1/cards") return send(res, 200, { ...body, id: `card:${body.key}`, state: "open" });
+    if (req.method === "PATCH") return send(res, 200, { id: decodeURIComponent(url.pathname.split("/").at(-1)), ...body });
+    if (req.method === "GET" && url.pathname === "/v1/events") return send(res, 200, events.filter((event) => event.seq > Number(url.searchParams.get("after"))));
+    return send(res, 404, { error: { code: "not_found", message: "not found" } });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return Object.assign(stub, { url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((resolve) => server.close(resolve)) });
+}
+
+async function cloudFixture(options = {}) {
+  const cloud = await startCloudStub();
+  const f = await fixture({ cloud: { url: cloud.url, token: "connector-secret" }, notificationPollInterval: 5, cloudPollInterval: 5, ...options });
+  const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
+  const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
+  const headers = { authorization: `Bearer ${exchange.body.access_token}`, "content-type": "application/json" };
+  const close = async () => { await f.connector.close(); await f.hermes.close(); await cloud.close(); };
+  return { ...f, cloud, exchange, headers, close };
+}
+
+test("pairing returns cloud credentials named after the device and survives a cloud outage", async (t) => {
+  const f = await cloudFixture(); t.after(f.close);
+  assert.deepEqual(f.exchange.body.cloud, { url: f.cloud.url, token: "cloud-1" });
+  assert.deepEqual(f.cloud.seen[0], { method: "POST", url: "/v1/device-tokens", authorization: "Bearer connector-secret", body: { name: f.exchange.body.device_id } });
+  assert.equal(JSON.stringify(JSON.parse(await readFile(f.statePath, "utf8"))).includes("cloud-1"), false);
+  const refreshed = await req(f.base, "/v1/apollo/cloud-token", { method: "POST", headers: f.headers });
+  assert.deepEqual(refreshed.body.cloud, { url: f.cloud.url, token: "cloud-2" });
+  assert.equal((await req(f.base, "/v1/apollo/cloud-token", { method: "POST" })).response.status, 401);
+  f.cloud.fail = true;
+  const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
+  const offline = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
+  assert.equal(offline.response.status, 201);
+  assert.equal("cloud" in offline.body, false);
+  f.cloud.fail = false;
+  await req(f.base, `/admin/devices/${f.exchange.body.device_id}/revoke`, admin({ method: "POST", body: "{}" }));
+  assert.equal(f.cloud.seen.at(-1).method, "DELETE");
+  assert.equal(f.cloud.seen.at(-1).url, `/v1/device-tokens/${f.exchange.body.device_id}`);
+});
+
+test("a Hermes approval becomes a cloud card and an approve event answers Hermes once", async (t) => {
+  const pushes = [];
+  const f = await cloudFixture({ sendPush: async (_token, notification) => { pushes.push(notification.data.kind); return { status: "ok" }; } });
+  t.after(f.close);
+  await req(f.base, "/v1/apollo/notifications", { method: "PUT", headers: f.headers, body: JSON.stringify({ expo_push_token: "ExpoPushToken[device_123]" }) });
+  f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "waiting_for_approval", session_id: "session_test", approval: { request_id: "req_1", command: "rm -rf build", description: "recursive delete" } });
+  await req(f.base, "/v1/runs", { method: "POST", headers: f.headers, body: JSON.stringify({ input: "clean", session_id: "session_test" }) });
+  await waitFor(() => f.cloud.seen.some((request) => request.url === "/v1/cards"));
+  const { agent_id: agentId } = await f.connector.store.read();
+  const card = f.cloud.seen.find((request) => request.url === "/v1/cards").body;
+  assert.ok(Date.parse(card.expiresAt) > Date.now());
+  assert.deepEqual(card, {
+    source: "hermes", key: "run_test:req_1", kind: "approval", title: "Allow this command?", body: "recursive delete\n\nrm -rf build",
+    url: `apollo://session/session_test?agentId=${agentId}&runId=run_test`, expiresAt: card.expiresAt,
+    actions: [{ id: "approve", label: "Approve", style: "primary" }, { id: "reject", label: "Reject", style: "destructive" }],
+  });
+  f.cloud.events.push({ seq: 7, cardId: "card:run_test:req_1", source: "hermes", key: "run_test:req_1", at: new Date().toISOString(), by: "phone", type: "action", actionId: "approve" });
+  await waitFor(() => f.hermes.seen.some((request) => request.method === "POST" && request.url === "/v1/runs/run_test/approval"));
+  assert.deepEqual(JSON.parse(f.hermes.seen.find((request) => request.url === "/v1/runs/run_test/approval").body), { choice: "once", request_id: "req_1" });
+  await waitFor(async () => (await f.connector.store.read()).cloud_events_after === 7);
+  f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "completed", session_id: "session_test" });
+  await waitFor(() => pushes.includes("completed"));
+  assert.deepEqual(pushes, ["completed"]);
+  assert.deepEqual((await f.connector.store.read()).cloud_approvals, {});
+});
+
+test("an approval answered in the app thread resolves its cloud card", async (t) => {
+  const f = await cloudFixture(); t.after(f.close);
+  f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "waiting_for_approval", session_id: "session_test", approval: { request_id: "req_1", command: "git push", tool: "terminal" } });
+  await req(f.base, "/v1/runs", { method: "POST", headers: f.headers, body: JSON.stringify({ input: "ship", session_id: "session_test" }) });
+  await waitFor(() => f.cloud.seen.some((request) => request.url === "/v1/cards"));
+  assert.equal(f.cloud.seen.find((request) => request.url === "/v1/cards").body.title, "Allow terminal?");
+  f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "running", session_id: "session_test" });
+  await waitFor(() => f.cloud.seen.some((request) => request.method === "PATCH"));
+  assert.deepEqual(f.cloud.seen.find((request) => request.method === "PATCH"), { method: "PATCH", url: `/v1/cards/${encodeURIComponent("card:run_test:req_1")}`, authorization: "Bearer connector-secret", body: { state: "resolved" } });
+  assert.equal(f.hermes.seen.some((request) => request.url === "/v1/runs/run_test/approval"), false);
+});
+
+test("cloud config is a 0600 file that env overrides, and needs HTTPS", async () => {
+  const path = join(await mkdtemp(join(tmpdir(), "apollo-cloud-")), "cloud.json");
+  assert.equal(await loadCloudConfig({ path, env: {} }), null);
+  await saveCloudConfig(path, { url: "https://inbox.example/", token: "file-token" });
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  assert.deepEqual(await loadCloudConfig({ path, env: {} }), { url: "https://inbox.example", token: "file-token" });
+  assert.deepEqual(await loadCloudConfig({ path, env: { APOLLO_CLOUD_TOKEN: "env-token" } }), { url: "https://inbox.example", token: "env-token" });
+  await assert.rejects(saveCloudConfig(path, { url: "http://inbox.example", token: "x" }), /HTTPS/u);
+});
+
+test("without cloud config pairing and approvals are unchanged", async (t) => {
+  const f = await fixture({ cloud: null }); t.after(async () => { await f.connector.close(); await f.hermes.close(); });
+  assert.equal((await req(f.base, "/.well-known/apollo/agent")).body.cloud.available, false);
+  const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
+  const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
+  assert.equal("cloud" in exchange.body, false);
+  const headers = { authorization: `Bearer ${exchange.body.access_token}` };
+  assert.equal((await req(f.base, "/v1/apollo/cloud-token", { method: "POST", headers })).response.status, 503);
+});

@@ -38,3 +38,22 @@ Paired devices read `GET /v1/inbox` and update `PATCH /v1/inbox` with `{ "settle
 Set `APOLLO_EXPO_PUSH_URL=https://exp.host/--/api/v2/push/send` on the connector host to enable push delivery. If the Expo project uses push access-token security, also set `APOLLO_EXPO_ACCESS_TOKEN`.
 
 Paired devices manage their own registration at `GET|PUT|DELETE /v1/apollo/notifications`. The connector stores the Expo push token in its mode-0600 state file and never returns it from the device admin API. It polls only runs accepted while at least one device is registered. Completion and failure notifications contain agent, session, and run IDs. Approval notifications open Apollo for review and do not expose an approval action.
+
+# Cloud inbox
+
+The connector can route Hermes approvals through the Apollo cloud inbox ([docs/cloud-inbox.md](../docs/cloud-inbox.md)). It needs the Worker URL and a `connector`-role token:
+
+```sh
+node connector/cli.mjs cloud set --url https://inbox.example.workers.dev --token-file /path/to/connector-token
+node connector/cli.mjs cloud status
+```
+
+`cloud set` writes `cloud.json` (mode 0600) beside the state file; override the path with `APOLLO_CLOUD_FILE`. `APOLLO_CLOUD_URL` and `APOLLO_CLOUD_TOKEN` override the file. The connector reads it at startup, so restart after changing it. `cloud status` never prints the token.
+
+When configured:
+
+- Pair exchange mints a cloud `device` token named after the device id and returns `cloud: { url, token }`. Already paired phones call the device-authenticated `POST /v1/apollo/cloud-token` for a fresh one. A cloud failure never fails pairing. Revoking a device deletes its cloud token.
+- A run waiting for approval becomes a `hermes` approval card keyed `<runId>:<requestId>` instead of a direct approval push, and runs are watched even when no device registered for connector push. The connector polls `GET /v1/events` while any card is open, answers Hermes with `once` for approve and `deny` for reject, and resolves cards answered in the app thread. Open cards and the event cursor live in the state file.
+- Completion and failure pushes still go directly through Expo.
+
+Without the config, nothing changes.
