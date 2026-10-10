@@ -31,7 +31,7 @@ export interface CardAction {
   url?: string;
 }
 
-export interface Pick {
+export interface CardPick {
   n: number;
   text: string;
   sub?: string;
@@ -49,7 +49,7 @@ export interface CardInput {
   url?: string;
   actions?: CardAction[];
   /** Briefing cards only, at most 3. */
-  picks?: Pick[];
+  picks?: CardPick[];
   /** Short labeled lines, e.g. { calendar: '10:00 · 14:30', waiting: 'Scryve #335' }. */
   meta?: Record<string, string>;
   /** Defaults: approval and briefing alert, update passive. Re-upserts never re-push. */
