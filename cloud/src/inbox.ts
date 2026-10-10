@@ -113,6 +113,16 @@ const MIGRATIONS = [
   );
   CREATE INDEX devices_by_token ON devices (token_id);
 
+  -- Who a card still has to reach. Fixed when the card is created, so a
+  -- retry never goes to a phone that registered (or re-registered) later.
+  CREATE TABLE push_recipients (
+    card_id TEXT NOT NULL,
+    expo_push_token TEXT NOT NULL,
+    token_id TEXT NOT NULL,
+    PRIMARY KEY (card_id, expo_push_token)
+  );
+  CREATE INDEX push_recipients_by_token ON push_recipients (token_id);
+
   CREATE TABLE idempotency (
     token_id TEXT NOT NULL,
     key TEXT NOT NULL,
@@ -150,24 +160,23 @@ export class Inbox extends DurableObject<Env> {
     if ('status' in who) return who;
 
     const { push, ...fields } = input;
-    const { card, created, changed } = this.ctx.storage.transactionSync(() => {
+    const { card, created, changed, pushing } = this.ctx.storage.transactionSync(() => {
       const existing = this.#cardBy('source = ? AND key = ?', input.source, input.key);
-      if (existing && existing.state !== 'open') return { card: existing, created: false, changed: false };
+      if (existing && existing.state !== 'open') return { card: existing, created: false, changed: false, pushing: false };
       if (existing) {
         // Producer fields are replaced; state, resolution and push stay put.
         const { id, push, state, resolution, createdAt } = existing;
         const picks = keepDone(fields.picks, existing.picks);
-        return { card: this.#commit({ ...fields, picks, id, push, state, resolution, createdAt }), created: false, changed: true };
+        return { card: this.#commit({ ...fields, picks, id, push, state, resolution, createdAt }), created: false, changed: true, pushing: false };
       }
       const card = this.#commit({ ...fields, id: crypto.randomUUID(), push: push ?? DEFAULT_PUSH[input.kind], state: 'open', createdAt: iso() });
-      if (card.push !== 'none') {
-        this.sql.exec(`UPDATE cards SET push_status = 'pending', push_next_at = ? WHERE id = ?`, Date.now(), card.id);
-      }
-      return { card, created: true, changed: true };
+      const pushing = card.push !== 'none' && this.#addRecipients(card.id) > 0;
+      if (pushing) this.sql.exec(`UPDATE cards SET push_status = 'pending', push_next_at = ? WHERE id = ?`, Date.now(), card.id);
+      return { card, created: true, changed: true, pushing };
     });
 
     if (changed) this.#broadcast({ type: 'card', card });
-    if (created && card.push !== 'none') this.ctx.waitUntil(this.#deliverDuePushes());
+    if (pushing) this.ctx.waitUntil(this.#deliverDuePushes());
     await this.#scheduleAlarm();
     return ok(card, created ? 201 : 200);
   }
@@ -214,7 +223,7 @@ export class Inbox extends DurableObject<Env> {
    * Records a phone's answer. The first action resolves the card and later
    * ones get 409. A replayed Idempotency-Key returns the stored response.
    */
-  respond(tokenHash: string, id: string, response: CardResponse, idempotency: { key: string; bodyHash: string }): Reply<Card> {
+  async respond(tokenHash: string, id: string, response: CardResponse, idempotency: { key: string; bodyHash: string }): Promise<Reply<Card>> {
     const who = this.#authorize(tokenHash, DEVICE);
     if ('status' in who) return who;
 
@@ -266,7 +275,11 @@ export class Inbox extends DurableObject<Env> {
     });
 
     if ('status' in result) return result;
-    if (!result.replay) this.#broadcast({ type: 'card', card: result.card });
+    if (!result.replay) {
+      this.#broadcast({ type: 'card', card: result.card });
+      // A resolved card now waits on retention.
+      await this.#scheduleAlarm();
+    }
     return ok(result.card);
   }
 
@@ -304,7 +317,10 @@ export class Inbox extends DurableObject<Env> {
     const who = this.#authorize(tokenHash, DEVICE);
     if ('status' in who) return who;
 
-    this.sql.exec('DELETE FROM devices WHERE token_id = ?', who.id);
+    this.ctx.storage.transactionSync(() => {
+      this.sql.exec('DELETE FROM devices WHERE token_id = ?', who.id);
+      this.sql.exec('DELETE FROM push_recipients WHERE token_id = ?', who.id);
+    });
     return noContent;
   }
 
@@ -413,15 +429,13 @@ export class Inbox extends DurableObject<Env> {
       .map((row) => row.id);
   }
 
-  /**
-   * Deletes tokens with their push registrations, then closes their sockets.
-   * Pushes look up registrations at send time, so pending pushes drop too.
-   */
+  /** Deletes tokens with their push registrations and pending pushes, then closes their sockets. */
   #revoke(ids: string[], alsoInTransaction?: () => void) {
     this.ctx.storage.transactionSync(() => {
       for (const id of ids) {
         this.sql.exec('DELETE FROM tokens WHERE id = ?', id);
         this.sql.exec('DELETE FROM devices WHERE token_id = ?', id);
+        this.sql.exec('DELETE FROM push_recipients WHERE token_id = ?', id);
         this.sql.exec('DELETE FROM idempotency WHERE token_id = ?', id);
       }
       alsoInTransaction?.();
@@ -472,9 +486,17 @@ export class Inbox extends DurableObject<Env> {
     }
   }
 
+  /** Fixes a new card's recipients to the phones registered right now. Returns how many. */
+  #addRecipients(cardId: string) {
+    this.sql.exec('INSERT INTO push_recipients (card_id, expo_push_token, token_id) SELECT ?, expo_push_token, token_id FROM devices', cardId);
+    return this.sql.exec<{ n: number }>('SELECT count(*) AS n FROM push_recipients WHERE card_id = ?', cardId).one().n;
+  }
+
   /**
-   * Sends every push that is due. Claiming is one statement that runs before
-   * the first await, so the alarm and an upsert can't send the same card twice.
+   * Sends every push that is due to the recipients it still owes. Claiming is
+   * one statement that runs before the first await, so the alarm and an upsert
+   * can't send the same card twice. Recipients with an ok ticket are done; the
+   * rest are retried, up to five times.
    */
   async #deliverDuePushes() {
     const now = Date.now();
@@ -485,37 +507,44 @@ export class Inbox extends DurableObject<Env> {
         now,
       )
       .toArray();
-    if (due.length === 0) return;
-    const tokens = this.sql
-      .exec<{ expo_push_token: string }>('SELECT expo_push_token FROM devices')
-      .toArray()
-      .map((row) => row.expo_push_token);
 
     await Promise.all(
       due.map(async (row) => {
         const card = parseCard(row);
-        if (card.state !== 'open' || tokens.length === 0) {
-          this.sql.exec(`UPDATE cards SET push_status = 'skipped', push_next_at = NULL WHERE id = ?`, row.id);
-          return;
-        }
-        const outcome = await sendPush(card, tokens, this.env.EXPO_ACCESS_TOKEN);
+        const recipients = this.sql
+          .exec<{ expo_push_token: string }>('SELECT expo_push_token FROM push_recipients WHERE card_id = ?', row.id)
+          .toArray()
+          .map((r) => r.expo_push_token);
+        const done = (status: 'sent' | 'failed' | 'skipped') => {
+          this.sql.exec('DELETE FROM push_recipients WHERE card_id = ?', row.id);
+          this.sql.exec('UPDATE cards SET push_status = ?, push_next_at = NULL WHERE id = ?', status, row.id);
+        };
+        // Closed before it went out, or every recipient was revoked.
+        if (card.state !== 'open' || recipients.length === 0) return this.ctx.storage.transactionSync(() => done('skipped'));
+
+        const outcome = await sendPush(card, recipients, this.env.EXPO_ACCESS_TOKEN);
         this.ctx.storage.transactionSync(() => {
-          if (outcome.status === 'sent') {
-            this.sql.exec(`UPDATE cards SET push_status = 'sent', push_next_at = NULL WHERE id = ?`, row.id);
-            for (const token of outcome.unregistered) this.sql.exec('DELETE FROM devices WHERE expo_push_token = ?', token);
-            return;
+          if (outcome.status === 'failed') return done('failed');
+          if (outcome.status === 'tickets') {
+            for (const token of outcome.delivered) this.sql.exec('DELETE FROM push_recipients WHERE card_id = ? AND expo_push_token = ?', row.id, token);
+            for (const token of outcome.unregistered) {
+              this.sql.exec('DELETE FROM devices WHERE expo_push_token = ?', token);
+              this.sql.exec('DELETE FROM push_recipients WHERE expo_push_token = ?', token);
+            }
           }
-          const delay = outcome.status === 'retry' ? PUSH_RETRY_DELAYS[row.push_attempts] : undefined;
+          // Revocation may also have removed recipients while the send was in flight.
+          const left = this.sql.exec<{ n: number }>('SELECT count(*) AS n FROM push_recipients WHERE card_id = ?', row.id).one().n;
+          if (left === 0) return done('sent');
+          const delay = PUSH_RETRY_DELAYS[row.push_attempts];
           if (delay === undefined) {
-            console.warn(`push for card ${row.id} failed: ${outcome.reason}`);
-            this.sql.exec(`UPDATE cards SET push_status = 'failed', push_next_at = NULL WHERE id = ?`, row.id);
-            return;
+            console.warn(`push for card ${row.id} gave up with ${left} recipient(s) left`);
+            return done('failed');
           }
           this.sql.exec('UPDATE cards SET push_attempts = push_attempts + 1, push_next_at = ? WHERE id = ?', Date.now() + delay, row.id);
         });
       }),
     );
-    await this.#scheduleAlarm();
+    if (due.length > 0) await this.#scheduleAlarm();
   }
 
   /**

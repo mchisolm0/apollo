@@ -1,4 +1,4 @@
-import { runDurableObjectAlarm } from 'cloudflare:test';
+import { runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { ApiError, Card, CardInput, CardSnapshot, InboxEvent } from '../src/contract';
@@ -108,6 +108,13 @@ describe('respond', () => {
 
     const events = await (await call('/v1/events', { token: producer })).json<InboxEvent[]>();
     expect(events.filter((e) => e.cardId === card.id)).toHaveLength(1);
+  });
+
+  it('schedules the alarm so a resolved card reaches retention', async () => {
+    const card = await postCard(producer, { ...approval('run:6:req:1'), push: 'none' });
+    await runInDurableObject(inbox(), (_, state) => state.storage.deleteAlarm());
+    expect((await respond(device, card.id, { actionId: 'approve' })).status).toBe(200);
+    expect(await runInDurableObject(inbox(), (_, state) => state.storage.getAlarm())).not.toBeNull();
   });
 
   it('rejects a body that mixes an action and a pick', async () => {
