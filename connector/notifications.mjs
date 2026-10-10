@@ -84,7 +84,12 @@ function wants(registration, kind) {
   return registration[preference] === true;
 }
 
-export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPush, pollInterval = 2_000 }) {
+/**
+ * Polls runs started through the connector and pushes approval, completion and failure
+ * notifications. With a cloud `approvals` bridge, approvals become cloud inbox cards
+ * instead of direct pushes, and runs are watched even without a registered device.
+ */
+export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPush, approvals = null, pollInterval = 2_000 }) {
   const active = new Map();
   let closed = false;
 
@@ -103,7 +108,7 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
       run.events ??= {};
       run.events[event.key] ??= {
         kind: event.kind,
-        targets: state.devices.filter((device) => !device.revoked_at && device.notifications && wants(device.notifications, event.kind)).map((device) => device.id),
+        targets: sendPush ? state.devices.filter((device) => !device.revoked_at && device.notifications && wants(device.notifications, event.kind)).map((device) => device.id) : [],
         delivered: [],
       };
       return { ...run, event: { ...run.events[event.key], key: event.key } };
@@ -163,7 +168,7 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
     let deliveryAttempts = 0;
     try {
       while (!closed && active.has(runId)) {
-        if (!(await registeredDevices()).length) return;
+        if (!approvals && !(await registeredDevices()).length) return;
         const state = await store.read();
         const tracked = state.notification_runs?.[runId];
         if (!tracked) return;
@@ -178,7 +183,13 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
             continue;
           }
         }
-        const event = eventFromStatus(status);
+        let event = eventFromStatus(status);
+        if (approvals) {
+          // The bridge retries posting and resolving cards on its own; this only reports the run.
+          const result = await approvals.runStatus(runId, { ...status, session_id: status.session_id ?? tracked.session_id });
+          // The card replaces the direct approval push unless the cloud has been down too long.
+          if (event?.kind === "approval" && !result.fallback) event = null;
+        }
         const delivered = event ? await deliver(runId, status, event) : true;
         if (TERMINAL.has(status.status) && delivered) {
           if (!event) await store.update((current) => {
@@ -197,7 +208,7 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
   }
 
   async function start(runId) {
-    if (closed || !sendPush || active.has(runId) || !(await registeredDevices()).length) return;
+    if (closed || (!sendPush && !approvals) || active.has(runId) || (!approvals && !(await registeredDevices()).length)) return;
     if (closed || active.has(runId)) return;
     active.set(runId, null);
     const operation = watch(runId).catch(() => {
@@ -211,7 +222,7 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
     async trackRun(run) {
       if (!run || typeof run.run_id !== "string" || !ID.test(run.run_id)) return;
       const tracked = await store.update((state) => {
-        if (!state.devices.some((device) => !device.revoked_at && device.notifications)) return false;
+        if (!approvals && !state.devices.some((device) => !device.revoked_at && device.notifications)) return false;
         state.notification_runs = Object.assign(Object.create(null), state.notification_runs ?? {});
         state.notification_runs[run.run_id] ??= {
           run_id: run.run_id,

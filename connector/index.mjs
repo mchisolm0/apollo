@@ -1,6 +1,7 @@
 import { saveAttachment, readAttachment, MAX_UPLOAD_BODY_BYTES } from './attachments.mjs';
 import { generateThreadTitle } from './thread-title.mjs';
 import { createExpoPushSender, createRunNotificationMonitor, parseNotificationRegistration } from './notifications.mjs';
+import { createApprovalBridge, createCloudClient, loadCloudConfig } from './cloud.mjs';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { execFile } from "node:child_process";
@@ -45,6 +46,7 @@ const secureEqual = (a, b) => {
 const token = () => randomBytes(32).toString("base64url");
 const isoNow = () => new Date().toISOString();
 const defaultStatePath = () => `${homedir()}/.config/apollo/connector.json`;
+const defaultCloudPath = (statePath = process.env.APOLLO_STATE_FILE ?? defaultStatePath()) => process.env.APOLLO_CLOUD_FILE ?? `${dirname(statePath)}/cloud.json`;
 
 function freshState(label) {
   return { version: 1, agent_id: randomUUID(), label, created_at: isoNow(), pairing_tokens: [], devices: [] };
@@ -194,6 +196,68 @@ export function createConnectorServer(options = {}) {
   }) : null);
 
   const attachmentDirectory = options.attachmentDirectory ?? `${dirname(options.statePath ?? process.env.APOLLO_STATE_FILE ?? defaultStatePath())}/attachments`;
+  // Set in start(): options.cloud ({ url, token } or null), else APOLLO_CLOUD_* env or the cloud file.
+  let cloud = null;
+  let approvalBridge = null;
+  let revocationTimer = null;
+
+  // Cloud mint and revoke for one device run one at a time, in call order.
+  const deviceQueues = new Map();
+  function perDevice(deviceId, task) {
+    const run = (deviceQueues.get(deviceId) ?? Promise.resolve()).then(task);
+    const tail = run.catch(() => {});
+    deviceQueues.set(deviceId, tail);
+    tail.then(() => { if (deviceQueues.get(deviceId) === tail) deviceQueues.delete(deviceId); });
+    return run;
+  }
+
+  const isPaired = async (deviceId) => (await store.read()).devices.some((device) => device.id === deviceId && !device.revoked_at);
+  const queueCloudRevocation = (state, deviceId) => {
+    state.cloud_revocations = [...new Set([...(state.cloud_revocations ?? []), deviceId])];
+  };
+
+  /** Deletes queued cloud device tokens. A 404 counts as done; other failures stay queued for the timer. */
+  async function flushCloudRevocations() {
+    if (!cloud) return;
+    for (const deviceId of (await store.read()).cloud_revocations ?? []) {
+      await perDevice(deviceId, async () => {
+        try { await cloud.revokeDeviceToken(deviceId); }
+        catch (cause) { if (cause.status !== 404) return; }
+        await store.update((state) => { state.cloud_revocations = (state.cloud_revocations ?? []).filter((id) => id !== deviceId); });
+      });
+    }
+  }
+
+  /** Mints a cloud device token for a paired phone. Pairing never fails because of the cloud. */
+  async function cloudCredentials(deviceId) {
+    if (!cloud) return null;
+    const credentials = await perDevice(deviceId, async () => {
+      if (!await isPaired(deviceId)) return null;
+      let minted;
+      try { minted = await cloud.mintDeviceToken(deviceId); } catch { return null; }
+      if (typeof minted?.token !== "string") return null;
+      if (await isPaired(deviceId)) return { url: cloud.url, token: minted.token };
+      // Revoked while minting: the new token must not outlive the device.
+      await store.update((state) => queueCloudRevocation(state, deviceId));
+      return null;
+    });
+    if (!credentials) await flushCloudRevocations().catch(() => {});
+    return credentials;
+  }
+
+  async function answerApproval(runId, choice, requestId) {
+    const response = await (options.fetchImpl ?? fetch)(new URL(`/v1/runs/${encodeURIComponent(runId)}/approval`, hermesUrl), {
+      method: "POST",
+      headers: { authorization: `Bearer ${hermesApiKey}`, "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ choice, ...(requestId ? { request_id: requestId } : {}) }),
+      redirect: "error",
+      signal: AbortSignal.timeout(10_000),
+    });
+    // Other 4xx: the run or approval is gone (answered in the app thread or timed out) or the request can never succeed.
+    if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) return false;
+    if (!response.ok) throw new Error(`Hermes approval failed (${response.status})`);
+    return true;
+  }
 
   async function fetchRun(runId) {
     const response = await (options.fetchImpl ?? fetch)(new URL(`/v1/runs/${encodeURIComponent(runId)}`, hermesUrl), {
@@ -262,6 +326,7 @@ export function createConnectorServer(options = {}) {
       auth_methods: ["pairing_token"],
       pairing: { exchange_path: EXCHANGE_PATH, url_scheme: "apollo", fragment_token: true },
       notifications: { registration_path: "/v1/apollo/notifications", available: Boolean(sendPush) },
+      cloud: { token_path: "/v1/apollo/cloud-token", available: Boolean(cloud) },
       ...(options.publicBaseUrl ? { public_base_url: options.publicBaseUrl } : {}),
     };
   }
@@ -295,9 +360,12 @@ export function createConnectorServer(options = {}) {
         if (found && !found.revoked_at) {
           found.revoked_at = isoNow();
           removeNotificationRegistration(state, found);
+          // Always queued, even without cloud config: it drains once config is present, and a 404 clears it.
+          queueCloudRevocation(state, found.id);
         }
         return found;
       });
+      if (device) await flushCloudRevocations().catch(() => {});
       return device ? json(res, 200, { device_id: device.id, revoked_at: device.revoked_at }) : error(res, 404, "device not found", "not_found");
     }
     return error(res, 404, "admin route not found", "not_found");
@@ -320,7 +388,16 @@ export function createConnectorServer(options = {}) {
       return { device, accessToken };
     });
     if (!result) return error(res, 401, "pairing token is invalid or expired", "invalid_pairing_token");
-    return json(res, 201, { device_id: result.device.id, device_name: result.device.name, access_token: result.accessToken, token_type: "Bearer", scopes: result.device.scopes });
+    const credentials = await cloudCredentials(result.device.id);
+    return json(res, 201, { device_id: result.device.id, device_name: result.device.name, access_token: result.accessToken, token_type: "Bearer", scopes: result.device.scopes, ...(credentials ? { cloud: credentials } : {}) });
+  }
+
+  async function cloudToken(req, res) {
+    const device = await authenticateDevice(req);
+    if (!device) return error(res, 401, "device authentication required", "unauthorized");
+    if (!cloud) return error(res, 503, "the cloud inbox is not configured", "cloud_unavailable");
+    const credentials = await cloudCredentials(device.id);
+    return credentials ? json(res, 200, { cloud: credentials }) : error(res, 502, "the cloud inbox could not mint a token", "cloud_unreachable");
   }
 
   let titleBusy = false;
@@ -459,6 +536,7 @@ export function createConnectorServer(options = {}) {
       if (req.method === "POST" && url.pathname === EXCHANGE_PATH) return exchange(req, res);
       if (url.pathname.startsWith("/admin/")) return handleAdmin(req, res, url);
       if (req.method === "POST" && url.pathname === "/v1/apollo/thread-title") return threadTitle(req, res);
+      if (req.method === "POST" && url.pathname === "/v1/apollo/cloud-token") return await cloudToken(req, res);
       if (url.pathname === "/v1/apollo/notifications") return await notifications(req, res);
       const attachmentRoute = url.pathname.match(/^\/v1\/apollo\/attachments(?:\/([a-f0-9-]{36}))?$/);
       if (attachmentRoute) return await attachmentRequest(req, res, attachmentRoute[1]);
@@ -474,13 +552,24 @@ export function createConnectorServer(options = {}) {
     store,
     async start() {
       const state = await store.load();
-      notificationMonitor = createRunNotificationMonitor({ store, agentId: state.agent_id, fetchRun, sendPush, pollInterval: options.notificationPollInterval });
+      const cloudConfig = options.cloud !== undefined ? options.cloud : await loadCloudConfig({ path: options.cloudConfigPath ?? defaultCloudPath(options.statePath) });
+      cloud = cloudConfig ? createCloudClient({ ...cloudConfig, fetchImpl: options.fetchImpl ?? fetch }) : null;
+      approvalBridge = cloud ? createApprovalBridge({ store, client: cloud, agentId: state.agent_id, answer: answerApproval, pollInterval: options.cloudPollInterval, fallbackAfter: options.cloudFallbackAfter }) : null;
+      notificationMonitor = createRunNotificationMonitor({ store, agentId: state.agent_id, fetchRun, sendPush, approvals: approvalBridge, pollInterval: options.notificationPollInterval });
       await notificationMonitor.registrationsChanged();
+      approvalBridge?.start();
+      if (cloud) {
+        flushCloudRevocations().catch(() => {});
+        revocationTimer = setInterval(() => flushCloudRevocations().catch(() => {}), options.cloudRetryInterval ?? 60_000);
+        revocationTimer.unref?.();
+      }
       await new Promise((resolve, reject) => { server.once("error", reject); server.listen(port, host, resolve); });
       return server.address();
     },
     async close() {
       notificationMonitor?.close();
+      approvalBridge?.close();
+      clearInterval(revocationTimer);
       await new Promise((resolve, reject) => server.close((cause) => cause ? reject(cause) : resolve()));
     },
   };
@@ -498,4 +587,4 @@ export async function configureTailscaleServe(localPort, servePort = 8443) {
   await execFileAsync("tailscale", ["serve", "--bg", `--https=${servePort}`, `http://127.0.0.1:${localPort}`]);
 }
 
-export { EXCHANGE_PATH, PUBLIC_DESCRIPTOR_PATH, PROXY_ROUTES, defaultStatePath, validProxyRoute };
+export { EXCHANGE_PATH, PUBLIC_DESCRIPTOR_PATH, PROXY_ROUTES, defaultCloudPath, defaultStatePath, validProxyRoute };
