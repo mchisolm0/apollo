@@ -124,6 +124,39 @@ describe('respond', () => {
   });
 });
 
+describe('briefing actions', () => {
+  const morning = (key: string): CardInput => ({
+    ...briefing([{ n: 1, text: 'Ship #335', done: false }]),
+    key,
+    actions: [{ id: 'keep', label: 'Keep' }],
+  });
+
+  it('records Keep without closing the card, so picks still work', async () => {
+    mockExpo();
+    const card = await postCard(producer, morning('2026-10-10'));
+
+    const kept = await respond(device, card.id, { actionId: 'keep' });
+    expect(kept.status).toBe(200);
+    expect(await kept.json<Card>()).toMatchObject({ state: 'open' });
+
+    const picked = await respond(device, card.id, { pick: 1, done: true });
+    expect(picked.status).toBe(200);
+    expect((await picked.json<Card>()).picks?.[0]?.done).toBe(true);
+  });
+
+  it('records each action once per briefing', async () => {
+    mockExpo();
+    const card = await postCard(producer, morning('2026-10-11'));
+    await respond(device, card.id, { actionId: 'keep' });
+    const repeat = await respond(device, card.id, { actionId: 'keep' });
+    expect(repeat.status).toBe(200);
+    expect((await repeat.json<Card>()).rev).toBe(card.rev);
+
+    const events = await (await call('/v1/events?source=morning', { token: producer })).json<InboxEvent[]>();
+    expect(events.filter((e) => e.cardId === card.id && e.type === 'action')).toHaveLength(1);
+  });
+});
+
 describe('events', () => {
   it('pages oldest first from a cursor and filters by source', async () => {
     mockExpo();

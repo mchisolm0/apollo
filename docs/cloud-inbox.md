@@ -40,7 +40,7 @@ Errors are `ApiError` (`{ error: { code, message } }`) with a matching HTTP stat
 ## Rules
 
 - **One writer.** The Durable Object handles one request at a time, so every check below happens in the same transaction as the write it guards.
-- **Responding.** Only open cards accept responses. An action resolves the card and appends one `action` event; the first response wins and later ones get `409 card_closed`. A pick sets `done` and appends one `pick` event; it never toggles.
+- **Responding.** Only open cards accept responses; anything else gets `409 card_closed`. On approval and update cards an action resolves the card and appends one `action` event; the first response wins. On a briefing card an action appends one `action` event and the card stays open, so picks keep working. Each action id counts once per briefing: a repeat returns the card unchanged and appends nothing. Producers settle a briefing with `PATCH` when the next one replaces it. A pick sets `done` and appends one `pick` event; it never toggles.
 - **Idempotency.** `Idempotency-Key` is scoped to the token and kept for 24 hours alongside the event it produced. A replay returns the stored response and appends nothing. Reusing a key with a different body is `422 idempotency_mismatch`.
 - **Upserts.** An upsert never changes `state`, `resolution` or push status. A closed card stays closed and is returned as is. For an open card the producer's fields are replaced, but a pick keeps its `done` value when a pick with the same `n` and `text` existed.
 - **Events.** `seq` increases across the whole inbox and is never reused, even after retention deletes old events.

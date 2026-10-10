@@ -220,8 +220,10 @@ export class Inbox extends DurableObject<Env> {
   }
 
   /**
-   * Records a phone's answer. The first action resolves the card and later
-   * ones get 409. A replayed Idempotency-Key returns the stored response.
+   * Records a phone's answer. On approvals and updates the first action
+   * resolves the card and later ones get 409. A briefing stays open so picks
+   * keep working; each of its actions is recorded once and a repeat returns
+   * the card unchanged. A replayed Idempotency-Key returns the stored response.
    */
   async respond(tokenHash: string, id: string, response: CardResponse, idempotency: { key: string; bodyHash: string }): Promise<Reply<Card>> {
     const who = this.#authorize(tokenHash, DEVICE);
@@ -253,7 +255,12 @@ export class Inbox extends DurableObject<Env> {
       if ('actionId' in response) {
         const action = card.actions?.find((a) => a.id === response.actionId && !a.url);
         if (!action) return fail(400, 'unknown_action', 'card has no such recordable action');
-        next = this.#commit({ ...card, state: 'resolved', resolution: { actionId: action.id, by: who.name, at } });
+        if (card.kind === 'briefing') {
+          if (this.#actionRecorded(card.id, action.id)) return { card, replay: true };
+          next = card;
+        } else {
+          next = this.#commit({ ...card, state: 'resolved', resolution: { actionId: action.id, by: who.name, at } });
+        }
         event = { ...base, type: 'action', actionId: action.id };
       } else {
         if (!card.picks?.some((p) => p.n === response.pick)) return fail(400, 'unknown_pick', 'card has no such pick');
@@ -277,7 +284,8 @@ export class Inbox extends DurableObject<Env> {
     if ('status' in result) return result;
     if (!result.replay) {
       this.#broadcast({ type: 'card', card: result.card });
-      // A resolved card now waits on retention.
+      // A resolved card now waits on retention. (A briefing action leaves the
+      // card as it was; the broadcast and check are harmless.)
       await this.#scheduleAlarm();
     }
     return ok(result.card);
@@ -453,6 +461,18 @@ export class Inbox extends DurableObject<Env> {
   #cardBy(where: string, ...bindings: string[]): Card | undefined {
     const [row] = this.sql.exec<CardRow>(`SELECT data FROM cards WHERE ${where}`, ...bindings).toArray();
     return row && parseCard(row);
+  }
+
+  #actionRecorded(cardId: string, actionId: string) {
+    return (
+      this.sql
+        .exec(
+          `SELECT 1 FROM events WHERE card_id = ? AND json_extract(data, '$.type') = 'action' AND json_extract(data, '$.actionId') = ? LIMIT 1`,
+          cardId,
+          actionId,
+        )
+        .toArray().length > 0
+    );
   }
 
   #rev() {
