@@ -72,6 +72,7 @@
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
     "test:connector": "node --test connector/**/*.test.mjs",
+    "test:cloud": "pnpm --filter @apollo/cloud typecheck && pnpm --filter @apollo/cloud test",
     "install:macos-services": "./scripts/install-macos-services.sh",
     "test:mobile": "node --experimental-strip-types --test src/features/relay/*.test.ts src/lib/*.test.ts src/features/notifications/*.test.ts src/features/content/*.test.ts src/features/updates/*.test.ts",
     "start:dev": "APOLLO_APP_VARIANT=development expo start --dev-client --port 8085",
