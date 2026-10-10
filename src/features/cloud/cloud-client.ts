@@ -39,6 +39,18 @@ export function parseCloudGrant(body: unknown): { url: string; token: string } |
   return url && typeof cloud.token === 'string' && cloud.token ? { url, token: cloud.token } : undefined;
 }
 
+/**
+ * In-memory cache key for this phone's cloud push registration. A re-minted token is a new
+ * device on the Worker, so the key changes with it; the token appears only as a hash.
+ */
+export function pushRegistrationKey(credential: CloudCredential, expoPushToken: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < credential.token.length; index++) {
+    hash = Math.imul(hash ^ credential.token.charCodeAt(index), 0x01000193) >>> 0;
+  }
+  return JSON.stringify([credential.url, credential.agentId, hash.toString(16), expoPushToken]);
+}
+
 async function failure(response: Response): Promise<CloudRequestError> {
   const body: unknown = await response.json().catch(() => undefined);
   const error = body && typeof body === 'object' && 'error' in body && body.error && typeof body.error === 'object' ? body.error : undefined;

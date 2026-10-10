@@ -40,9 +40,8 @@ export const cloudOpenRequests = {
 };
 
 /**
- * Handles a cloud card notification response. Approve and Reject go through the durable
- * queue, so they are delivered now if the app is alive in the background and otherwise on
- * the next launch. Returns false for notifications that are not cloud cards.
+ * Handles a cloud card notification response. Approve and Reject open the app and go
+ * through the durable queue. Returns false for notifications that are not cloud cards.
  */
 export async function handleCloudNotificationResponse(response: Notifications.NotificationResponse): Promise<boolean> {
   const intent = cloudNotificationIntent(response);
@@ -51,7 +50,13 @@ export async function handleCloudNotificationResponse(response: Notifications.No
   if (handled.has(id)) return true;
   handled.add(id);
   if (intent.type === 'respond') {
-    await respondQueue.enqueue({ key: intent.key, cardId: intent.cardId, response: { actionId: intent.actionId } });
+    try {
+      await respondQueue.enqueue({ key: intent.key, cardId: intent.cardId, response: { actionId: intent.actionId } });
+    } catch (error) {
+      // Not saved, so a redelivery of the same tap may try again.
+      handled.delete(id);
+      throw error;
+    }
     await respondQueue.flush();
   } else {
     pendingOpen = intent;
@@ -69,10 +74,13 @@ export async function ensureCloudChannels() {
 }
 
 if (Platform.OS !== 'web') {
+  // Approve and Reject foreground the app for now: expo-notifications completes the iOS
+  // callback before JavaScript can persist the response, and a cold start keeps it only in
+  // native memory. Answering fully in the background needs native work (with the Live Activity).
   void Notifications.setNotificationCategoryAsync(CATEGORY.approval, [
-    { identifier: 'approve', buttonTitle: 'Approve', options: { opensAppToForeground: false, isAuthenticationRequired: true } },
+    { identifier: 'approve', buttonTitle: 'Approve', options: { opensAppToForeground: true } },
     { identifier: 'open', buttonTitle: 'Open', options: { opensAppToForeground: true } },
-    { identifier: 'reject', buttonTitle: 'Reject', options: { opensAppToForeground: false, isAuthenticationRequired: true, isDestructive: true } },
+    { identifier: 'reject', buttonTitle: 'Reject', options: { opensAppToForeground: true, isDestructive: true } },
   ]).catch(() => undefined);
   void Notifications.setNotificationCategoryAsync(CATEGORY.briefing, []).catch(() => undefined);
   Notifications.addNotificationResponseReceivedListener((response) => { void handleCloudNotificationResponse(response).catch(() => undefined); });

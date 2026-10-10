@@ -53,9 +53,11 @@ function samePick(a: CardResponse, b: CardResponse) {
 }
 
 /**
- * A durable, ordered queue of card responses. Delivery is sequential so picks land in
- * the order they were tapped. `409 card_closed` counts as delivered: someone else answered
- * first and the server's card is passed to `onCard` listeners like any other result.
+ * A durable queue of card responses, strictly first in, first out per card: a later
+ * response for a card waits behind that card's head, even while the head backs off, so a
+ * Keep can never overtake a pick and an old toggle never lands after a newer one.
+ * `409 card_closed` counts as delivered: someone else answered first and the server's card
+ * goes to `onCard` listeners like any other result.
  */
 export function createRespondQueue(dependencies: RespondQueueDependencies) {
   const now = dependencies.now ?? Date.now;
@@ -66,55 +68,65 @@ export function createRespondQueue(dependencies: RespondQueueDependencies) {
   let flushing: Promise<void> | undefined;
   let again = false;
   let inFlight: string | undefined;
-  let write = Promise.resolve();
+  let lock = Promise.resolve();
 
-  const publish = (items: readonly QueuedResponse[], error?: string) => {
+  const publish = (items: readonly QueuedResponse[], error = snapshot.error) => {
     snapshot = { items, ...(error ? { error } : {}) };
     listeners.forEach((listener) => listener());
   };
-  const save = (items: readonly QueuedResponse[], error?: string) => {
-    publish(items, error);
-    write = write.then(() => dependencies.storage.setItem(STORAGE_KEY, JSON.stringify(items))).catch(() => undefined);
-    return write;
+  /** Serializes read-modify-write so concurrent enqueues and deliveries never drop each other. */
+  const exclusive = <T>(run: () => Promise<T>): Promise<T> => {
+    const next = lock.then(run);
+    lock = next.then(() => undefined, () => undefined);
+    return next;
   };
+  const persist = (items: readonly QueuedResponse[]) => dependencies.storage.setItem(STORAGE_KEY, JSON.stringify(items));
+  /** Removing or rescheduling a delivered item is best effort: a replay is safe under its idempotency key. */
+  const update = (change: (items: readonly QueuedResponse[]) => readonly QueuedResponse[], error?: string) => exclusive(async () => {
+    const items = change(snapshot.items);
+    publish(items, error);
+    await persist(items).catch(() => undefined);
+  });
   const load = () => loading ??= dependencies.storage.getItem(STORAGE_KEY)
     .then((saved) => {
       let restored: QueuedResponse[] = [];
       try { restored = parseItems(saved); } catch { /* A corrupt queue cannot be replayed safely. */ }
-      // Anything enqueued before storage answered stays after what was saved.
-      publish([...restored, ...snapshot.items.filter((item) => !restored.some((saved) => saved.key === item.key))], snapshot.error);
+      publish(restored);
     })
     .catch(() => undefined);
 
+  const without = (key: string) => (items: readonly QueuedResponse[]) => items.filter((item) => item.key !== key);
+
   const deliverOnce = async () => {
     const at = now();
-    const expired = snapshot.items.filter((item) => item.key !== inFlight && at - item.createdAt > MAX_AGE_MS);
-    if (expired.length) await save(snapshot.items.filter((item) => !expired.includes(item)), 'Some responses could not be delivered in time.');
-    const item = snapshot.items.find((candidate) => (candidate.nextAttemptAt ?? 0) <= at);
+    if (snapshot.items.some((item) => item.key !== inFlight && at - item.createdAt > MAX_AGE_MS)) {
+      await update((items) => items.filter((item) => item.key === inFlight || at - item.createdAt <= MAX_AGE_MS), 'Some responses could not be delivered in time.');
+    }
+    const seen = new Set<string>();
+    const item = snapshot.items.find((candidate) => {
+      const head = !seen.has(candidate.cardId);
+      seen.add(candidate.cardId);
+      return head && (candidate.nextAttemptAt ?? 0) <= at;
+    });
     if (!item) return false;
     inFlight = item.key;
     try {
       const card = await dependencies.send(item);
-      await save(snapshot.items.filter((candidate) => candidate.key !== item.key), snapshot.error);
+      await update(without(item.key));
       cardListeners.forEach((listener) => listener(card));
     } catch (error) {
       const failure = failureOf(error);
       if (failure.status === 409 && failure.code === 'card_closed') {
-        await save(snapshot.items.filter((candidate) => candidate.key !== item.key), snapshot.error);
+        await update(without(item.key));
         const { card } = failure;
         if (card) cardListeners.forEach((listener) => listener(card));
-        return true;
+      } else if (failure.status === undefined || failure.status === 408 || failure.status === 429 || failure.status >= 500) {
+        const attempts = item.attempts + 1;
+        const nextAttemptAt = now() + Math.min(1000 * 2 ** attempts, 60_000);
+        await update((items) => items.map((candidate) => candidate.key === item.key ? { ...candidate, attempts, nextAttemptAt } : candidate));
+      } else {
+        await update(without(item.key), failure.message ?? 'A response was rejected.');
       }
-      const retry = failure.status === undefined || failure.status === 408 || failure.status === 429 || failure.status >= 500;
-      if (!retry) {
-        await save(snapshot.items.filter((candidate) => candidate.key !== item.key), failure.message ?? 'A response was rejected.');
-        return true;
-      }
-      const attempts = item.attempts + 1;
-      await save(snapshot.items.map((candidate) => candidate.key === item.key
-        ? { ...candidate, attempts, nextAttemptAt: now() + Math.min(1000 * 2 ** attempts, 60_000) } : candidate), snapshot.error);
-      // A retryable failure (offline, 5xx) applies to everything behind it too.
-      return false;
     } finally {
       inFlight = undefined;
     }
@@ -150,21 +162,27 @@ export function createRespondQueue(dependencies: RespondQueueDependencies) {
     load,
     flush,
     /**
-     * Adds one intent. Re-enqueueing a key is a no-op. A newer pick for the same card and
-     * pick replaces an older one that has not been sent yet, since only the last value matters.
+     * Adds one intent and resolves only once it is saved; it rejects if storage fails, so
+     * the caller can keep the card actionable. Re-enqueueing a key is a no-op. A pick for
+     * the same card and pick as an unsent entry updates that entry in place: it keeps its
+     * key when the body is unchanged and takes the new key when `done` differs.
      */
-    async enqueue(input: Pick<QueuedResponse, 'key' | 'cardId' | 'response'>) {
-      await load();
+    enqueue: (input: Pick<QueuedResponse, 'key' | 'cardId' | 'response'>) => load().then(() => exclusive(async () => {
       if (snapshot.items.some((item) => item.key === input.key)) return;
-      const kept = snapshot.items.filter((item) => item.key === inFlight || item.cardId !== input.cardId || !samePick(item.response, input.response));
-      await save([...kept, { ...input, createdAt: now(), attempts: 0 }].slice(-MAX_ITEMS));
-    },
+      const pending = snapshot.items.find((item) => item.key !== inFlight && item.cardId === input.cardId && samePick(item.response, input.response));
+      const items = !pending ? [...snapshot.items, { ...input, createdAt: now(), attempts: 0 }].slice(-MAX_ITEMS)
+        : JSON.stringify(pending.response) === JSON.stringify(input.response) ? snapshot.items
+          : snapshot.items.map((item) => item === pending ? { ...item, key: input.key, response: input.response } : item);
+      if (items === snapshot.items) return;
+      await persist(items);
+      publish(items);
+    })),
     /** Earliest time a waiting item may be retried, for scheduling the next flush. */
     nextAttemptAt() {
       return snapshot.items.reduce<number | undefined>((earliest, item) => item.nextAttemptAt === undefined ? earliest : Math.min(earliest ?? Infinity, item.nextAttemptAt), undefined);
     },
     clearError() {
-      if (snapshot.error) publish(snapshot.items);
+      if (snapshot.error) publish(snapshot.items, '');
     },
   };
 }

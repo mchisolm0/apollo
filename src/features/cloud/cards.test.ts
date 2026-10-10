@@ -48,3 +48,12 @@ test('only approval notifications answer from the lock screen, with a stable key
   assert.deepEqual(cloudNotificationIntent(response('expo.modules.notifications.actions.DEFAULT', 'apollo.briefing', { cardId: 'card_2', kind: 'briefing' })), { type: 'open', cardId: 'card_2', kind: 'briefing' });
   assert.equal(cloudNotificationIntent(response('approve', 'apollo.approval', { kind: 'approval', run_id: 'r' })), undefined);
 });
+
+test('the push registration key changes with a re-minted token and never contains it', async () => {
+  const { pushRegistrationKey } = await import('./cloud-client.ts');
+  const credential = { url: 'https://inbox.example', agentId: 'agent_1', token: 'device-token-one' };
+  const key = pushRegistrationKey(credential, 'ExponentPushToken[abc]');
+  assert.equal(pushRegistrationKey({ ...credential }, 'ExponentPushToken[abc]'), key);
+  assert.notEqual(pushRegistrationKey({ ...credential, token: 'device-token-two' }, 'ExponentPushToken[abc]'), key);
+  assert.equal(key.includes(credential.token), false);
+});

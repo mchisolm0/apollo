@@ -11,7 +11,7 @@ import { useApollo } from '@/lib/apollo-context';
 
 import type { Card, CardResponse } from '../../../cloud/src/contract';
 import { applyCard, applyStreamMessage, mergeSnapshot, parseCards, parseStreamMessage } from './cards';
-import { CloudRequestError, createCloudClient, type CloudCredential } from './cloud-client';
+import { CloudRequestError, createCloudClient, pushRegistrationKey, type CloudCredential } from './cloud-client';
 import { CARD_CACHE_KEY, cloudCredentialStore, loadCloudCredential, saveCloudCredential } from './cloud-credentials';
 import { ensureCloudChannels, respondQueue } from './cloud-runtime';
 import { withPendingResponses, type InboxCard } from './inbox-rows';
@@ -25,7 +25,7 @@ type CloudContextValue = {
   cards: readonly InboxCard[];
   /** False until the first snapshot or cached copy is in, so screens can tell "loading" from "gone". */
   ready: boolean;
-  /** A response the server rejected. Connection trouble shows in `status` instead. */
+  /** A response that could not be saved or that the server rejected. Connection trouble shows in `status` instead. */
   error?: string;
   dismissError(): void;
   respond(cardId: string, response: CardResponse): Promise<void>;
@@ -55,6 +55,7 @@ export function CloudProvider({ children }: PropsWithChildren) {
   const [pushRevision, setPushRevision] = useState(0);
   const registered = useRef<string>(undefined);
   const granting = useRef(new Set<string>());
+  const [saveError, setSaveError] = useState<string>();
 
   const url = credential?.url;
   const setCards = useCallback((update: (current: readonly Card[]) => readonly Card[], ready?: boolean) => {
@@ -191,7 +192,7 @@ export function CloudProvider({ children }: PropsWithChildren) {
       if (!allowsNotifications(await Notifications.getPermissionsAsync())) return;
       await ensureCloudChannels();
       const expoPushToken = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
-      const key = JSON.stringify([credential.url, credential.agentId, expoPushToken]);
+      const key = pushRegistrationKey(credential, expoPushToken);
       if (registered.current === key) return;
       await createCloudClient(credential).registerDevice({ expoPushToken, platform: Platform.OS === 'ios' ? 'ios' : 'android', ...(Device.deviceName ? { name: Device.deviceName } : {}) });
       registered.current = key;
@@ -207,10 +208,21 @@ export function CloudProvider({ children }: PropsWithChildren) {
     void cloudGrant(agent.id).then((grant) => grant ? saveCloudCredential({ ...grant, agentId: agent.id }) : undefined).catch(() => undefined);
   }, [loaded, credential, agents, runtime, cloudGrant]);
 
+  // A response that cannot be saved is not shown as sent, so the card stays actionable.
   const respond = useCallback(async (cardId: string, response: CardResponse) => {
     respondQueue.clearError();
-    await respondQueue.enqueue({ key: randomUUID(), cardId, response });
+    setSaveError(undefined);
+    try {
+      await respondQueue.enqueue({ key: randomUUID(), cardId, response });
+    } catch {
+      setSaveError('Could not save your response. Try again.');
+      return;
+    }
     void respondQueue.flush();
+  }, []);
+  const dismissError = useCallback(() => {
+    respondQueue.clearError();
+    setSaveError(undefined);
   }, []);
 
   const connect = useCallback(async (agentId: string) => {
@@ -227,11 +239,11 @@ export function CloudProvider({ children }: PropsWithChildren) {
     credential,
     cards: inboxCards,
     ready: current?.ready ?? false,
-    error: queue.error,
-    dismissError: respondQueue.clearError,
+    error: saveError ?? queue.error,
+    dismissError,
     respond,
     connect,
-  }), [credential, status, inboxCards, current, queue.error, respond, connect]);
+  }), [credential, status, inboxCards, current, saveError, queue.error, dismissError, respond, connect]);
   return <CloudContext.Provider value={value}>{children}</CloudContext.Provider>;
 }
 

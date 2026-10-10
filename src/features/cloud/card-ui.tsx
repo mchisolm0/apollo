@@ -11,12 +11,9 @@ export const sourceLabels = {
   morning: 'Morning', preview: 'Preview', fleet: 'Fleet', digest: 'Digest', jobs: 'Jobs', hermes: 'Hermes',
 } as const satisfies Record<Source, string>;
 
-/** The card's own actions, or the contract's defaults for its kind. */
+/** Only the actions the producer declared. The Worker rejects any other action id. */
 export function cardActions(card: Card): readonly CardAction[] {
-  if (card.actions?.length) return card.actions;
-  if (card.kind === 'approval') return [{ id: 'approve', label: 'Approve', style: 'primary' }, { id: 'reject', label: 'Reject', style: 'destructive' }];
-  if (card.kind === 'briefing') return [{ id: 'done', label: 'Done' }];
-  return [];
+  return card.actions ?? [];
 }
 
 function inlineAction(card: Card): CardAction | undefined {

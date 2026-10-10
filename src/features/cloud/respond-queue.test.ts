@@ -6,12 +6,15 @@ import { createRespondQueue, type QueuedResponse } from './respond-queue.ts';
 
 const card: Card = { id: 'card_1', rev: 3, source: 'morning', key: '2026-10-09', kind: 'briefing', title: 'Morning', push: 'alert', state: 'open', createdAt: '2026-10-09T08:00:00Z', updatedAt: '2026-10-09T08:00:00Z' };
 
-function fixture(send: (item: QueuedResponse) => Promise<Card>) {
+function fixture(send: (item: QueuedResponse) => Promise<Card>, options: { failWrites?: () => boolean } = {}) {
   let stored: string | null = null;
   let clock = 1_000;
   const sent: QueuedResponse[] = [];
   const queue = createRespondQueue({
-    storage: { getItem: async () => stored, setItem: async (_, value) => { stored = value; } },
+    storage: { getItem: async () => stored, setItem: async (_, value) => {
+      if (options.failWrites?.()) throw new Error('Disk full');
+      stored = value;
+    } },
     send: async (item) => { sent.push(item); return send(item); },
     now: () => clock,
   });
@@ -33,6 +36,42 @@ test('offline responses persist, keep their key, and deliver in order once back 
   setup.advance(60_000);
   await setup.queue.flush();
   assert.deepEqual(setup.sent.map((item) => item.key), ['k1', 'k1', 'k2']);
+  assert.deepEqual(setup.queue.getSnapshot().items, []);
+});
+
+test('a later response for a card waits behind a backing-off head while other cards proceed', async () => {
+  let online = false;
+  const setup = fixture(async (item) => online || item.cardId === 'card_2' ? card : offline());
+  await setup.queue.enqueue({ key: 'pick', cardId: 'card_1', response: { pick: 1, done: true } });
+  await setup.queue.enqueue({ key: 'keep', cardId: 'card_1', response: { actionId: 'keep' } });
+  await setup.queue.enqueue({ key: 'other', cardId: 'card_2', response: { actionId: 'approve' } });
+  await setup.queue.flush();
+  assert.deepEqual(setup.sent.map((item) => item.key), ['pick', 'other']);
+  assert.deepEqual(setup.queue.getSnapshot().items.map((item) => item.key), ['pick', 'keep']);
+  online = true;
+  setup.advance(60_000);
+  await setup.queue.flush();
+  assert.deepEqual(setup.sent.map((item) => item.key), ['pick', 'other', 'pick', 'keep']);
+});
+
+test('toggles coalesce so only the latest value is sent, with a new key only when the body changes', async () => {
+  let online = false;
+  const setup = fixture(async () => online ? card : offline());
+  await setup.queue.enqueue({ key: 'on', cardId: 'card_1', response: { pick: 1, done: true } });
+  await setup.queue.flush();
+  // The first toggle is backing off at the head when the user flips it back, twice.
+  await setup.queue.enqueue({ key: 'off', cardId: 'card_1', response: { pick: 1, done: false } });
+  await setup.queue.enqueue({ key: 'off-again', cardId: 'card_1', response: { pick: 1, done: false } });
+  assert.deepEqual(setup.queue.getSnapshot().items.map((item) => [item.key, item.response]), [['off', { pick: 1, done: false }]]);
+  online = true;
+  setup.advance(60_000);
+  await setup.queue.flush();
+  assert.deepEqual(setup.sent.map((item) => [item.key, item.response.done]), [['on', true], ['off', false]]);
+});
+
+test('an enqueue that cannot be saved is rejected and never shows as queued', async () => {
+  const setup = fixture(offline, { failWrites: () => true });
+  await assert.rejects(setup.queue.enqueue({ key: 'k', cardId: 'card_1', response: { actionId: 'approve' } }), /Disk full/);
   assert.deepEqual(setup.queue.getSnapshot().items, []);
 });
 
