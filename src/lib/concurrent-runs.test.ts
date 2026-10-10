@@ -99,6 +99,8 @@ function providerFixture(sessions: readonly HermesSession[] = []) {
           removal.push('notification');
         } }),
       };
+      if (id === '@/features/cloud/cloud-client') return { CloudRequestError: class extends Error {}, createCloudClient: () => ({ unregisterDevice: async () => {} }), parseCloudGrant: () => undefined };
+      if (id === '@/features/cloud/cloud-credentials') return { loadCloudCredential: async () => undefined, saveCloudCredential: async () => {}, clearCloudCredential: async () => {} };
       if (id === 'react-native') return { AppState: {} };
       if (id === '@react-native-async-storage/async-storage') return { __esModule: true, default: {
         getItem: async (key: string) => storage.get(key) ?? null,
@@ -109,6 +111,7 @@ function providerFixture(sessions: readonly HermesSession[] = []) {
       } };
       if (id === './catalog') return {};
       if (id === './pairing') return { PairingClient: class {} };
+      if (id === './protocol') return { errorMessage: (_: unknown, fallback: string) => fallback };
       if (id === './run-state') return runState;
       if (id === './attachments') return attachments;
       if (id === './message-history') return messageHistory;

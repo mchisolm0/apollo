@@ -13,6 +13,9 @@ import { useAutoSettleLedger, useSnoozeLedger } from './use-session-inbox';
 import type { ConnectionState } from './types';
 import { showThreadMenu } from './session-actions';
 import { useApollo } from '@/lib';
+import { BriefingCard, CardRow } from '@/features/cloud/card-ui';
+import { buildInboxRows, type CollapsibleSectionId, type InboxCard } from '@/features/cloud/inbox-rows';
+import type { CardAction, CardPick } from '../../../cloud/src/contract';
 
 type Props = {
   sessions: readonly InboxSession[];
@@ -24,48 +27,31 @@ type Props = {
   onForked?: (sessionId: string) => void;
   refreshing?: boolean;
   onRefresh?: () => void;
+  /** Cloud inbox cards; layout lives in buildInboxRows. */
+  cards?: readonly InboxCard[];
+  onCardPress?: (card: InboxCard) => void;
+  onCardAction?: (card: InboxCard, action: CardAction) => void;
+  onPick?: (card: InboxCard, pick: CardPick) => void;
 };
-// Open threads (attention first) render without a header; Snoozed and Settled collapse below them.
-type SectionId = 'open' | 'snoozed' | 'settled';
-type ListRow = { kind: 'section'; id: SectionId; title: string; count: number } | { kind: 'session'; id: string; session: InboxSession };
-const sections = [
-  { id: 'open', title: 'Open' },
-  { id: 'snoozed', title: 'Snoozed' },
-  { id: 'settled', title: 'Settled' },
-] as const satisfies readonly { id: SectionId; title: string }[];
-
+const noCards: readonly InboxCard[] = [];
+const ignore = () => {};
 
 /** A searchable thread inbox with persistent finish/reopen actions. */
-export function SessionList({ sessions, connection = 'connected', onSessionPress, onSettle, onReopen, onNewSession, onForked, refreshing, onRefresh }: Props) {
+export function SessionList({ sessions, connection = 'connected', onSessionPress, onSettle, onReopen, onNewSession, onForked, refreshing, onRefresh, cards = noCards, onCardPress = ignore, onCardAction = ignore, onPick = ignore }: Props) {
   const styles = useThemedStyles(createStyles);
   const colors = useColors();
   const { fontScale } = useWindowDimensions();
   const [query, setQuery] = useState('');
-  const [collapsed, setCollapsed] = useState<Record<SectionId, boolean>>({ open: false, snoozed: true, settled: true });
+  const [collapsed, setCollapsed] = useState<Record<CollapsibleSectionId, boolean>>({ updates: true, snoozed: true, settled: true });
   const [attentionOnly, setAttentionOnly] = useState(false);
   // Sessions carry their agent; the inbox route only ever shows one agent at a time.
   const { snoozed, snooze, unsnooze } = useSnoozeLedger(sessions[0]?.agentId ?? '');
   const { loaded: autoSettleLoaded, setAutoSettle } = useAutoSettleLedger(sessions[0]?.agentId ?? '');
-  const toggle = useCallback((id: SectionId) => setCollapsed((previous) => ({ ...previous, [id]: !previous[id] })), []);
+  const toggle = useCallback((id: CollapsibleSectionId) => setCollapsed((previous) => ({ ...previous, [id]: !previous[id] })), []);
   const handleSnooze = useCallback((sessionId: string) => { void snooze(sessionId); }, [snooze]);
   const handleUnsnooze = useCallback((sessionId: string) => { void unsnooze(sessionId); }, [unsnooze]);
   const handleAutoSettle = useCallback((sessionId: string, enabled: boolean) => { void setAutoSettle(sessionId, enabled); }, [setAutoSettle]);
-  const rows = useMemo(() => {
-    const result: ListRow[] = [];
-    const search = query.trim().toLocaleLowerCase();
-    const searching = Boolean(search);
-    for (const section of sections) {
-      if (attentionOnly && section.id !== 'open') continue;
-      const matching = sessions.filter((session) => {
-        const bucket: SectionId = session.settled ? 'settled' : isSessionSnoozed(snoozed, session.id) ? 'snoozed' : 'open';
-        return bucket === section.id && (!attentionOnly || session.status === 'attention') && `${session.title} ${session.preview ?? ''}`.toLocaleLowerCase().includes(search);
-      });
-      if (!matching.length) continue;
-      if (section.id !== 'open') result.push({ kind: 'section', ...section, count: matching.length });
-      if (searching || !collapsed[section.id]) result.push(...matching.map((session): ListRow => ({ kind: 'session', id: session.id, session })));
-    }
-    return result;
-  }, [sessions, query, collapsed, attentionOnly, snoozed]);
+  const rows = useMemo(() => buildInboxRows({ sessions, cards, query, attentionOnly, collapsed, isSnoozed: (id) => isSessionSnoozed(snoozed, id) }), [sessions, cards, query, collapsed, attentionOnly, snoozed]);
 
   return <KeyboardFrame key={fontScale}>
     <View style={styles.container}>
@@ -81,14 +67,22 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
       contentContainerStyle={styles.content}
       refreshing={refreshing}
       onRefresh={onRefresh}
-      renderItem={({ item }) => item.kind === 'section' ? (() => {
-        const expanded = Boolean(query.trim()) || !collapsed[item.id];
-        return <Pressable accessibilityRole="button" accessibilityLabel={`${item.title}, ${item.count} threads`} accessibilityState={{ expanded }} style={({ pressed }) => [styles.section, pressed && styles.pressed]} onPress={() => toggle(item.id)}>
-          <Text style={styles.sectionText}>{item.title} ({item.count})</Text>
+      renderItem={({ item }) => {
+        if (item.kind === 'briefing') return <BriefingCard card={item.card} onOpen={onCardPress} onPick={onPick} onAction={onCardAction} />;
+        if (item.kind === 'card') return <CardRow card={item.card} onPress={onCardPress} onAction={onCardAction} />;
+        if (item.kind === 'session') return <SessionRow session={item.session} snoozed={isSessionSnoozed(snoozed, item.session.id)} onPress={onSessionPress} onSettle={onSettle} onReopen={onReopen} onAutoSettle={autoSettleLoaded ? handleAutoSettle : undefined} onSnooze={handleSnooze} onUnsnooze={handleUnsnooze} onForked={onForked} />;
+        const sectionId = item.id;
+        const title = <Text style={[styles.sectionText, sectionId === 'needs' && styles.needsText]}>{item.collapsible ? `${item.title} (${item.count})` : item.title}</Text>;
+        if (sectionId !== 'updates' && sectionId !== 'snoozed' && sectionId !== 'settled') {
+          return <View accessibilityRole="header" style={styles.section}>{title}<View style={styles.sectionRule} /></View>;
+        }
+        const expanded = Boolean(query.trim()) || !collapsed[sectionId];
+        return <Pressable accessibilityRole="button" accessibilityLabel={`${item.title}, ${item.count} ${sectionId === 'updates' ? 'updates' : 'threads'}`} accessibilityState={{ expanded }} style={({ pressed }) => [styles.section, pressed && styles.pressed]} onPress={() => toggle(sectionId)}>
+          {title}
           <View style={styles.sectionRule} />
           <SymbolView name={{ ios: expanded ? 'chevron.up' : 'chevron.down', android: expanded ? 'expand_less' : 'expand_more', web: expanded ? 'expand_less' : 'expand_more' }} size={12} tintColor={colors.secondary} />
         </Pressable>;
-      })() : <SessionRow session={item.session} snoozed={isSessionSnoozed(snoozed, item.session.id)} onPress={onSessionPress} onSettle={onSettle} onReopen={onReopen} onAutoSettle={autoSettleLoaded ? handleAutoSettle : undefined} onSnooze={handleSnooze} onUnsnooze={handleUnsnooze} onForked={onForked} />}
+      }}
       ListEmptyComponent={<View style={styles.empty}><Text style={styles.emptyTitle}>{connection !== 'connected' && !sessions.length ? 'Threads are unavailable' : query ? 'No matching threads' : attentionOnly ? 'All caught up' : 'Start a thread'}</Text><Text style={styles.emptyText}>{connection !== 'connected' && !sessions.length ? 'Reconnect to load your threads.' : query ? 'Try a different search.' : attentionOnly ? 'No threads need your attention.' : 'Choose New thread to get started.'}</Text></View>}
     />
     </View>
@@ -180,6 +174,7 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   searchInput: { color: colors.primary, fontSize: 16, flex: 1, height: 44, paddingVertical: 8 },
   section: { marginHorizontal: 12, paddingHorizontal: 8, minHeight: 48, borderRadius: 6, flexDirection: 'row', alignItems: 'center', gap: 12 },
   sectionText: { color: colors.secondary, fontSize: 15 },
+  needsText: { color: colors.amber, fontWeight: '600' },
   sectionRule: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.line },
   rowContainer: { marginHorizontal: 12, backgroundColor: colors.background, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
   row: { paddingHorizontal: 8, paddingVertical: 12, minHeight: 44, borderRadius: 6, gap: 4, backgroundColor: colors.background, justifyContent: 'center' },

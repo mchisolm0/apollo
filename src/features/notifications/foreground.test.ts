@@ -18,6 +18,8 @@ test('only run notifications for the visible agent and session stay silent', () 
     assert.deepEqual(foregroundNotificationBehavior(invalid, session), show);
   }
   assert.deepEqual(foregroundNotificationBehavior(data), show);
+  assert.deepEqual(foregroundNotificationBehavior({ cardId: 'card_1', source: 'fleet', kind: 'update' }, session), { ...suppress, shouldShowList: true });
+  assert.deepEqual(foregroundNotificationBehavior({ cardId: 'card_2', source: 'preview', kind: 'approval' }, session), show);
 });
 
 test('focus changes are immediate and stale blur cleanup preserves the current thread', () => {

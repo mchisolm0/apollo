@@ -2,10 +2,11 @@ import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
 import type { DevicePushToken } from 'expo-notifications';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { AppState, Platform } from 'react-native';
 
 import { useApollo } from '@/lib';
+import { cloudOpenRequests } from '@/features/cloud/cloud-runtime';
 
 import { allowsNotifications, useNotificationResponseNavigation } from './notifications';
 import type { NotificationDestination } from './navigation';
@@ -23,6 +24,16 @@ export function NotificationNavigation() {
     return hasSession(agentId, sessionId);
   }, [hasSession, refreshAgent]);
   useNotificationResponseNavigation({ ready: !loading, isKnownAgent, isKnownSession, navigate });
+
+  // Cloud card taps: the morning card opens the inbox, anything else opens the card.
+  const openRevision = useSyncExternalStore(cloudOpenRequests.subscribe, cloudOpenRequests.revision);
+  useEffect(() => {
+    if (loading) return;
+    const intent = cloudOpenRequests.take();
+    if (!intent) return;
+    if (intent.kind === 'briefing') router.dismissTo('/');
+    else router.push({ pathname: '/card/[id]', params: { id: intent.cardId } });
+  }, [loading, openRevision, router]);
 
   const refreshRegistrations = useCallback(async (devicePushToken?: DevicePushToken) => {
     if (loading || !projectId || Platform.OS === 'web') return;

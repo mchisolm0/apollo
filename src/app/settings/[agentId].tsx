@@ -7,14 +7,24 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { AgentSettingsScreen } from '@/features/relay';
 import type { RelayAgent } from '@/features/relay';
 import { useApollo } from '@/lib';
+import { useCloud, type CloudStatus } from '@/features/cloud/cloud-context';
+
+const cloudLabels = { off: 'Not set up', connecting: 'Connecting', live: 'Connected', offline: 'Offline', revoked: 'Access revoked' } as const satisfies Record<CloudStatus, string>;
 
 export default function SettingsRoute() {
   const styles = useThemedStyles(createStyles);
   const { agentId } = useLocalSearchParams<{ agentId: string }>();
   const router = useRouter();
   const { agents, runtime, refreshAgent, removeAgent } = useApollo();
+  const cloud = useCloud();
   const agent = agents.find((candidate) => candidate.id === agentId);
   if (!agent) return <Redirect href="/" />;
+  const connectCloud = () => void cloud.connect(agent.id).catch((error: unknown) => Alert.alert('Could not set up the cloud inbox', error instanceof Error ? error.message : 'Try again.'));
+  const cloudOwner = cloud.credential ? agents.find((candidate) => candidate.id === cloud.credential?.agentId)?.label : undefined;
+  const cloudInbox = !cloud.credential ? { value: cloudLabels.off, action: 'Set up', onPress: connectCloud }
+    : cloud.credential.agentId !== agent.id ? { value: `${cloudLabels[cloud.status]} via ${cloudOwner ?? 'another agent'}` }
+      : cloud.status === 'revoked' ? { value: cloudLabels.revoked, action: 'Reconnect', onPress: connectCloud }
+        : { value: cloudLabels[cloud.status] };
   const status = runtime[agent.id]?.status;
   const connection: RelayAgent['connection'] = status === 'connected' ? 'connected' : status === 'connecting' ? 'connecting' : status === 'revoked' ? 'revoked' : 'offline';
   const relayAgent: RelayAgent = {
@@ -56,6 +66,7 @@ export default function SettingsRoute() {
         onForgetAgent={confirmForget}
         onNotifications={() => router.push({ pathname: "/notifications/[agentId]", params: { agentId } })}
         onToolsets={() => router.push({ pathname: '/toolsets/[agentId]', params: { agentId } })}
+        cloudInbox={cloudInbox}
       />
     </SafeAreaView>
   );

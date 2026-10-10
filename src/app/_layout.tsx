@@ -8,6 +8,7 @@ import { StatusBar } from 'expo-status-bar';
 import { TextScaleProvider, useColors } from '@/features/relay/relay-ui';
 import { ApolloProvider } from '@/lib';
 import { OutboxProvider } from '@/lib/outbox-context';
+import { CloudProvider } from '@/features/cloud/cloud-context';
 import { IncomingShareProvider } from '@/features/sharing';
 import { NotificationNavigation } from '@/features/notifications';
 import { AppUpdateProvider } from '@/features/updates/update-provider';
@@ -49,6 +50,7 @@ export default function RootLayout() {
     <PostHogProvider client={posthog} autocapture={false}>
     <ApolloProvider>
       <OutboxProvider>
+      <CloudProvider>
       <IncomingShareProvider>
       <TextScaleProvider>
         <AppUpdateProvider>
@@ -57,6 +59,7 @@ export default function RootLayout() {
         </AppUpdateProvider>
       </TextScaleProvider>
       </IncomingShareProvider>
+      </CloudProvider>
       </OutboxProvider>
     </ApolloProvider>
     </PostHogProvider>

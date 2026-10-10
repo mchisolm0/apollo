@@ -11,6 +11,8 @@ import { AgentPicker } from '@/features/relay/agent-picker';
 import { SessionList } from '@/features/relay/session-list';
 import { useSessionInbox } from '@/features/relay/use-session-inbox';
 import { useApollo } from '@/lib';
+import { useCloud } from '@/features/cloud/cloud-context';
+import { openCardLink, runAction } from '@/features/cloud/card-ui';
 
 export default function SessionsRoute() {
   const styles = useThemedStyles(createStyles);
@@ -23,6 +25,7 @@ export default function SessionsRoute() {
   const agent = agents.find((candidate) => candidate.id === agentId) ?? agents[0];
   const state = agent ? runtime[agent.id] : undefined;
   const inbox = useSessionInbox(agent?.id ?? '', state);
+  const cloud = useCloud();
   if (loading) return <View style={styles.loading}><ActivityIndicator color={colors.primary} accessibilityLabel="Loading agents" /></View>;
   if (!agent) return <Redirect href="/connect" />;
   const connection = state?.status === 'connected' ? 'connected' : state?.status === 'revoked' ? 'revoked' : state?.status === 'connecting' ? 'connecting' : 'offline';
@@ -61,7 +64,12 @@ export default function SessionsRoute() {
     </View>}
     {pendingShares.length > 0 ? <Pressable accessibilityRole="button" onPress={() => router.push("/share")} style={{ minHeight: 44, paddingHorizontal: 20, justifyContent: "center" }}><Text style={{ color: colors.cyan }}>Open shared content ({pendingShares.length})</Text></Pressable> : null}
     {inbox.error ? <Text style={styles.error} accessibilityRole="alert">{inbox.error}</Text> : null}
-    <SessionList connection={connection} sessions={sessions} onSessionPress={(session) => open(session.id)} onSettle={(id) => { void inbox.settle(id); }} onReopen={(id) => { void inbox.reopen(id); }} onNewSession={() => open('new')} onForked={(id) => open(id)} />
+    {cloud.error ? <Text style={styles.error} accessibilityRole="alert" onPress={cloud.dismissError}>{cloud.error}</Text> : null}
+    <SessionList connection={connection} sessions={sessions} onSessionPress={(session) => open(session.id)} onSettle={(id) => { void inbox.settle(id); }} onReopen={(id) => { void inbox.reopen(id); }} onNewSession={() => open('new')} onForked={(id) => open(id)}
+      cards={cloud.cards}
+      onCardPress={(card) => card.kind === 'update' && card.url && !card.body ? openCardLink(card.url) : router.push({ pathname: '/card/[id]', params: { id: card.id } })}
+      onCardAction={(card, action) => runAction(card, action, (cardId, actionId) => { void cloud.respond(cardId, { actionId }); })}
+      onPick={(card, pick) => { void cloud.respond(card.id, { pick: pick.n, done: !pick.done }); }} />
   </SafeAreaView>;
 }
 
