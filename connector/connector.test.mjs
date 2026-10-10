@@ -361,8 +361,10 @@ async function cloudFixture(options = {}) {
   const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
   const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
   const headers = { authorization: `Bearer ${exchange.body.access_token}`, "content-type": "application/json" };
-  const close = async () => { await f.connector.close(); await f.hermes.close(); await cloud.close(); };
-  return { ...f, cloud, exchange, headers, close };
+  const fixtureState = { ...f, cloud, exchange, headers };
+  // Reads fixtureState.connector at close time, so a test may restart the connector.
+  fixtureState.close = async () => { await fixtureState.connector.close(); await f.hermes.close(); await cloud.close(); };
+  return fixtureState;
 }
 
 test("pairing returns cloud credentials named after the device and survives a cloud outage", async (t) => {
@@ -459,8 +461,8 @@ test("a response that lands before the card post finishes still answers Hermes, 
   await req(f.base, "/v1/runs", { method: "POST", headers: f.headers, body: JSON.stringify({ input: "ship", session_id: "session_test" }) });
   // 503, 429 and 408 are transient: the cursor holds until Hermes takes the answer.
   const answers = () => f.hermes.seen.filter((request) => request.url === "/v1/runs/run_test/approval");
-  await waitFor(() => answers().length === 4);
-  assert.equal((await f.connector.store.read()).cloud_events_after, 3);
+  await waitFor(async () => (await f.connector.store.read()).cloud_events_after === 3);
+  assert.equal(answers().length, 4);
   assert.deepEqual(JSON.parse(answers()[3].body), { choice: "deny", request_id: "req_1" });
   release();
 });
@@ -518,6 +520,24 @@ test("a failed cloud revoke is kept and retried until the cloud accepts it", asy
   f.cloud.fail = false;
   await waitFor(async () => (await f.connector.store.read()).cloud_revocations.length === 0);
   assert.equal(f.cloud.seen.at(-1).url, `/v1/device-tokens/${f.exchange.body.device_id}`);
+});
+
+test("revoking a cloud-paired phone while cloud config is absent deletes its token once config returns", async (t) => {
+  const f = await cloudFixture(); t.after(f.close);
+  const deviceId = f.exchange.body.device_id;
+  await f.connector.close();
+  const restart = async (cloud) => {
+    f.connector = createConnectorServer({ port: 0, hermesUrl: f.hermes.url, hermesApiKey: "hermes-secret", adminSecret: "admin-secret", statePath: f.statePath, cloud, cloudRetryInterval: 10 });
+    return `http://127.0.0.1:${(await f.connector.start()).port}`;
+  };
+  const base = await restart(null);
+  await req(base, `/admin/devices/${deviceId}/revoke`, admin({ method: "POST", body: "{}" }));
+  assert.deepEqual((await f.connector.store.read()).cloud_revocations, [deviceId]);
+  await f.connector.close();
+  await restart({ url: f.cloud.url, token: "connector-secret" });
+  await waitFor(async () => (await f.connector.store.read()).cloud_revocations.length === 0);
+  assert.equal(f.cloud.seen.at(-1).method, "DELETE");
+  assert.equal(f.cloud.seen.at(-1).url, `/v1/device-tokens/${deviceId}`);
 });
 
 test("without cloud config pairing and approvals are unchanged", async (t) => {
