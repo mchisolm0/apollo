@@ -518,7 +518,7 @@ export function createConnectorServer(options = {}) {
       const state = await store.load();
       const cloudConfig = options.cloud !== undefined ? options.cloud : await loadCloudConfig({ path: options.cloudConfigPath ?? defaultCloudPath(options.statePath) });
       cloud = cloudConfig ? createCloudClient({ ...cloudConfig, fetchImpl: options.fetchImpl ?? fetch }) : null;
-      approvalBridge = cloud ? createApprovalBridge({ store, client: cloud, agentId: state.agent_id, answer: answerApproval, pollInterval: options.cloudPollInterval }) : null;
+      approvalBridge = cloud ? createApprovalBridge({ store, client: cloud, agentId: state.agent_id, answer: answerApproval, pollInterval: options.cloudPollInterval, fallbackAfter: options.cloudFallbackAfter }) : null;
       notificationMonitor = createRunNotificationMonitor({ store, agentId: state.agent_id, fetchRun, sendPush, approvals: approvalBridge, pollInterval: options.notificationPollInterval });
       await notificationMonitor.registrationsChanged();
       approvalBridge?.start();

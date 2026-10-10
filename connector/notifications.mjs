@@ -186,8 +186,10 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
         let event = eventFromStatus(status);
         let synced = true;
         if (approvals) {
-          synced = await approvals.runStatus(runId, { ...status, session_id: status.session_id ?? tracked.session_id });
-          if (event?.kind === "approval") event = null;
+          const result = await approvals.runStatus(runId, { ...status, session_id: status.session_id ?? tracked.session_id });
+          synced = result.synced;
+          // The card replaces the direct approval push unless the cloud has been down too long.
+          if (event?.kind === "approval" && !result.fallback) event = null;
         }
         const delivered = event ? await deliver(runId, status, event) : true;
         if (TERMINAL.has(status.status) && delivered && synced) {

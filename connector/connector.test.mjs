@@ -406,6 +406,22 @@ test("a Hermes approval becomes a cloud card and an approve event answers Hermes
   assert.deepEqual((await f.connector.store.read()).cloud_approvals, {});
 });
 
+test("a cloud outage falls back to the direct approval push and the card still arrives later", async (t) => {
+  const pushes = [];
+  const f = await cloudFixture({ cloudFallbackAfter: 30, sendPush: async (_token, notification) => { pushes.push(notification.data.kind); return { status: "ok" }; } });
+  t.after(f.close);
+  await req(f.base, "/v1/apollo/notifications", { method: "PUT", headers: f.headers, body: JSON.stringify({ expo_push_token: "ExpoPushToken[device_123]" }) });
+  f.cloud.fail = true;
+  f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "waiting_for_approval", session_id: "session_test", approval: { request_id: "req_1", command: "git push" } });
+  await req(f.base, "/v1/runs", { method: "POST", headers: f.headers, body: JSON.stringify({ input: "ship", session_id: "session_test" }) });
+  await waitFor(() => pushes.includes("approval"));
+  assert.ok(f.cloud.seen.filter((request) => request.url === "/v1/cards").length > 1);
+  f.cloud.fail = false;
+  await waitFor(async () => (await f.connector.store.read()).cloud_approvals?.["run_test:req_1"]);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(pushes, ["approval"]);
+});
+
 test("an approval answered in the app thread resolves its cloud card", async (t) => {
   const f = await cloudFixture(); t.after(f.close);
   f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "waiting_for_approval", session_id: "session_test", approval: { request_id: "req_1", command: "git push", tool: "terminal" } });

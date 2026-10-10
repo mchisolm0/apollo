@@ -94,8 +94,10 @@ function approvalCard({ agentId, runId, sessionId, approval }) {
  * `answer(runId, choice, requestId)` resolves true when Hermes took the answer and
  * false when the approval is no longer pending.
  */
-export function createApprovalBridge({ store, client, agentId, answer, pollInterval = 3_000 }) {
+export function createApprovalBridge({ store, client, agentId, answer, pollInterval = 3_000, fallbackAfter = 30_000 }) {
   let closed = false;
+  // Card key → when posting it first failed with a network error or 5xx. In memory only.
+  const failingSince = new Map();
   let loop = null;
   let pending = false;
 
@@ -158,7 +160,9 @@ export function createApprovalBridge({ store, client, agentId, answer, pollInter
     },
     /**
      * Called with each polled run status. Posts a card for a new approval and resolves
-     * cards whose approval was answered elsewhere. Resolves true once nothing is left to sync.
+     * cards whose approval was answered elsewhere. `synced` is true once nothing is left
+     * to sync. `fallback` is true while the cloud has refused the current card for
+     * `fallbackAfter`, so the caller should push the approval directly.
      */
     async runStatus(runId, status) {
       const approval = status.status === "waiting_for_approval" ? status.approval : null;
@@ -170,7 +174,7 @@ export function createApprovalBridge({ store, client, agentId, answer, pollInter
         if (entry.run_id !== runId || key === currentKey) continue;
         try { await resolveCard(key, entry); } catch { synced = false; }
       }
-      if (!currentKey || open.some(([key]) => key === currentKey)) return synced;
+      if (!currentKey || open.some(([key]) => key === currentKey)) return { synced, fallback: false };
       try {
         const card = await client.upsertCard(approvalCard({ agentId, runId, sessionId: status.session_id, approval: { ...approval, request_id: String(requestId) } }));
         if (typeof card?.id !== "string") throw new Error("cloud card response was invalid");
@@ -178,10 +182,13 @@ export function createApprovalBridge({ store, client, agentId, answer, pollInter
           state.cloud_approvals ??= {};
           state.cloud_approvals[currentKey] = { card_id: card.id, run_id: runId, request_id: approval.request_id ?? null, created_at: new Date().toISOString() };
         });
+        failingSince.delete(currentKey);
         ensurePolling();
-        return synced;
-      } catch {
-        return false;
+        return { synced, fallback: false };
+      } catch (cause) {
+        const outage = cause.status === undefined || cause.status >= 500;
+        if (outage && !failingSince.has(currentKey)) failingSince.set(currentKey, Date.now());
+        return { synced: false, fallback: outage && Date.now() - failingSince.get(currentKey) >= fallbackAfter };
       }
     },
     close() {
