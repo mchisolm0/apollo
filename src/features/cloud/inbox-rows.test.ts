@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { Card } from '../../../cloud/src/contract.ts';
-import { buildInboxRows, settleAction, updateSettledCards, withPendingResponses, type InboxRowSession } from './inbox-rows.ts';
+import { buildInboxRows, cardOpenPlan, settleAction, updateSettledCards, withPendingResponses, type InboxRowSession } from './inbox-rows.ts';
 
 function card(id: string, kind: Card['kind'], patch: Partial<Card> = {}): Card {
   return { id, rev: 1, source: 'preview', key: id, kind, title: id, push: 'alert', state: 'open', createdAt: '2026-10-09T08:00:00Z', updatedAt: '2026-10-09T08:00:00Z', ...patch };
@@ -16,7 +16,7 @@ const collapsed = { snoozed: true, settled: true };
 const layout = (rows: ReturnType<typeof buildInboxRows>) => rows.map((row) => row.kind === 'section' ? `[${row.title} ${row.count}]` : `${row.kind}:${row.id}`);
 const at = (hour: number) => `2026-10-10T${String(hour).padStart(2, '0')}:00:00Z`;
 
-test('design A order: morning card, approvals, threads, updates by time, then Snoozed and Settled', () => {
+test('cards come first: morning card, approvals, waiting threads, updates newest first, then other threads', () => {
   const rows = buildInboxRows({
     sessions: [session('thread', { status: 'attention' }), session('waiting', { pendingApproval: true, status: 'attention' }), session('later'), session('done', { settled: true, activityAt: Date.parse(at(9)) / 1000 })],
     cards: [
@@ -29,7 +29,7 @@ test('design A order: morning card, approvals, threads, updates by time, then Sn
     isSnoozed: (id) => id === 'later',
     collapsed,
   });
-  assert.deepEqual(layout(rows), ['briefing:morning', 'card:preview', 'session:waiting', 'session:thread', 'card:jobs', 'card:build', '[Snoozed 1]', '[Settled 1]']);
+  assert.deepEqual(layout(rows), ['briefing:morning', 'card:preview', 'session:waiting', 'card:jobs', 'card:build', 'session:thread', '[Snoozed 1]', '[Settled 1]']);
 });
 
 test('Settled mixes settled threads with closed and locally settled cards, newest first', () => {
@@ -82,6 +82,7 @@ test('search and the attention filter hide the morning card and narrow cards', (
     collapsed,
   };
   assert.deepEqual(layout(buildInboxRows({ ...input, attentionOnly: true })), ['card:Scryve preview', 'session:new result']);
+  assert.deepEqual(layout(buildInboxRows(input)), ['briefing:morning', 'card:Scryve preview', 'card:disk', 'session:quiet', 'session:new result']);
   assert.deepEqual(layout(buildInboxRows({ ...input, query: 'disk' })), ['card:disk']);
 });
 
@@ -102,4 +103,15 @@ test('queued responses show right away: picks flip, an approval says so, a morni
   const resolved = { ...morning, resolution: { actionId: 'skip', by: 'ipad', at: '2026-10-09T08:05:00Z' } };
   assert.equal(withPendingResponses([resolved], [])[0].acknowledged, 'skip');
   assert.equal(withPendingResponses([resolved], [{ cardId: 'morning', response: { actionId: 'keep' } }])[0].acknowledged, 'skip');
+});
+
+test('opening an update settles it and a link-only update opens its link; approvals and morning cards stay', () => {
+  assert.deepEqual(cardOpenPlan(card('u', 'update', { body: 'Digest' })), { target: 'detail', settle: true });
+  assert.deepEqual(cardOpenPlan(card('p', 'update', { url: 'scryve-preview://preview/pr-376' })), { target: 'link', settle: true });
+  assert.deepEqual(cardOpenPlan(card('a', 'approval', { url: 'https://x.dev' })), { target: 'detail', settle: false });
+  assert.deepEqual(cardOpenPlan(card('b', 'briefing')), { target: 'detail', settle: false });
+  // Once settled on open, the update leaves the open list and waits in Settled.
+  const update = card('p', 'update', { rev: 4 });
+  const settled = updateSettledCards(new Map(), [update], 'p', cardOpenPlan(update).settle);
+  assert.deepEqual(layout(buildInboxRows({ sessions: [], cards: [update], settledCards: settled, isSnoozed: () => false, collapsed })), ['[Settled 1]']);
 });

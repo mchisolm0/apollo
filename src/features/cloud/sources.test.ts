@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { SOURCES } from '../../../cloud/src/contract.ts';
 import { THEME_PALETTES } from '../relay/theme.ts';
-import { previewLine } from './card-text.ts';
+import { isOpenableUrl, latestAssistantPreview, previewLine } from './card-text.ts';
 import { glyphColors, mixHex, SOURCE_STYLES } from './sources.ts';
 
 function luminance(hex: string) {
@@ -43,4 +43,20 @@ test('previews take the first readable line of markdown', () => {
   assert.equal(previewLine('1. [x] _Done_ with snake_case_name and *one* thing'), 'Done with snake_case_name and one thing');
   assert.equal(previewLine('---\n\n   '), undefined);
   assert.equal(previewLine(undefined), undefined);
+});
+
+test('card links open app schemes directly but never script-capable ones', () => {
+  for (const url of ['scryve-preview://preview/pr-376', 'https://github.com/mchisolm0/scryve/pull/376', 'mailto:me@example.com']) assert.equal(isOpenableUrl(url), true, url);
+  for (const url of ['javascript:alert(1)', 'DATA:text/html,x', 'file:///etc/hosts', '/relative/path', '']) assert.equal(isOpenableUrl(url), false, url);
+});
+
+test('a thread with no user message previews its latest assistant text', () => {
+  assert.equal(latestAssistantPreview([
+    { role: 'assistant', content: 'Older note' },
+    { role: 'assistant', content: '## Scryve #376 dice menu preview\nReady on device' },
+    { role: 'tool', content: '{"ok":true}' },
+    { role: 'assistant', content: '' },
+  ]), 'Scryve #376 dice menu preview');
+  assert.equal(latestAssistantPreview([{ role: 'user', content: 'hi' }]), undefined);
+  assert.equal(latestAssistantPreview(undefined), undefined);
 });

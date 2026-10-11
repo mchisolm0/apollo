@@ -53,6 +53,15 @@ export function settleAction(card: Pick<Card, 'id' | 'state' | 'rev' | 'kind'>, 
   return card.kind === 'approval' ? undefined : 'settle';
 }
 
+/**
+ * What opening a card does. A link-only update opens its link; anything else opens the
+ * detail screen. Opening an update settles it, since its history lives in the producer's
+ * Hermes thread; approvals and morning cards stay until answered.
+ */
+export function cardOpenPlan(card: Pick<Card, 'kind' | 'url' | 'body'>): { target: 'link' | 'detail'; settle: boolean } {
+  return { target: card.kind === 'update' && card.url && !card.body ? 'link' : 'detail', settle: card.kind === 'update' };
+}
+
 /** The next ledger after settling or reopening `cardId`, keeping only cards still in the inbox. */
 export function updateSettledCards(current: SettledCards, cards: readonly Pick<Card, 'id' | 'rev'>[], cardId: string, settle: boolean): SettledCards {
   const revs = new Map(cards.map((card) => [card.id, card.rev]));
@@ -68,9 +77,10 @@ export function parseSettledCards(value: unknown): SettledCards {
 }
 
 /**
- * Lays out the home inbox (design A): no labels between cards. The open morning card
- * comes first, then approval cards, then threads (waiting on approval first), then update
- * cards newest first, then the collapsible Snoozed and Settled sections. Settled holds
+ * Lays out the home inbox (design A): no labels between cards. Cards are for urgent items
+ * that leave once handled, so they sit above ordinary threads: the open morning card, then
+ * approval cards, threads waiting on approval, update cards newest first, the remaining
+ * threads, and the collapsible Snoozed and Settled sections. Settled holds
  * settled threads and closed or locally settled cards, newest first. Cards from `hermes`
  * never get their own row because the thread row already stands for them. Search and the
  * attention filter hide the morning card; the attention filter also hides updates.
@@ -104,8 +114,8 @@ export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isS
     ...(briefing ? [{ kind: 'briefing' as const, id: briefing.id, card: briefing }] : []),
     ...approvals.map(cardRow(false)),
     ...waiting.map(sessionRow),
-    ...threads.filter((session) => !session.pendingApproval).map(sessionRow),
     ...updates.map(cardRow(false)),
+    ...threads.filter((session) => !session.pendingApproval).map(sessionRow),
   ];
   if (attentionOnly) return rows;
 

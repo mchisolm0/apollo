@@ -1,5 +1,5 @@
 import * as Clipboard from 'expo-clipboard';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { MessageContent } from '@/features/relay/message-content';
@@ -9,7 +9,7 @@ import { useApollo } from '@/lib';
 import type { CardAction, CardMetric, CardPick } from '../../../cloud/src/contract';
 import { acknowledgedLabel, actionLabel, CardButton, cardActions, CardGlyph, CardPicks, openCardLink, runAction } from './card-ui';
 import { useCloud } from './cloud-context';
-import { settleAction, type InboxCard } from './inbox-rows';
+import { cardOpenPlan, settleAction, type InboxCard } from './inbox-rows';
 import { SOURCE_STYLES } from './sources';
 
 /** "Mon 08:00" in the phone's locale. */
@@ -50,6 +50,16 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
   const { agents } = useApollo();
   const [copied, setCopied] = useState(false);
   const card = cloud.cards.find((candidate) => candidate.id === cardId);
+  // Opening an update settles it, from a row or a notification alike. Reopen brings it back.
+  const settleOnOpen = card && cardOpenPlan(card).settle && settleAction(card, cloud.settled) === 'settle' ? card.id : undefined;
+  const { settle: settleCard } = cloud;
+  // Once per card, so Reopen on this screen sticks.
+  const settledOnOpen = useRef<string>(undefined);
+  useEffect(() => {
+    if (!settleOnOpen || settledOnOpen.current === settleOnOpen) return;
+    settledOnOpen.current = settleOnOpen;
+    settleCard(settleOnOpen);
+  }, [settleOnOpen, settleCard]);
   if (!card) {
     const waiting = cloud.status !== 'off' && !cloud.ready;
     return <View style={uiStyles.screen}>

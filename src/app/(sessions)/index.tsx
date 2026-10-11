@@ -14,6 +14,8 @@ import { useSessionInbox } from '@/features/relay/use-session-inbox';
 import { useApollo } from '@/lib';
 import { useCloud } from '@/features/cloud/cloud-context';
 import { openCardLink, runAction } from '@/features/cloud/card-ui';
+import { latestAssistantPreview } from '@/features/cloud/card-text';
+import { cardOpenPlan } from '@/features/cloud/inbox-rows';
 
 export default function SessionsRoute() {
   const styles = useThemedStyles(createStyles);
@@ -22,7 +24,7 @@ export default function SessionsRoute() {
   const { pendingShares } = useIncomingShares();
   const { agentId } = useLocalSearchParams<{ agentId?: string }>();
   const router = useRouter();
-  const { agents, runtime, loading, retryAgent } = useApollo();
+  const { agents, runtime, messages, loading, retryAgent } = useApollo();
   const agent = agents.find((candidate) => candidate.id === agentId) ?? agents[0];
   const state = agent ? runtime[agent.id] : undefined;
   const inbox = useSessionInbox(agent?.id ?? '', state);
@@ -37,7 +39,9 @@ export default function SessionsRoute() {
     pendingSessions.set(item.sessionId, { id: item.sessionId, agentId: agent.id, title: (item.text || item.attachments[0]?.name || 'Queued thread').slice(0, 72), updatedAt: 'Queued', activityAt: item.createdAt / 1000, sortAt: item.createdAt / 1000, status: 'active', settled: false, attention: false, pendingApproval: false, queued: true, failed: false, pinned: false, autoSettleDisabled: false });
   }
   const queuedIds = new Set(outbox.items.filter((item) => item.agentId === agent.id).map((item) => item.sessionId));
-  const sessions = [...inbox.sessions.map((session) => queuedIds.has(session.id) ? { ...session, queued: true } : session), ...pendingSessions.values()];
+  // Hermes previews the first user message; producer-written threads have none, so use the latest assistant text already loaded.
+  const withPreview = (session: InboxSession) => session.preview?.trim() ? session : { ...session, preview: latestAssistantPreview(messages[`${agent.id}:${session.id}`]) ?? session.preview };
+  const sessions = [...inbox.sessions.map((session) => withPreview(queuedIds.has(session.id) ? { ...session, queued: true } : session)), ...pendingSessions.values()];
   const picker = <AgentPicker agents={agents} selected={agent} runtime={runtime}
     onSelect={(agentId) => router.setParams({ agentId })}
     onDetails={(agentId) => router.push({ pathname: '/settings/[agentId]', params: { agentId } })}
@@ -71,8 +75,16 @@ export default function SessionsRoute() {
     {cloud.error ? <Text style={styles.error} accessibilityRole="alert" onPress={cloud.dismissError}>{cloud.error}</Text> : null}
     <SessionList connection={connection} sessions={sessions} onSessionPress={(session) => open(session.id)} onSettle={(id) => { void inbox.settle(id); }} onReopen={(id) => { void inbox.reopen(id); }} onNewSession={() => open('new')} onForked={(id) => open(id)}
       cards={cloud.cards}
-      onCardPress={(card) => card.kind === 'update' && card.url && !card.body ? openCardLink(card.url) : router.push({ pathname: '/card/[id]', params: { id: card.id } })}
-      onCardAction={(card, action) => runAction(card, action, (cardId, actionId) => { void cloud.respond(cardId, { actionId }); })}
+      onCardPress={(card) => {
+        const plan = cardOpenPlan(card);
+        if (plan.settle) cloud.settle(card.id);
+        if (plan.target === 'link' && card.url) openCardLink(card.url);
+        else router.push({ pathname: '/card/[id]', params: { id: card.id } });
+      }}
+      onCardAction={(card, action) => {
+        if (action.url && cardOpenPlan(card).settle) cloud.settle(card.id);
+        runAction(card, action, (cardId, actionId) => { void cloud.respond(cardId, { actionId }); });
+      }}
       onPick={(card, pick) => { void cloud.respond(card.id, { pick: pick.n, done: !pick.done }); }}
       settledCards={cloud.settled}
       onSettleCard={(card) => cloud.settle(card.id)}

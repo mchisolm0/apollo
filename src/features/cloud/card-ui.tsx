@@ -7,7 +7,7 @@ import { useColors, useTextScale, useThemedStyles, type RelayPalette } from '@/f
 import { dateLabel } from '@/features/relay/session-inbox';
 
 import type { Card, CardAction, CardPick, Source } from '../../../cloud/src/contract';
-import { previewLine } from './card-text';
+import { isOpenableUrl, previewLine } from './card-text';
 import type { InboxCard } from './inbox-rows';
 import { glyphColors, SOURCE_STYLES } from './sources';
 
@@ -35,12 +35,16 @@ export function cardAge(card: Card): string {
   return dateLabel(Math.floor(Date.parse(card.updatedAt) / 1000));
 }
 
+/**
+ * Opens a card URL with the system, including app schemes like `scryve-preview://`, so the
+ * owning app handles it. Script-capable schemes are refused.
+ */
 export function openCardLink(url: string) {
-  if (!/^https?:\/\//iu.test(url)) {
-    Alert.alert('Cannot open this link', 'Only HTTP and HTTPS links can be opened from a card.');
+  if (!isOpenableUrl(url)) {
+    Alert.alert('Cannot open this link', url);
     return;
   }
-  void Linking.openURL(url).catch(() => Alert.alert('Could not open link', 'Try again later.'));
+  void Linking.openURL(url).catch(() => Alert.alert('Could not open link', 'No app on this phone handles it.'));
 }
 
 /** Runs a card action: a URL action opens its link and records nothing; anything else is a response. */
