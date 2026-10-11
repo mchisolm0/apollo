@@ -39,7 +39,8 @@ export function cardAge(card: Card): string {
  * Opens a card URL with the system, including app schemes like `scryve-preview://`, so the
  * owning app handles it. Resolves true once the system took it; refused or failed links alert.
  */
-export function openCardLink(url: string): Promise<boolean> {
+export function openCardLink(raw: string): Promise<boolean> {
+  const url = raw.trim();
   if (!isOpenableUrl(url)) {
     Alert.alert('Cannot open this link', url);
     return Promise.resolve(false);
