@@ -2,6 +2,7 @@ import { saveAttachment, readAttachment, MAX_UPLOAD_BODY_BYTES } from './attachm
 import { generateThreadTitle } from './thread-title.mjs';
 import { createExpoPushSender, createRunNotificationMonitor, parseNotificationRegistration } from './notifications.mjs';
 import { createApprovalBridge, createCloudClient, loadCloudConfig } from './cloud.mjs';
+import { createPreviewFiller } from './session-preview.mjs';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { execFile } from "node:child_process";
@@ -259,6 +260,17 @@ export function createConnectorServer(options = {}) {
     return true;
   }
 
+  const fillPreviews = createPreviewFiller({
+    timeout: options.previewTimeout,
+    async fetchMessages(sessionId, signal) {
+      const response = await (options.fetchImpl ?? fetch)(new URL(`/api/sessions/${encodeURIComponent(sessionId)}/messages?limit=20&order=latest`, hermesUrl), {
+        headers: { authorization: `Bearer ${hermesApiKey}`, accept: "application/json" }, redirect: "error", signal,
+      });
+      if (!response.ok) throw new Error(`Hermes session messages failed (${response.status})`);
+      return response.json();
+    },
+  });
+
   async function fetchRun(runId) {
     const response = await (options.fetchImpl ?? fetch)(new URL(`/v1/runs/${encodeURIComponent(runId)}`, hermesUrl), {
       headers: { authorization: `Bearer ${hermesApiKey}`, accept: "application/json" },
@@ -512,6 +524,18 @@ export function createConnectorServer(options = {}) {
     for (const name of ["content-type", "cache-control", "etag", "last-modified", "location", "retry-after"]) {
       const value = upstream.headers.get(name);
       if (value) responseHeaders[name] = value;
+    }
+    // Session lists and single sessions: fill empty previews from the latest assistant message.
+    if (req.method === "GET" && /^\/api\/sessions(?:\/[^/]+)?$/u.test(url.pathname) && upstream.ok && /json/u.test(upstream.headers.get("content-type") ?? "")) {
+      let responseBody = Buffer.from(await upstream.arrayBuffer());
+      try {
+        const parsed = JSON.parse(responseBody.toString("utf8"));
+        // Re-serialize only when a preview changed, so other responses stay byte-for-byte.
+        if (await fillPreviews(parsed)) responseBody = Buffer.from(JSON.stringify(parsed));
+      }
+      catch { /* Pass Hermes's response through unchanged. */ }
+      res.writeHead(upstream.status, responseHeaders);
+      return res.end(responseBody);
     }
     if (req.method === "POST" && url.pathname === "/v1/runs" && upstream.ok) {
       const responseBody = Buffer.from(await upstream.arrayBuffer());

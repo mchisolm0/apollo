@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StateStore, createConnectorServer } from "./index.mjs";
 import { createRunNotificationMonitor } from "./notifications.mjs";
+import { previewText } from "./session-preview.mjs";
 import { loadCloudConfig, saveCloudConfig } from "./cloud.mjs";
 
 test("terminal notification retries stop and stale push results preserve a newer token", async () => {
@@ -68,10 +69,19 @@ async function startHermesStub() {
   const seen = [];
   const runStatuses = new Map();
   const approvalStatuses = [];
+  // sessions: the /api/sessions list body. messages[id]: a /messages body, or a status number to fail with.
+  const hermesData = { sessions: { object: "list", data: [] }, messages: {} };
   const server = (await import("node:http")).createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
     seen.push({ method: req.method, url: req.url, body, authorization: req.headers.authorization, cookie: req.headers.cookie, forwarded: req.headers["x-forwarded-for"], device: req.headers["x-apollo-device-id"] });
+    const path = new URL(req.url, "http://hermes").pathname;
+    if (req.method === "GET" && path === "/api/sessions") return send(res, 200, hermesData.sessions);
+    const messages = path.match(/^\/api\/sessions\/([^/]+)\/messages$/u);
+    if (req.method === "GET" && messages) {
+      const body = hermesData.messages[decodeURIComponent(messages[1])];
+      return typeof body === "number" ? send(res, body, { error: "down" }) : send(res, 200, body ?? { object: "list", data: [] });
+    }
     if (req.url.endsWith("/approval") && approvalStatuses.length) return send(res, approvalStatuses.shift(), {});
     if (req.url === "/v1/capabilities") return send(res, 200, { object: "hermes.api_server.capabilities", features: ["runs"] });
     if (req.url === "/v1/health") return send(res, 200, { status: "ok" });
@@ -81,7 +91,7 @@ async function startHermesStub() {
     return send(res, 200, { ok: true });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { server, seen, runStatuses, approvalStatuses, url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((resolve) => server.close(resolve)) };
+  return { server, seen, runStatuses, approvalStatuses, hermesData, url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((resolve) => server.close(resolve)) };
 }
 
 function send(res, status, value) { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(value)); }
@@ -550,4 +560,34 @@ test("without cloud config pairing and approvals are unchanged", async (t) => {
   assert.equal("cloud" in exchange.body, false);
   const headers = { authorization: `Bearer ${exchange.body.access_token}` };
   assert.equal((await req(f.base, "/v1/apollo/cloud-token", { method: "POST", headers })).response.status, 503);
+});
+
+test("empty session previews are filled from the latest assistant message; others are left alone", async (t) => {
+  const f = await fixture(); t.after(async () => { await f.connector.close(); await f.hermes.close(); });
+  const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
+  const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
+  const headers = { authorization: `Bearer ${exchange.body.access_token}` };
+  const session = (id, preview) => ({ id, title: null, message_count: 2, last_active: 100, preview, pinned: false });
+  f.hermes.hermesData.sessions.data = [session("briefing", ""), session("chat", "fix the build"), session("broken", "")];
+  f.hermes.hermesData.messages.briefing = { object: "list", data: [
+    { role: "assistant", content: "Old note", timestamp: 1 },
+    { role: "assistant", content: "## Morning\n\n- **Scryve** [#335](https://x.test) is *ready*", timestamp: 2 },
+    { role: "assistant", content: "hidden", timestamp: 3, display_kind: "hidden" },
+  ] };
+  f.hermes.hermesData.messages.chat = { object: "list", data: [{ role: "assistant", content: "must not be used", timestamp: 1 }] };
+  f.hermes.hermesData.messages.broken = 500;
+  const listed = await req(f.base, "/api/sessions?limit=200", { headers });
+  assert.deepEqual(listed.body.data, [session("briefing", "Morning Scryve #335 is ready"), session("chat", "fix the build"), session("broken", "")]);
+  assert.equal(f.hermes.seen.some((request) => request.url.startsWith("/api/sessions/chat/")), false);
+  assert.equal(f.hermes.seen.find((request) => request.url.startsWith("/api/sessions/briefing/")).authorization, "Bearer hermes-secret");
+  // Cached by id and last_active: a second list does not ask Hermes again.
+  const count = f.hermes.seen.filter((request) => request.url.startsWith("/api/sessions/briefing/")).length;
+  await req(f.base, "/api/sessions", { headers });
+  assert.equal(f.hermes.seen.filter((request) => request.url.startsWith("/api/sessions/briefing/")).length, count);
+});
+
+test("previews are one plain line capped like Hermes", () => {
+  assert.equal(previewText("```js\nconst a = 1;\n```\n> quoted `code` and ~~gone~~"), "const a = 1; quoted code and gone");
+  assert.equal(previewText(`${"word ".repeat(20)}`), `${"word ".repeat(12).slice(0, 60)}...`);
+  assert.equal(previewText("snake_case_name stays"), "snake_case_name stays");
 });
