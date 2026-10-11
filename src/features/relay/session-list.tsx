@@ -34,6 +34,8 @@ type Props = {
   onPick?: (card: InboxCard, pick: CardPick) => void;
   /** Cards settled on this phone. */
   settledCards?: SettledCards;
+  /** Runs this phone knows are waiting for approval, to hide their duplicate Hermes cards. */
+  pendingRunIds?: ReadonlySet<string>;
   onSettleCard?: (card: InboxCard) => void;
   onReopenCard?: (card: InboxCard) => void;
 };
@@ -41,7 +43,7 @@ const noCards: readonly InboxCard[] = [];
 const ignore = () => {};
 
 /** A searchable thread inbox with persistent finish/reopen actions. */
-export function SessionList({ sessions, connection = 'connected', onSessionPress, onSettle, onReopen, onNewSession, onForked, refreshing, onRefresh, cards = noCards, onCardPress = ignore, onCardAction = ignore, onPick = ignore, settledCards = NO_SETTLED, onSettleCard, onReopenCard }: Props) {
+export function SessionList({ sessions, connection = 'connected', onSessionPress, onSettle, onReopen, onNewSession, onForked, refreshing, onRefresh, cards = noCards, onCardPress = ignore, onCardAction = ignore, onPick = ignore, settledCards = NO_SETTLED, pendingRunIds, onSettleCard, onReopenCard }: Props) {
   const styles = useThemedStyles(createStyles);
   const colors = useColors();
   const { fontScale } = useWindowDimensions();
@@ -55,7 +57,7 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
   const handleSnooze = useCallback((sessionId: string) => { void snooze(sessionId); }, [snooze]);
   const handleUnsnooze = useCallback((sessionId: string) => { void unsnooze(sessionId); }, [unsnooze]);
   const handleAutoSettle = useCallback((sessionId: string, enabled: boolean) => { void setAutoSettle(sessionId, enabled); }, [setAutoSettle]);
-  const rows = useMemo(() => buildInboxRows({ sessions, cards, settledCards, query, attentionOnly, collapsed, isSnoozed: (id) => isSessionSnoozed(snoozed, id) }), [sessions, cards, settledCards, query, collapsed, attentionOnly, snoozed]);
+  const rows = useMemo(() => buildInboxRows({ sessions, cards, settledCards, pendingRunIds, query, attentionOnly, collapsed, isSnoozed: (id) => isSessionSnoozed(snoozed, id) }), [sessions, cards, settledCards, pendingRunIds, query, collapsed, attentionOnly, snoozed]);
 
   return <KeyboardFrame key={fontScale}>
     <View style={styles.container}>

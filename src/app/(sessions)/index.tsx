@@ -84,6 +84,7 @@ export default function SessionsRoute() {
       onCardAction={(card, action) => runAction(card, action, (cardId, actionId) => { void cloud.respond(cardId, { actionId }); }, () => { if (cardOpenPlan(card).settle) cloud.settle(card.id); })}
       onPick={(card, pick) => { void cloud.respond(card.id, { pick: pick.n, done: !pick.done }); }}
       settledCards={cloud.settled}
+      pendingRunIds={new Set(Object.values(state?.runs ?? {}).filter((run) => run.status === 'waiting_for_approval').map((run) => run.runId))}
       onSettleCard={(card) => cloud.settle(card.id)}
       onReopenCard={(card) => cloud.reopen(card.id)} />
   </SafeAreaView>;
