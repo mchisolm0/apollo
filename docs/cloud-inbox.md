@@ -22,7 +22,7 @@ Errors are `ApiError` (`{ error: { code, message } }`) with a matching HTTP stat
 
 | Method | Path | Role | Request → response |
 | --- | --- | --- | --- |
-| `POST` | `/v1/cards` | producer | `CardInput` → `Card`. Upserts by `(source, key)`; see Rules. |
+| `POST` | `/v1/cards` | producer | `CardInput` → `Card`. Upserts by `(source, key)`; see Rules. Optional `metrics` (at most 4 `CardMetric`s) render as one row, e.g. on the weekly digest. |
 | `PATCH` | `/v1/cards/:id` | producer | `CardPatch` → `Card`. Resolving a card that is already closed is a no-op that returns it. |
 | `GET` | `/v1/cards` | device | → `CardSnapshot` (`{ rev, cards }`): every open card plus cards closed in the last 7 days, read atomically with the inbox `rev`. |
 | `GET` | `/v1/stream` | device | WebSocket of `StreamMessage`s (hibernatable). Auth uses the `Authorization` header. A text `ping` is answered with `pong`. |
@@ -42,7 +42,7 @@ Errors are `ApiError` (`{ error: { code, message } }`) with a matching HTTP stat
 - **One writer.** The Durable Object handles one request at a time, so every check below happens in the same transaction as the write it guards.
 - **Responding.** Only open cards accept responses; anything else gets `409 card_closed`. On approval and update cards an action resolves the card and appends one `action` event; the first response wins. On a briefing card the first action sets `resolution` and appends one `action` event, but the card stays `open` so picks keep working; any later action returns the card unchanged and appends nothing. Producers settle a briefing with `PATCH` when the next one replaces it. A pick sets `done` and appends one `pick` event; it never toggles.
 - **Idempotency.** `Idempotency-Key` is scoped to the token and kept for 24 hours alongside the event it produced. A replay returns the stored response and appends nothing. Reusing a key with a different body is `422 idempotency_mismatch`.
-- **Upserts.** An upsert never changes `state`, `resolution` or push status. A closed card stays closed and is returned as is. For an open card the producer's fields are replaced, but a pick keeps its `done` value when a pick with the same `n` and `text` existed.
+- **Upserts.** An upsert never changes `state`, `resolution` or push status. A closed card stays closed and is returned as is. For an open card the producer's fields are replaced, so a field left out of a re-upsert (`metrics` included) is cleared. A pick keeps its `done` value when a pick with the same `n` and `text` existed.
 - **Events.** `seq` increases across the whole inbox and is never reused, even after retention deletes old events.
 - **Push.** A card is pushed once. Delivery state is stored on the card, and the object's alarm retries a failed Expo send up to 5 times over 10 minutes. Upserts never trigger another push.
 - **Reconciling.** Every card write bumps the inbox-wide `rev` counter. The phone opens the stream first, then does a full `GET /v1/cards` on launch, on foreground and after the stream reconnects. When merging, a card with a higher `rev` always wins, whether it came from the stream or the snapshot. A local card missing from the snapshot is dropped if its `rev` is at or below the snapshot's `rev`.

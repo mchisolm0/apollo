@@ -28,6 +28,15 @@ const pick = type({
   '+': 'delete',
 });
 
+const metric = type({
+  label: '0 < string <= 40',
+  value: '0 < string <= 20',
+  'unit?': '0 < string <= 12',
+  'delta?': '0 < string <= 20',
+  'trend?': "'good' | 'bad' | 'neutral'",
+  '+': 'delete',
+});
+
 const meta = type.Record('0 < string <= 40', 'string <= 200');
 
 export const CardInput = type({
@@ -40,6 +49,7 @@ export const CardInput = type({
   'actions?': action.array().atMostLength(6),
   'picks?': pick.array().atMostLength(3),
   'meta?': meta,
+  'metrics?': metric.array().atMostLength(4),
   'push?': "'alert' | 'passive' | 'none'",
   'expiresAt?': isoTime,
   '+': 'delete',

@@ -31,6 +31,15 @@ export interface CardAction {
   url?: string;
 }
 
+/** One figure in a card's metric row, e.g. { label: 'cold start', value: '377', unit: 'ms', delta: '−117', trend: 'good' }. */
+export interface CardMetric {
+  label: string;
+  value: string;
+  unit?: string;
+  delta?: string;
+  trend?: 'good' | 'bad' | 'neutral';
+}
+
 export interface CardPick {
   n: number;
   text: string;
@@ -52,6 +61,8 @@ export interface CardInput {
   picks?: CardPick[];
   /** Short labeled lines, e.g. { calendar: '10:00 · 14:30', waiting: 'Scryve #335' }. */
   meta?: Record<string, string>;
+  /** At most 4, shown as one row. Replaced on upsert like the other producer fields. */
+  metrics?: CardMetric[];
   /** Defaults: approval and briefing alert, update passive. Re-upserts never re-push. */
   push?: PushLevel;
   /** ISO time after which the card settles on its own. */
