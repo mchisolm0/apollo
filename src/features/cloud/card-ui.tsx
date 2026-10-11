@@ -37,19 +37,22 @@ export function cardAge(card: Card): string {
 
 /**
  * Opens a card URL with the system, including app schemes like `scryve-preview://`, so the
- * owning app handles it. Script-capable schemes are refused.
+ * owning app handles it. Resolves true once the system took it; refused or failed links alert.
  */
-export function openCardLink(url: string) {
+export function openCardLink(url: string): Promise<boolean> {
   if (!isOpenableUrl(url)) {
     Alert.alert('Cannot open this link', url);
-    return;
+    return Promise.resolve(false);
   }
-  void Linking.openURL(url).catch(() => Alert.alert('Could not open link', 'No app on this phone handles it.'));
+  return Linking.openURL(url).then(() => true, () => {
+    Alert.alert('Could not open link', 'No app on this phone handles it.');
+    return false;
+  });
 }
 
 /** Runs a card action: a URL action opens its link and records nothing; anything else is a response. */
-export function runAction(card: Card, action: CardAction, respond: (cardId: string, actionId: string) => void) {
-  if (action.url) openCardLink(action.url);
+export function runAction(card: Card, action: CardAction, respond: (cardId: string, actionId: string) => void, onOpened?: () => void) {
+  if (action.url) void openCardLink(action.url).then((opened) => { if (opened) onOpened?.(); });
   else respond(card.id, action.id);
 }
 

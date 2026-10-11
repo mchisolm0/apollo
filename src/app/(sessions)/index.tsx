@@ -77,14 +77,11 @@ export default function SessionsRoute() {
       cards={cloud.cards}
       onCardPress={(card) => {
         const plan = cardOpenPlan(card);
-        if (plan.settle) cloud.settle(card.id);
-        if (plan.target === 'link' && card.url) openCardLink(card.url);
+        // A link only counts as opened once the system took it; the detail screen settles on its own.
+        if (plan.target === 'link' && card.url) void openCardLink(card.url).then((opened) => { if (opened && plan.settle) cloud.settle(card.id); });
         else router.push({ pathname: '/card/[id]', params: { id: card.id } });
       }}
-      onCardAction={(card, action) => {
-        if (action.url && cardOpenPlan(card).settle) cloud.settle(card.id);
-        runAction(card, action, (cardId, actionId) => { void cloud.respond(cardId, { actionId }); });
-      }}
+      onCardAction={(card, action) => runAction(card, action, (cardId, actionId) => { void cloud.respond(cardId, { actionId }); }, () => { if (cardOpenPlan(card).settle) cloud.settle(card.id); })}
       onPick={(card, pick) => { void cloud.respond(card.id, { pick: pick.n, done: !pick.done }); }}
       settledCards={cloud.settled}
       onSettleCard={(card) => cloud.settle(card.id)}

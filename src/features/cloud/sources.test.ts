@@ -45,9 +45,9 @@ test('previews take the first readable line of markdown', () => {
   assert.equal(previewLine(undefined), undefined);
 });
 
-test('card links open app schemes directly but never script-capable ones', () => {
-  for (const url of ['scryve-preview://preview/pr-376', 'https://github.com/mchisolm0/scryve/pull/376', 'mailto:me@example.com']) assert.equal(isOpenableUrl(url), true, url);
-  for (const url of ['javascript:alert(1)', 'DATA:text/html,x', 'file:///etc/hosts', '/relative/path', '']) assert.equal(isOpenableUrl(url), false, url);
+test('card links open only the web and known app schemes', () => {
+  for (const url of ['scryve-preview://preview/pr-376', 'https://github.com/mchisolm0/scryve/pull/376', 'SCRYVE://game/1', 'apollo://pair']) assert.equal(isOpenableUrl(url), true, url);
+  for (const url of ['javascript:alert(1)', 'itms-services://?action=download-manifest', 'shortcuts://run-shortcut?name=x', 'tel:5551234', 'file:///etc/hosts', '/relative/path', '']) assert.equal(isOpenableUrl(url), false, url);
 });
 
 test('a thread with no user message previews its latest assistant text', () => {

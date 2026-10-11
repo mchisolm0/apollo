@@ -62,6 +62,16 @@ export function cardOpenPlan(card: Pick<Card, 'kind' | 'url' | 'body'>): { targe
   return { target: card.kind === 'update' && card.url && !card.body ? 'link' : 'detail', settle: card.kind === 'update' };
 }
 
+/**
+ * Settle-on-open for a detail screen: decides once per card per mount, the first time the
+ * screen sees it, settled or not. `seen` is the id already decided. A card that was already
+ * settled when the screen opened, or that the user reopens there, is left alone.
+ */
+export function settleOnFirstSight(seen: string | undefined, card: Pick<Card, 'id' | 'kind' | 'state' | 'rev' | 'url' | 'body'> | undefined, settledCards: SettledCards): { seen: string | undefined; settle: boolean } {
+  if (!card || card.id === seen) return { seen, settle: false };
+  return { seen: card.id, settle: cardOpenPlan(card).settle && settleAction(card, settledCards) === 'settle' };
+}
+
 /** The next ledger after settling or reopening `cardId`, keeping only cards still in the inbox. */
 export function updateSettledCards(current: SettledCards, cards: readonly Pick<Card, 'id' | 'rev'>[], cardId: string, settle: boolean): SettledCards {
   const revs = new Map(cards.map((card) => [card.id, card.rev]));

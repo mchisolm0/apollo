@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { Card } from '../../../cloud/src/contract.ts';
-import { buildInboxRows, cardOpenPlan, settleAction, updateSettledCards, withPendingResponses, type InboxRowSession } from './inbox-rows.ts';
+import { buildInboxRows, cardOpenPlan, settleAction, settleOnFirstSight, updateSettledCards, withPendingResponses, type InboxRowSession } from './inbox-rows.ts';
 
 function card(id: string, kind: Card['kind'], patch: Partial<Card> = {}): Card {
   return { id, rev: 1, source: 'preview', key: id, kind, title: id, push: 'alert', state: 'open', createdAt: '2026-10-09T08:00:00Z', updatedAt: '2026-10-09T08:00:00Z', ...patch };
@@ -114,4 +114,19 @@ test('opening an update settles it and a link-only update opens its link; approv
   const update = card('p', 'update', { rev: 4 });
   const settled = updateSettledCards(new Map(), [update], 'p', cardOpenPlan(update).settle);
   assert.deepEqual(layout(buildInboxRows({ sessions: [], cards: [update], settledCards: settled, isSnoozed: () => false, collapsed })), ['[Settled 1]']);
+});
+
+test('a detail screen settles an update once, the first time it sees it, so Reopen sticks', () => {
+  const update = card('u', 'update', { rev: 3 });
+  const settled = new Map([['u', 3]]);
+  // Opened from a row that already settled it: decided as seen, nothing more to do.
+  let step = settleOnFirstSight(undefined, update, settled);
+  assert.deepEqual(step, { seen: 'u', settle: false });
+  // The user reopens it on the screen; it must not be settled again.
+  step = settleOnFirstSight(step.seen, update, new Map());
+  assert.deepEqual(step, { seen: 'u', settle: false });
+  // Opened fresh (from a notification): settles once, after the card loads.
+  assert.deepEqual(settleOnFirstSight(undefined, undefined, new Map()), { seen: undefined, settle: false });
+  assert.deepEqual(settleOnFirstSight(undefined, update, new Map()), { seen: 'u', settle: true });
+  assert.deepEqual(settleOnFirstSight(undefined, card('a', 'approval'), new Map()), { seen: 'a', settle: false });
 });

@@ -1,9 +1,13 @@
-const BLOCKED_SCHEMES = new Set(['javascript', 'data', 'file', 'vbscript', 'about', 'blob']);
+/**
+ * Schemes a card may open: the web, plus the app schemes producers link to today (Scryve
+ * preview builds from the preview routine, and Apollo itself). Anything else, such as
+ * `itms-services:`, `shortcuts:` or `tel:`, is refused.
+ */
+const OPENABLE_SCHEMES = new Set(['http', 'https', 'scryve', 'scryve-preview', 'scryve-dev', 'apollo', 'apollo-preview', 'apollo-dev']);
 
-/** True for an absolute URL whose scheme can safely go to the system: http(s) or an app scheme. */
 export function isOpenableUrl(url: string): boolean {
   const scheme = /^([a-z][a-z0-9+.-]*):/iu.exec(url.trim())?.[1]?.toLowerCase();
-  return scheme !== undefined && !BLOCKED_SCHEMES.has(scheme);
+  return scheme !== undefined && OPENABLE_SCHEMES.has(scheme);
 }
 
 /**
