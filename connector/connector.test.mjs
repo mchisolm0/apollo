@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StateStore, createConnectorServer } from "./index.mjs";
 import { createRunNotificationMonitor } from "./notifications.mjs";
-import { previewText } from "./session-preview.mjs";
+import { createPreviewFiller, previewText } from "./session-preview.mjs";
 import { loadCloudConfig, saveCloudConfig } from "./cloud.mjs";
 
 test("terminal notification retries stop and stale push results preserve a newer token", async () => {
@@ -76,7 +76,7 @@ async function startHermesStub() {
     for await (const chunk of req) body += chunk;
     seen.push({ method: req.method, url: req.url, body, authorization: req.headers.authorization, cookie: req.headers.cookie, forwarded: req.headers["x-forwarded-for"], device: req.headers["x-apollo-device-id"] });
     const path = new URL(req.url, "http://hermes").pathname;
-    if (req.method === "GET" && path === "/api/sessions") return send(res, 200, hermesData.sessions);
+    if (req.method === "GET" && path === "/api/sessions") { res.setHeader("etag", '"hermes-list"'); return send(res, 200, hermesData.sessions); }
     const messages = path.match(/^\/api\/sessions\/([^/]+)\/messages$/u);
     if (req.method === "GET" && messages) {
       const body = hermesData.messages[decodeURIComponent(messages[1])];
@@ -577,6 +577,7 @@ test("empty session previews are filled from the latest assistant message; other
   f.hermes.hermesData.messages.chat = { object: "list", data: [{ role: "assistant", content: "must not be used", timestamp: 1 }] };
   f.hermes.hermesData.messages.broken = 500;
   const listed = await req(f.base, "/api/sessions?limit=200", { headers });
+  assert.equal(listed.response.headers.get("etag"), null);
   assert.deepEqual(listed.body.data, [session("briefing", "Morning Scryve #335 is ready"), session("chat", "fix the build"), session("broken", "")]);
   assert.equal(f.hermes.seen.some((request) => request.url.startsWith("/api/sessions/chat/")), false);
   assert.equal(f.hermes.seen.find((request) => request.url.startsWith("/api/sessions/briefing/")).authorization, "Bearer hermes-secret");
@@ -584,6 +585,67 @@ test("empty session previews are filled from the latest assistant message; other
   const count = f.hermes.seen.filter((request) => request.url.startsWith("/api/sessions/briefing/")).length;
   await req(f.base, "/api/sessions", { headers });
   assert.equal(f.hermes.seen.filter((request) => request.url.startsWith("/api/sessions/briefing/")).length, count);
+});
+
+test("a list with no empty previews keeps Hermes's body and etag", async (t) => {
+  const f = await fixture(); t.after(async () => { await f.connector.close(); await f.hermes.close(); });
+  const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
+  const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
+  f.hermes.hermesData.sessions.data = [{ id: "chat", preview: "hello", last_active: 1 }];
+  const listed = await req(f.base, "/api/sessions", { headers: { authorization: `Bearer ${exchange.body.access_token}` } });
+  assert.equal(listed.response.headers.get("etag"), '"hermes-list"');
+});
+
+const emptySession = (id, last_active = 1) => ({ id, preview: "", last_active });
+const assistantSays = (text) => ({ data: [{ role: "assistant", content: text }] });
+
+test("preview lookups share one budget and a hanging Hermes is not retried for a while", async () => {
+  const calls = [];
+  const fill = createPreviewFiller({ budget: 50, fetchMessages: (id, signal) => {
+    calls.push(id);
+    return new Promise((resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
+  } });
+  const body = () => ({ data: Array.from({ length: 3 }, (_, i) => emptySession(`s${i}`)) });
+  const started = Date.now();
+  assert.equal(await fill(body()), 0);
+  assert.ok(Date.now() - started < 500);
+  const count = calls.length;
+  assert.equal(await fill(body()), 0);
+  assert.equal(calls.length, count);
+});
+
+test("cached previews are always filled and only uncached sessions count toward the cap", async () => {
+  let calls = 0;
+  const fill = createPreviewFiller({ fetchMessages: async (id) => { calls++; return assistantSays(`about ${id}`); } });
+  const body = () => ({ data: Array.from({ length: 25 }, (_, i) => emptySession(`s${i}`)) });
+  assert.equal(await fill(body()), 20);
+  const second = body();
+  assert.equal(await fill(second), 25);
+  assert.equal(calls, 25);
+  assert.equal(second.data[24].preview, "about s24");
+});
+
+test("previews for sessions without last_active are cached only briefly", async () => {
+  let calls = 0;
+  const fill = createPreviewFiller({ shortTtl: 20, fetchMessages: async () => { calls++; return assistantSays("hi"); } });
+  const body = () => ({ session: { id: "s", preview: null } });
+  await fill(body());
+  await fill(body());
+  assert.equal(calls, 1);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  await fill(body());
+  assert.equal(calls, 2);
+});
+
+test("a client that leaves stops lookups without caching a failure", async () => {
+  let calls = 0;
+  const fill = createPreviewFiller({ budget: 50, fetchMessages: (_id, signal) => { calls++; return new Promise((resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason))); } });
+  const left = new AbortController();
+  const pending = fill({ data: [emptySession("s")] }, left.signal);
+  left.abort();
+  assert.equal(await pending, 0);
+  await fill({ data: [emptySession("s")] });
+  assert.equal(calls, 2);
 });
 
 test("previews are one plain line capped like Hermes", () => {

@@ -45,44 +45,59 @@ function latestAssistantPreview(messages) {
 }
 
 /**
- * Returns `fill(body)`, which sets an empty `preview` on sessions in a parsed
+ * Returns `fill(body, signal)`, which sets an empty `preview` on sessions in a parsed
  * `/api/sessions` list (`{ data: [...] }`) or single-session (`{ session }`) body,
- * resolving the number of previews it filled.
- * `fetchMessages(sessionId, signal)` returns that session's `/messages` body. At most
- * MAX_LOOKUPS sessions per response, each bounded by `timeout`; any failure leaves the
- * preview empty. Results are cached by session id and `last_active`.
+ * resolving the number of previews it filled. `fetchMessages(sessionId, signal)`
+ * returns that session's `/messages` body.
+ *
+ * Cached previews are always applied. Then at most MAX_LOOKUPS uncached sessions are
+ * looked up, all within one `budget` that also ends when `signal` aborts (the client
+ * left). Results are cached by session id and `last_active`; failures, and sessions
+ * without `last_active`, only for `shortTtl`. Any failure leaves the preview empty.
  */
-export function createPreviewFiller({ fetchMessages, timeout = 2_000 }) {
+export function createPreviewFiller({ fetchMessages, budget = 2_000, shortTtl = 60_000 }) {
   const cache = new Map();
 
-  async function lookup(session) {
-    const key = `${session.id}\u0000${session.last_active ?? ""}`;
-    if (cache.has(key)) return cache.get(key);
-    const body = await fetchMessages(session.id, AbortSignal.timeout(timeout));
-    if (!Array.isArray(body?.data)) throw new Error("invalid messages response");
-    const preview = latestAssistantPreview(body.data);
-    cache.set(key, preview);
+  const remember = (key, value, ttl = Infinity) => {
+    cache.delete(key);
+    cache.set(key, { value, until: Date.now() + ttl });
     if (cache.size > CACHE_SIZE) cache.delete(cache.keys().next().value);
-    return preview;
-  }
+  };
 
-  return async function fill(body) {
+  return async function fill(body, signal) {
     const sessions = Array.isArray(body?.data) ? body.data : body?.session ? [body.session] : [];
-    const empty = sessions
-      .filter((session) => session && typeof session.id === "string" && (session.preview === "" || session.preview === null) && session.message_count !== 0)
-      .slice(0, MAX_LOOKUPS);
-    let next = 0;
     let filled = 0;
+    const apply = (session, preview) => {
+      if (preview) { session.preview = preview; filled++; }
+    };
+    const uncached = [];
+    for (const session of sessions) {
+      if (!session || typeof session.id !== "string" || !(session.preview === "" || session.preview === null) || session.message_count === 0) continue;
+      const stamped = typeof session.last_active === "number";
+      const key = `${session.id}\u0000${stamped ? session.last_active : ""}`;
+      const hit = cache.get(key);
+      if (hit && hit.until > Date.now()) apply(session, hit.value);
+      else uncached.push({ session, key, stamped });
+    }
+    const pending = uncached.slice(0, MAX_LOOKUPS);
+    const deadline = AbortSignal.any([AbortSignal.timeout(budget), ...(signal ? [signal] : [])]);
+    let next = 0;
     const worker = async () => {
-      while (next < empty.length) {
-        const session = empty[next++];
+      while (next < pending.length && !deadline.aborted) {
+        const { session, key, stamped } = pending[next++];
         try {
-          const preview = await lookup(session);
-          if (preview) { session.preview = preview; filled++; }
-        } catch { /* The preview stays empty. */ }
+          const response = await fetchMessages(session.id, deadline);
+          if (!Array.isArray(response?.data)) throw new Error("invalid messages response");
+          const preview = latestAssistantPreview(response.data);
+          remember(key, preview, stamped ? Infinity : shortTtl);
+          apply(session, preview);
+        } catch {
+          // A client that left says nothing about Hermes; anything else is cached briefly so a slow /messages can't slow every list.
+          if (!signal?.aborted) remember(key, "", shortTtl);
+        }
       }
     };
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, empty.length) }, worker));
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pending.length) }, worker));
     return filled;
   };
 }

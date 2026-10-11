@@ -35,7 +35,7 @@ Paired devices read `GET /v1/inbox` and update `PATCH /v1/inbox` with `{ "settle
 
 ## Thread previews
 
-Hermes previews a session with its first user message, so threads that contain only assistant messages list with an empty `preview`. For `GET /api/sessions` and `GET /api/sessions/:id`, the connector fills an empty preview from the latest assistant message (`/api/sessions/:id/messages?limit=20&order=latest`), as one plain-text line capped at 60 characters like Hermes. It looks up at most 20 sessions per response, 4 at a time, with a 2-second timeout each, and caches results by session id and `last_active`. Any failure leaves the preview empty. Other fields and non-empty previews are untouched.
+Hermes previews a session with its first user message, so threads that contain only assistant messages list with an empty `preview`. For `GET /api/sessions` and `GET /api/sessions/:id`, the connector fills an empty preview from the latest assistant message (`/api/sessions/:id/messages?limit=20&order=latest`), as one plain-text line capped at 60 characters like Hermes. Cached previews are always applied; at most 20 uncached sessions per response are looked up, 4 at a time, within one 2-second budget that also ends if the client disconnects. Results are cached by session id and `last_active`; failures and sessions without `last_active` are cached for 60 seconds. Any failure leaves the preview empty, and a rewritten response drops Hermes's `etag`. Other fields and non-empty previews are untouched.
 
 # Push notifications
 

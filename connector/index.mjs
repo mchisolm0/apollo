@@ -261,7 +261,7 @@ export function createConnectorServer(options = {}) {
   }
 
   const fillPreviews = createPreviewFiller({
-    timeout: options.previewTimeout,
+    budget: options.previewBudget,
     async fetchMessages(sessionId, signal) {
       const response = await (options.fetchImpl ?? fetch)(new URL(`/api/sessions/${encodeURIComponent(sessionId)}/messages?limit=20&order=latest`, hermesUrl), {
         headers: { authorization: `Bearer ${hermesApiKey}`, accept: "application/json" }, redirect: "error", signal,
@@ -531,7 +531,10 @@ export function createConnectorServer(options = {}) {
       try {
         const parsed = JSON.parse(responseBody.toString("utf8"));
         // Re-serialize only when a preview changed, so other responses stay byte-for-byte.
-        if (await fillPreviews(parsed)) responseBody = Buffer.from(JSON.stringify(parsed));
+        if (await fillPreviews(parsed, controller.signal)) {
+          responseBody = Buffer.from(JSON.stringify(parsed));
+          delete responseHeaders.etag;
+        }
       }
       catch { /* Pass Hermes's response through unchanged. */ }
       res.writeHead(upstream.status, responseHeaders);
