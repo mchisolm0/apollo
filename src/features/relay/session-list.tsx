@@ -57,7 +57,7 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
   const handleSnooze = useCallback((sessionId: string) => { void snooze(sessionId); }, [snooze]);
   const handleUnsnooze = useCallback((sessionId: string) => { void unsnooze(sessionId); }, [unsnooze]);
   const handleAutoSettle = useCallback((sessionId: string, enabled: boolean) => { void setAutoSettle(sessionId, enabled); }, [setAutoSettle]);
-  const rows = useMemo(() => buildInboxRows({ sessions, cards, settledCards, pendingRunIds, query, attentionOnly, collapsed, isSnoozed: (id) => isSessionSnoozed(snoozed, id) }), [sessions, cards, settledCards, pendingRunIds, query, collapsed, attentionOnly, snoozed]);
+  const rows = useMemo(() => buildInboxRows({ sessions, cards, settledCards, pendingRunIds, runStateLive: connection === 'connected', query, attentionOnly, collapsed, isSnoozed: (id) => isSessionSnoozed(snoozed, id) }), [sessions, cards, settledCards, pendingRunIds, connection, query, collapsed, attentionOnly, snoozed]);
 
   return <KeyboardFrame key={fontScale}>
     <View style={styles.container}>
