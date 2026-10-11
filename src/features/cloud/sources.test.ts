@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { SOURCES } from '../../../cloud/src/contract.ts';
 import { THEME_PALETTES } from '../relay/theme.ts';
-import { isOpenableUrl, latestAssistantPreview, previewLine } from './card-text.ts';
+import { isOpenableUrl, latestAssistantPreview, parseApolloLink, previewLine } from './card-text.ts';
 import { glyphColors, mixHex, SOURCE_STYLES } from './sources.ts';
 
 function luminance(hex: string) {
@@ -59,4 +59,13 @@ test('a thread with no user message previews its latest assistant text', () => {
   ]), 'Scryve #376 dice menu preview');
   assert.equal(latestAssistantPreview([{ role: 'user', content: 'hi' }]), undefined);
   assert.equal(latestAssistantPreview(undefined), undefined);
+});
+
+test('apollo://session links open a thread in the app; incomplete ones are refused', () => {
+  assert.deepEqual(parseApolloLink('apollo://session/thread_376?agentId=mini'), { kind: 'session', id: 'thread_376', agentId: 'mini' });
+  assert.deepEqual(parseApolloLink(' apollo-preview://session/abc?agentId=a1 '), { kind: 'session', id: 'abc', agentId: 'a1' });
+  for (const url of ['apollo://session/?agentId=mini', 'apollo://session?agentId=mini', 'apollo://session/abc', 'apollo://session/abc?agentId=', 'apollo://session/a/b?agentId=mini', 'apollo://session/..%2F?agentId=mini', 'apollo://session/%E0?agentId=mini']) {
+    assert.deepEqual(parseApolloLink(url), { kind: 'invalid' }, url);
+  }
+  for (const url of ['apollo://pair?host=x', 'scryve-preview://preview/pr-376', 'https://example.com/session/1', 'not a url']) assert.equal(parseApolloLink(url), undefined, url);
 });

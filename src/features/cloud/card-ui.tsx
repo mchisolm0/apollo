@@ -1,3 +1,4 @@
+import { router } from 'expo-router';
 import { SymbolView, type AndroidSymbol, type SFSymbol } from 'expo-symbols';
 import { memo, useRef, type ReactNode } from 'react';
 import { Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -7,7 +8,7 @@ import { useColors, useTextScale, useThemedStyles, type RelayPalette } from '@/f
 import { dateLabel } from '@/features/relay/session-inbox';
 
 import type { Card, CardAction, CardPick, Source } from '../../../cloud/src/contract';
-import { isOpenableUrl, previewLine } from './card-text';
+import { isOpenableUrl, parseApolloLink, previewLine } from './card-text';
 import type { InboxCard } from './inbox-rows';
 import { glyphColors, SOURCE_STYLES } from './sources';
 
@@ -36,12 +37,19 @@ export function cardAge(card: Card): string {
 }
 
 /**
- * Opens a card URL with the system, including app schemes like `scryve-preview://`, so the
- * owning app handles it. Resolves true once the system took it; refused or failed links alert.
+ * Opens a card URL. `apollo://session/...` links open that thread in Apollo; other links go
+ * to the system, including app schemes like `scryve-preview://`, so the owning app handles
+ * them. Resolves true once the link opened; refused or failed links alert.
  */
 export function openCardLink(raw: string): Promise<boolean> {
   const url = raw.trim();
-  if (!isOpenableUrl(url)) {
+  const apollo = parseApolloLink(url);
+  if (apollo?.kind === 'session') {
+    // The thread screen sends an unknown agent back to the inbox.
+    router.push({ pathname: '/session/[id]', params: { id: apollo.id, agentId: apollo.agentId } });
+    return Promise.resolve(true);
+  }
+  if (apollo?.kind === 'invalid' || !isOpenableUrl(url)) {
     Alert.alert('Cannot open this link', url);
     return Promise.resolve(false);
   }
