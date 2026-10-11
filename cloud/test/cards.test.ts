@@ -67,6 +67,31 @@ describe('upsert', () => {
   });
 });
 
+describe('metrics', () => {
+  const digest = (metrics: unknown): unknown => ({ source: 'digest', key: 'week:41', kind: 'update', title: 'Week 41', push: 'none', metrics });
+  const coldStart = { label: 'cold start', value: '377', unit: 'ms', delta: '−117', trend: 'good' };
+
+  it('stores metrics and replaces them on upsert', async () => {
+    const card = await (await call('/v1/cards', { token: producer, body: digest([coldStart, { label: 'crash-free', value: '99.6%' }]) })).json<Card>();
+    expect(card.metrics).toEqual([coldStart, { label: 'crash-free', value: '99.6%' }]);
+
+    const updated = await (await call('/v1/cards', { token: producer, body: digest([{ label: 'PRs merged', value: '14' }]) })).json<Card>();
+    expect(updated.metrics).toEqual([{ label: 'PRs merged', value: '14' }]);
+    const { cards } = await (await call('/v1/cards', { token: device })).json<CardSnapshot>();
+    expect(cards.find((c) => c.id === card.id)?.metrics).toEqual(updated.metrics);
+  });
+
+  it('rejects a fifth metric', async () => {
+    const response = await call('/v1/cards', { token: producer, body: digest(Array.from({ length: 5 }, (_, i) => ({ label: `m${i}`, value: '1' }))) });
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects an oversized metric string', async () => {
+    const response = await call('/v1/cards', { token: producer, body: digest([{ ...coldStart, value: '9'.repeat(21) }]) });
+    expect(response.status).toBe(400);
+  });
+});
+
 describe('respond', () => {
   it('resolves the card, appends one event, and streams the change', async () => {
     mockExpo();
