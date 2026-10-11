@@ -4,9 +4,10 @@ import { useIncomingShares } from '@/features/sharing';
 import type { InboxSession } from '@/features/relay/session-inbox';
 import { Redirect, Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { SymbolView } from 'expo-symbols';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { ConnectionAction, IconButton, useThemedStyles, useColors, type RelayPalette } from '@/features/relay/relay-ui';
+import { ConnectionAction, useThemedStyles, useColors, type RelayPalette } from '@/features/relay/relay-ui';
 import { AgentPicker } from '@/features/relay/agent-picker';
 import { SessionList } from '@/features/relay/session-list';
 import { useSessionInbox } from '@/features/relay/use-session-inbox';
@@ -48,10 +49,11 @@ export default function SessionsRoute() {
       headerStyle: { backgroundColor: colors.background },
       headerTintColor: colors.primary,
       headerShadowVisible: false,
-      headerRight: () => <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-        <ConnectionAction state={connection} onReconnect={() => void retryAgent(agent.id)} onDetails={() => router.push({ pathname: '/settings/[agentId]', params: { agentId: agent.id } })} />
-        <IconButton name="gearshape" label="Settings" onPress={() => router.push('/settings')} />
-      </View>,
+      // Left to right. A native bar button gets the same system glass and 44pt size as the toolbar buttons.
+      unstable_headerRightItems: () => [
+        ...(connection === 'connected' ? [] : [{ type: 'custom' as const, hidesSharedBackground: true, element: <ConnectionAction state={connection} onReconnect={() => void retryAgent(agent.id)} onDetails={() => router.push({ pathname: '/settings/[agentId]', params: { agentId: agent.id } })} /> }]),
+        { type: 'button', label: 'Settings', icon: { type: 'sfSymbol', name: 'gearshape' }, tintColor: colors.primary, onPress: () => router.push('/settings') },
+      ],
     }} /> : <View style={styles.header}>
       <View style={styles.identity}>
         <AgentPicker agents={agents} selected={agent} runtime={runtime}
@@ -60,7 +62,9 @@ export default function SessionsRoute() {
           onPair={() => router.push('/connect')} />
       </View>
       <ConnectionAction state={connection} onReconnect={() => void retryAgent(agent.id)} onDetails={() => router.push({ pathname: '/settings/[agentId]', params: { agentId: agent.id } })} />
-      <IconButton name="gearshape" label="Settings" onPress={() => router.push('/settings')} />
+      <Pressable accessibilityRole="button" accessibilityLabel="Settings" onPress={() => router.push('/settings')} style={({ pressed }) => [styles.dockButton, pressed && { opacity: 0.6 }]}>
+        <SymbolView name={{ ios: 'gearshape', android: 'settings', web: 'settings' }} size={22} tintColor={colors.primary} />
+      </Pressable>
     </View>}
     {pendingShares.length > 0 ? <Pressable accessibilityRole="button" onPress={() => router.push("/share")} style={{ minHeight: 44, paddingHorizontal: 20, justifyContent: "center" }}><Text style={{ color: colors.cyan }}>Open shared content ({pendingShares.length})</Text></Pressable> : null}
     {inbox.error ? <Text style={styles.error} accessibilityRole="alert">{inbox.error}</Text> : null}
@@ -69,7 +73,10 @@ export default function SessionsRoute() {
       cards={cloud.cards}
       onCardPress={(card) => card.kind === 'update' && card.url && !card.body ? openCardLink(card.url) : router.push({ pathname: '/card/[id]', params: { id: card.id } })}
       onCardAction={(card, action) => runAction(card, action, (cardId, actionId) => { void cloud.respond(cardId, { actionId }); })}
-      onPick={(card, pick) => { void cloud.respond(card.id, { pick: pick.n, done: !pick.done }); }} />
+      onPick={(card, pick) => { void cloud.respond(card.id, { pick: pick.n, done: !pick.done }); }}
+      settledCards={cloud.settled}
+      onSettleCard={(card) => cloud.settle(card.id)}
+      onReopenCard={(card) => cloud.reopen(card.id)} />
   </SafeAreaView>;
 }
 
@@ -78,5 +85,7 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   header: { flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 52, paddingHorizontal: 12 },
   identity: { flex: 1, minWidth: 0 },
+  // Same size and fill as the bottom dock's buttons.
+  dockButton: { width: 44, height: 44, borderRadius: 8, backgroundColor: colors.surface, alignItems: 'center', justifyContent: 'center' },
   error: { color: colors.red, fontSize: 14, padding: 20 },
 });

@@ -22,28 +22,36 @@ export function withPendingResponses(cards: readonly Card[], pending: readonly {
   });
 }
 
-export type InboxRowSession = Pick<InboxSession, 'id' | 'title' | 'preview' | 'settled' | 'status' | 'pendingApproval'>;
-export type InboxSectionId = 'needs' | 'threads' | 'updates' | 'snoozed' | 'settled';
-export type CollapsibleSectionId = Extract<InboxSectionId, 'updates' | 'snoozed' | 'settled'>;
+export type InboxRowSession = Pick<InboxSession, 'id' | 'title' | 'preview' | 'settled' | 'status' | 'pendingApproval' | 'activityAt'>;
+export type CollapsibleSectionId = 'snoozed' | 'settled';
 
 export type InboxRow<S extends InboxRowSession = InboxRowSession> =
   | { kind: 'briefing'; id: string; card: InboxCard }
-  | { kind: 'section'; id: InboxSectionId; title: string; count: number; collapsible: boolean }
-  | { kind: 'card'; id: string; card: InboxCard }
+  | { kind: 'section'; id: CollapsibleSectionId; title: string; count: number }
+  | { kind: 'card'; id: string; card: InboxCard; settled: boolean }
   | { kind: 'session'; id: string; session: S };
 
-const newest = (field: 'createdAt' | 'updatedAt') => (a: Card, b: Card) => Date.parse(b[field]) - Date.parse(a[field]);
+const cardTime = (card: Card, field: 'createdAt' | 'updatedAt' = 'updatedAt') => Date.parse(card[field]) / 1000;
+const newestFirst = (field: 'createdAt' | 'updatedAt') => (a: Card, b: Card) => cardTime(b, field) - cardTime(a, field);
+
+/** A card leaves the open list once the server closes it or this phone settles it. */
+export function isCardSettled(card: Pick<Card, 'id' | 'state'>, settledCards: ReadonlySet<string>): boolean {
+  return card.state !== 'open' || settledCards.has(card.id);
+}
 
 /**
- * Lays out the home inbox (design C): the open morning card, then Needs you (approval
- * cards and threads waiting on approval), then threads, then collapsible Updates,
- * Snoozed and Settled. Cards from `hermes` never get their own row because the thread
- * row already stands for them. Search and the attention filter hide the morning card.
+ * Lays out the home inbox (design A): no labels between cards. The open morning card
+ * comes first, then approval cards, then threads (waiting on approval first), then update
+ * cards newest first, then the collapsible Snoozed and Settled sections. Settled holds
+ * settled threads and closed or locally settled cards, newest first. Cards from `hermes`
+ * never get their own row because the thread row already stands for them. Search and the
+ * attention filter hide the morning card; the attention filter also hides updates.
  */
-export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isSnoozed, query = '', attentionOnly = false, collapsed }: {
+export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isSnoozed, settledCards = new Set(), query = '', attentionOnly = false, collapsed }: {
   sessions: readonly S[];
   cards: readonly InboxCard[];
   isSnoozed: (sessionId: string) => boolean;
+  settledCards?: ReadonlySet<string>;
   query?: string;
   attentionOnly?: boolean;
   collapsed: Readonly<Record<CollapsibleSectionId, boolean>>;
@@ -51,39 +59,40 @@ export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isS
   const search = query.trim().toLocaleLowerCase();
   const matches = (...parts: (string | undefined)[]) => !search || parts.join(' ').toLocaleLowerCase().includes(search);
   const expanded = (id: CollapsibleSectionId) => Boolean(search) || !collapsed[id];
-  const visible = cards.filter((card) => card.source !== 'hermes' && card.state === 'open');
+  const shown = cards.filter((card) => card.source !== 'hermes');
+  const open = shown.filter((card) => !isCardSettled(card, settledCards));
   const bucket = (session: S) => session.settled ? 'settled' : isSnoozed(session.id) ? 'snoozed' : 'open';
   const inBucket = (id: 'open' | 'snoozed' | 'settled') => sessions.filter((session) => bucket(session) === id && matches(session.title, session.preview));
 
-  const briefing = search || attentionOnly ? undefined
-    : visible.filter((card) => card.kind === 'briefing').sort(newest('createdAt'))[0];
-  const approvals = visible.filter((card) => card.kind === 'approval' && matches(card.title, card.body)).sort(newest('createdAt'));
-  const open = inBucket('open');
-  const waiting = open.filter((session) => session.pendingApproval);
-  const threads = open.filter((session) => !session.pendingApproval && (!attentionOnly || session.status === 'attention'));
-  const updates = attentionOnly ? [] : visible.filter((card) => card.kind === 'update' && matches(card.title, card.body)).sort(newest('updatedAt'));
+  const briefing = search || attentionOnly ? undefined : open.filter((card) => card.kind === 'briefing').sort(newestFirst('createdAt'))[0];
+  const approvals = open.filter((card) => card.kind === 'approval' && matches(card.title, card.body)).sort(newestFirst('createdAt'));
+  const threads = inBucket('open').filter((session) => !attentionOnly || session.status === 'attention' || session.pendingApproval);
+  const waiting = threads.filter((session) => session.pendingApproval);
+  const updates = attentionOnly ? [] : open.filter((card) => card.kind === 'update' && matches(card.title, card.body)).sort(newestFirst('updatedAt'));
 
-  const rows: InboxRow<S>[] = [];
-  const sessionRows = (list: readonly S[]) => list.map((session): InboxRow<S> => ({ kind: 'session', id: session.id, session }));
-  const cardRows = (list: readonly InboxCard[]) => list.map((card): InboxRow<S> => ({ kind: 'card', id: card.id, card }));
-  if (briefing) rows.push({ kind: 'briefing', id: briefing.id, card: briefing });
-  const needs = approvals.length + waiting.length;
-  if (needs) rows.push({ kind: 'section', id: 'needs', title: 'Needs you', count: needs, collapsible: false }, ...cardRows(approvals), ...sessionRows(waiting));
-  if (threads.length) {
-    if (briefing || needs) rows.push({ kind: 'section', id: 'threads', title: 'Threads', count: threads.length, collapsible: false });
-    rows.push(...sessionRows(threads));
+  const sessionRow = (session: S): InboxRow<S> => ({ kind: 'session', id: session.id, session });
+  const cardRow = (settled: boolean) => (card: InboxCard): InboxRow<S> => ({ kind: 'card', id: card.id, card, settled });
+  const rows: InboxRow<S>[] = [
+    ...(briefing ? [{ kind: 'briefing' as const, id: briefing.id, card: briefing }] : []),
+    ...approvals.map(cardRow(false)),
+    ...waiting.map(sessionRow),
+    ...threads.filter((session) => !session.pendingApproval).map(sessionRow),
+    ...updates.map(cardRow(false)),
+  ];
+  if (attentionOnly) return rows;
+
+  const snoozed = inBucket('snoozed');
+  if (snoozed.length) {
+    rows.push({ kind: 'section', id: 'snoozed', title: 'Snoozed', count: snoozed.length });
+    if (expanded('snoozed')) rows.push(...snoozed.map(sessionRow));
   }
-  if (updates.length) {
-    rows.push({ kind: 'section', id: 'updates', title: 'Updates', count: updates.length, collapsible: true });
-    if (expanded('updates')) rows.push(...cardRows(updates));
-  }
-  if (!attentionOnly) {
-    for (const [id, title] of [['snoozed', 'Snoozed'], ['settled', 'Settled']] as const) {
-      const list = inBucket(id);
-      if (!list.length) continue;
-      rows.push({ kind: 'section', id, title, count: list.length, collapsible: true });
-      if (expanded(id)) rows.push(...sessionRows(list));
-    }
+  const settled = [
+    ...inBucket('settled').map((session) => ({ at: session.activityAt, row: sessionRow(session) })),
+    ...shown.filter((card) => isCardSettled(card, settledCards) && matches(card.title, card.body)).map((card) => ({ at: cardTime(card), row: cardRow(true)(card) })),
+  ].sort((a, b) => b.at - a.at);
+  if (settled.length) {
+    rows.push({ kind: 'section', id: 'settled', title: 'Settled', count: settled.length });
+    if (expanded('settled')) rows.push(...settled.map((entry) => entry.row));
   }
   return rows;
 }

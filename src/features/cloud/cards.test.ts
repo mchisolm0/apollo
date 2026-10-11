@@ -57,3 +57,12 @@ test('the push registration key changes with a re-minted token and never contain
   assert.notEqual(pushRegistrationKey({ ...credential, token: 'device-token-two' }, 'ExponentPushToken[abc]'), key);
   assert.equal(key.includes(credential.token), false);
 });
+
+test('metrics parse up to four valid figures and are absent when the producer sends none', () => {
+  const metric = (label: string) => ({ label, value: '377', unit: 'ms', delta: '-117', trend: 'good' });
+  const parsed = parseCard({ ...card('d', 1), metrics: [metric('a'), { label: 'bad' }, metric('b'), metric('c'), metric('d'), metric('e')] });
+  assert.deepEqual(parsed?.metrics?.map((item) => item.label), ['a', 'b', 'c', 'd']);
+  assert.deepEqual(parsed?.metrics?.[0], metric('a'));
+  assert.equal(parseCard({ ...card('d', 2), metrics: [] })?.metrics, undefined);
+  assert.equal(parseCard(card('d', 3))?.metrics, undefined);
+});

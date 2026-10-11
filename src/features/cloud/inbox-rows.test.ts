@@ -9,29 +9,44 @@ function card(id: string, kind: Card['kind'], patch: Partial<Card> = {}): Card {
 }
 
 function session(id: string, patch: Partial<InboxRowSession> = {}): InboxRowSession {
-  return { id, title: id, settled: false, status: 'active', pendingApproval: false, ...patch };
+  return { id, title: id, settled: false, status: 'active', pendingApproval: false, activityAt: 0, ...patch };
 }
 
-const collapsed = { updates: true, snoozed: true, settled: true };
+const collapsed = { snoozed: true, settled: true };
 const layout = (rows: ReturnType<typeof buildInboxRows>) => rows.map((row) => row.kind === 'section' ? `[${row.title} ${row.count}]` : `${row.kind}:${row.id}`);
+const at = (hour: number) => `2026-10-10T${String(hour).padStart(2, '0')}:00:00Z`;
 
-test('design C order: morning card, Needs you, threads, then collapsed sections', () => {
+test('design A order: morning card, approvals, threads, updates by time, then Snoozed and Settled', () => {
   const rows = buildInboxRows({
-    sessions: [session('waiting', { pendingApproval: true, status: 'attention' }), session('thread'), session('later'), session('done', { settled: true })],
+    sessions: [session('thread', { status: 'attention' }), session('waiting', { pendingApproval: true, status: 'attention' }), session('later'), session('done', { settled: true, activityAt: Date.parse(at(9)) / 1000 })],
     cards: [
       card('morning', 'briefing', { source: 'morning' }),
       card('preview', 'approval'),
       card('hermes-approval', 'approval', { source: 'hermes' }),
-      card('resolved', 'approval', { state: 'resolved' }),
-      card('build', 'update', { source: 'fleet' }),
-      card('jobs', 'update', { source: 'jobs', updatedAt: '2026-10-09T09:00:00Z' }),
+      card('build', 'update', { source: 'fleet', updatedAt: at(7) }),
+      card('jobs', 'update', { source: 'jobs', updatedAt: at(8) }),
     ],
     isSnoozed: (id) => id === 'later',
     collapsed,
   });
-  assert.deepEqual(layout(rows), ['briefing:morning', '[Needs you 2]', 'card:preview', 'session:waiting', '[Threads 1]', 'session:thread', '[Updates 2]', '[Snoozed 1]', '[Settled 1]']);
-  const open = buildInboxRows({ sessions: [], cards: [card('build', 'update'), card('jobs', 'update', { updatedAt: '2026-10-09T09:00:00Z' })], isSnoozed: () => false, collapsed: { ...collapsed, updates: false } });
-  assert.deepEqual(layout(open), ['[Updates 2]', 'card:jobs', 'card:build']);
+  assert.deepEqual(layout(rows), ['briefing:morning', 'card:preview', 'session:waiting', 'session:thread', 'card:jobs', 'card:build', '[Snoozed 1]', '[Settled 1]']);
+});
+
+test('Settled mixes settled threads with closed and locally settled cards, newest first', () => {
+  const rows = buildInboxRows({
+    sessions: [session('old thread', { settled: true, activityAt: Date.parse(at(6)) / 1000 })],
+    cards: [
+      card('approved', 'approval', { state: 'resolved', updatedAt: at(9) }),
+      card('swiped', 'update', { updatedAt: at(7) }),
+      card('open', 'update', { updatedAt: at(8) }),
+      card('old morning', 'briefing', { state: 'settled', updatedAt: at(5) }),
+    ],
+    settledCards: new Set(['swiped']),
+    isSnoozed: () => false,
+    collapsed: { ...collapsed, settled: false },
+  });
+  assert.deepEqual(layout(rows), ['card:open', '[Settled 4]', 'card:approved', 'card:swiped', 'session:old thread', 'card:old morning']);
+  assert.deepEqual(rows.filter((row) => row.kind === 'card').map((row) => row.kind === 'card' && row.settled), [false, true, true, true]);
 });
 
 test('without cards the inbox is the plain thread list', () => {
@@ -46,8 +61,8 @@ test('search and the attention filter hide the morning card and narrow cards', (
     isSnoozed: () => false,
     collapsed,
   };
-  assert.deepEqual(layout(buildInboxRows({ ...input, attentionOnly: true })), ['[Needs you 1]', 'card:Scryve preview', '[Threads 1]', 'session:new result']);
-  assert.deepEqual(layout(buildInboxRows({ ...input, query: 'disk' })), ['[Updates 1]', 'card:disk']);
+  assert.deepEqual(layout(buildInboxRows({ ...input, attentionOnly: true })), ['card:Scryve preview', 'session:new result']);
+  assert.deepEqual(layout(buildInboxRows({ ...input, query: 'disk' })), ['card:disk']);
 });
 
 test('queued responses show right away: picks flip, an approval says so, a morning card stays acknowledged', () => {
@@ -62,7 +77,7 @@ test('queued responses show right away: picks flip, an approval says so, a morni
   assert.equal(cards[0].pendingAction, undefined);
   assert.equal(cards[1].pendingAction, 'approve');
   const rows = buildInboxRows({ sessions: [], cards, isSnoozed: () => false, collapsed });
-  assert.deepEqual(layout(rows), ['briefing:morning', '[Needs you 1]', 'card:preview']);
+  assert.deepEqual(layout(rows), ['briefing:morning', 'card:preview']);
   // Once delivered, the server's resolution (first answer, possibly from another device) wins.
   const resolved = { ...morning, resolution: { actionId: 'skip', by: 'ipad', at: '2026-10-09T08:05:00Z' } };
   assert.equal(withPendingResponses([resolved], [])[0].acknowledged, 'skip');

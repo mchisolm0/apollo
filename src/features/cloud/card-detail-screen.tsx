@@ -1,69 +1,134 @@
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
+import { useState } from 'react';
+import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { MessageContent } from '@/features/relay/message-content';
-import { RelayButton, RelayHeader, useColors, useRelayStyles, useTextScale, useThemedStyles, type RelayPalette } from '@/features/relay/relay-ui';
+import { IconButton, useColors, useRelayStyles, useTextScale, useThemedStyles, type RelayPalette } from '@/features/relay/relay-ui';
+import { useApollo } from '@/lib';
 
-import type { CardPick } from '../../../cloud/src/contract';
-import { acknowledgedLabel, actionLabel, cardActions, cardAge, CardPicks, openCardLink, runAction, sourceLabels } from './card-ui';
+import type { CardAction, CardMetric, CardPick } from '../../../cloud/src/contract';
+import { acknowledgedLabel, actionLabel, CardButton, cardActions, CardGlyph, CardPicks, openCardLink, runAction } from './card-ui';
 import { useCloud } from './cloud-context';
+import { isCardSettled, type InboxCard } from './inbox-rows';
+import { SOURCE_STYLES } from './sources';
 
-/** Full card: long bodies (digests, job matches), meta, picks and every action. */
+/** "Mon 08:00" in the phone's locale. */
+function stamp(iso: string): string {
+  const date = new Date(iso);
+  return `${date.toLocaleDateString(undefined, { weekday: 'short' })} ${date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}`;
+}
+
+function copyText(card: InboxCard): string {
+  const meta = Object.entries(card.meta ?? {}).map(([label, value]) => `${label}: ${value}`);
+  const metrics = (card.metrics ?? []).map((metric) => `${metric.label}: ${metric.value}${metric.unit ? ` ${metric.unit}` : ''}${metric.delta ? ` (${metric.delta})` : ''}`);
+  return [card.title, [...meta, ...metrics].join('\n'), card.body ?? '', card.url ?? ''].filter(Boolean).join('\n\n');
+}
+
+/** Up to four figures with label, unit and a delta colored by trend. */
+function MetricRow({ metrics }: { metrics: readonly CardMetric[] }) {
+  const styles = useThemedStyles(createStyles);
+  const colors = useColors();
+  const { factor } = useTextScale();
+  return <View style={styles.metrics} accessibilityRole="summary">
+    {metrics.slice(0, 4).map((metric, index) => <View key={`${metric.label}:${index}`} style={[styles.metric, index > 0 && styles.metricDivided]} accessible accessibilityLabel={`${metric.label}: ${metric.value}${metric.unit ? ` ${metric.unit}` : ''}${metric.delta ? `, ${metric.delta}` : ''}`}>
+      <Text style={[styles.metricValue, { fontSize: 22 * factor, lineHeight: 27 * factor }]} numberOfLines={1} adjustsFontSizeToFit>
+        {metric.value}{metric.unit ? <Text style={[styles.metricUnit, { fontSize: 13 * factor }]}> {metric.unit}</Text> : null}
+      </Text>
+      <Text style={[styles.metricLabel, { fontSize: 12 * factor }]} numberOfLines={1}>
+        {metric.label}{metric.delta ? <Text style={{ color: metric.trend === 'good' ? colors.green : metric.trend === 'bad' ? colors.red : colors.muted }}> {metric.delta}</Text> : null}
+      </Text>
+    </View>)}
+  </View>;
+}
+
+/** Full card: source header, title, meta, metrics, picks, markdown body and a bottom action bar. */
 export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: () => void }) {
   const styles = useThemedStyles(createStyles);
   const uiStyles = useRelayStyles();
   const colors = useColors();
   const { factor } = useTextScale();
   const cloud = useCloud();
+  const { agents } = useApollo();
+  const [copied, setCopied] = useState(false);
   const card = cloud.cards.find((candidate) => candidate.id === cardId);
   if (!card) {
     const waiting = cloud.status !== 'off' && !cloud.ready;
     return <View style={uiStyles.screen}>
-      <RelayHeader title="Card" onBack={onBack} />
+      <View style={styles.header}><IconButton name="chevron.left" label="Go back" onPress={onBack} /></View>
       <View style={styles.empty}>
         {waiting ? <ActivityIndicator color={colors.secondary} accessibilityLabel="Loading card" /> : <Text style={styles.emptyText}>{cloud.status === 'off' ? 'Set up the cloud inbox in agent settings to see cards.' : 'This card is no longer in the inbox.'}</Text>}
       </View>
     </View>;
   }
   const open = card.state === 'open';
-  const respond = (cardId: string, actionId: string) => { void cloud.respond(cardId, { actionId }); };
-  const pick = (_: unknown, value: CardPick) => { void cloud.respond(card.id, { pick: value.n, done: !value.done }); };
-  const actions = cardActions(card);
-  const link = card.url && !actions.some((action) => action.url === card.url) ? card.url : undefined;
+  const settled = isCardSettled(card, cloud.settled);
+  const respond = (id: string, actionId: string) => { void cloud.respond(id, { actionId }); };
+  const pick = (_: InboxCard, value: CardPick) => { void cloud.respond(card.id, { pick: value.n, done: !value.done }); };
+  const host = agents.find((agent) => agent.id === cloud.credential?.agentId)?.label;
   const outcome = card.acknowledged ? acknowledgedLabel(card, card.acknowledged)
     : card.pendingAction ? `${actionLabel(card, card.pendingAction)}, sending`
-      : card.resolution ? `${actionLabel(card, card.resolution.actionId)} by ${card.resolution.by} · ${new Date(card.resolution.at).toLocaleString()}`
+      : card.resolution ? `${actionLabel(card, card.resolution.actionId)} by ${card.resolution.by} · ${stamp(card.resolution.at)}`
         : open ? undefined : 'Settled';
+  // Open approvals answer from the bar; everything else gets Copy and Settle.
+  const decide = card.kind === 'approval' && open && !card.pendingAction ? cardActions(card) : [];
+  const copy = () => void Clipboard.setStringAsync(copyText(card)).then(() => {
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1200);
+  }).catch(() => Alert.alert('Could not copy', 'Try selecting the text instead.'));
+  const settle = () => { cloud.settle(card.id); onBack(); };
+  const meta = Object.entries(card.meta ?? {});
   return <View style={uiStyles.screen}>
-    <RelayHeader title={sourceLabels[card.source]} detail={cardAge(card)} onBack={onBack} />
-    <ScrollView contentContainerStyle={[uiStyles.content, styles.content]}>
-      <Text style={[styles.title, { fontSize: 22 * factor, lineHeight: 28 * factor }]} accessibilityRole="header">{card.title}</Text>
-      {outcome ? <Text style={[styles.outcome, card.pendingAction === 'approve' || card.resolution?.actionId === 'approve' ? { color: colors.green } : null]}>{outcome}</Text> : null}
-      {card.meta && Object.keys(card.meta).length ? <View style={styles.meta}>
-        {Object.entries(card.meta).map(([label, value]) => <View key={label} style={styles.metaRow}>
-          <Text style={[styles.metaLabel, { fontSize: 14 * factor }]}>{label}</Text>
-          <Text style={[styles.metaValue, { fontSize: 14 * factor }]} selectable>{value}</Text>
+    <View style={styles.header}>
+      <IconButton name="chevron.left" label="Go back" onPress={onBack} />
+      <CardGlyph source={card.source} />
+      <View style={styles.headerText}>
+        <Text style={[styles.headerTitle, { fontSize: 16 * factor }]} numberOfLines={1}>{SOURCE_STYLES[card.source].label}</Text>
+        <Text style={[styles.headerDetail, { fontSize: 12 * factor }]} numberOfLines={1}>{host ? `${stamp(card.createdAt)} · ${host}` : stamp(card.createdAt)}</Text>
+      </View>
+    </View>
+    <ScrollView contentContainerStyle={styles.content}>
+      <Text style={[styles.title, { fontSize: 24 * factor, lineHeight: 30 * factor }]} accessibilityRole="header" selectable>{card.title}</Text>
+      {outcome ? <Text style={[styles.outcome, (card.pendingAction ?? card.resolution?.actionId) === 'approve' && { color: colors.green }, { fontSize: 15 * factor }]}>{outcome}</Text> : null}
+      {meta.length ? <View style={styles.meta}>
+        {meta.map(([label, value]) => <View key={label} style={styles.metaRow}>
+          <Text style={[styles.metaLabel, { fontSize: 14 * factor, lineHeight: 20 * factor }]}>{label}</Text>
+          <Text style={[styles.metaValue, { fontSize: 14 * factor, lineHeight: 20 * factor }]} selectable>{value}</Text>
         </View>)}
       </View> : null}
-      {card.picks?.length ? <View style={styles.picks}><CardPicks card={card} onPick={open ? pick : () => {}} /></View> : null}
-      {card.body ? <MessageContent text={card.body} /> : null}
-      {open && !card.pendingAction && !card.acknowledged && actions.length ? <View style={styles.actions}>
-        {actions.map((action) => <RelayButton key={action.id} tone={action.style === 'primary' ? 'primary' : action.style === 'destructive' ? 'destructive' : 'default'} onPress={() => runAction(card, action, respond)}>{action.label}</RelayButton>)}
-      </View> : null}
-      {link ? <RelayButton onPress={() => openCardLink(link)}>Open link</RelayButton> : null}
+      {card.metrics?.length ? <MetricRow metrics={card.metrics} /> : null}
+      {card.picks?.length ? <CardPicks card={card} onPick={open ? pick : () => {}} /> : null}
+      {card.body ? <MessageContent text={card.body} copyable={false} /> : null}
     </ScrollView>
+    <View style={styles.bar}>
+      {decide.length ? decide.map((action: CardAction) => <CardButton key={action.id} wide action={action} onPress={() => runAction(card, action, respond)} />) : <>
+        <CardButton wide action={{ label: copied ? 'Copied' : 'Copy' }} onPress={copy} />
+        {card.url ? <CardButton wide action={{ label: 'Open' }} onPress={() => openCardLink(card.url ?? '')} /> : null}
+        {!settled ? <CardButton wide action={{ label: 'Settle', style: 'primary' }} onPress={settle} />
+          : open ? <CardButton wide action={{ label: 'Reopen' }} onPress={() => cloud.reopen(card.id)} /> : null}
+      </>}
+    </View>
   </View>;
 }
 
 const createStyles = (colors: RelayPalette) => StyleSheet.create({
-  content: { paddingTop: 12, gap: 14 },
-  title: { color: colors.primary, fontWeight: '600', letterSpacing: -0.3 },
-  outcome: { color: colors.secondary, fontSize: 15, fontWeight: '600' },
-  meta: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
-  metaRow: { flexDirection: 'row', gap: 12, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
-  metaLabel: { color: colors.muted, fontWeight: '600', minWidth: 84 },
-  metaValue: { color: colors.primary, flex: 1 },
-  picks: { marginHorizontal: -8 },
-  actions: { gap: 10, paddingTop: 4 },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: 56, paddingLeft: 6, paddingRight: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  headerText: { flex: 1, minWidth: 0 },
+  headerTitle: { color: colors.primary, fontWeight: '600' },
+  headerDetail: { color: colors.muted, fontVariant: ['tabular-nums'] },
+  content: { padding: 16, paddingBottom: 28, gap: 12 },
+  title: { color: colors.primary, fontWeight: '700', letterSpacing: -0.3 },
+  outcome: { color: colors.secondary, fontWeight: '600' },
+  meta: { gap: 4 },
+  metaRow: { flexDirection: 'row', gap: 14 },
+  metaLabel: { color: colors.muted, minWidth: 64 },
+  metaValue: { color: colors.secondary, flex: 1, fontVariant: ['tabular-nums'] },
+  metrics: { flexDirection: 'row', borderTopWidth: StyleSheet.hairlineWidth, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: colors.line },
+  metric: { flex: 1, minWidth: 0, paddingVertical: 10 },
+  metricDivided: { paddingLeft: 12, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.line },
+  metricValue: { color: colors.primary, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  metricUnit: { color: colors.muted, fontWeight: '500' },
+  metricLabel: { color: colors.muted },
+  bar: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   emptyText: { color: colors.secondary, fontSize: 15, lineHeight: 22, textAlign: 'center' },
 });

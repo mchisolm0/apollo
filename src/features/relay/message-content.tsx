@@ -20,7 +20,8 @@ function openLink({ url }: { url: string }) {
   void Linking.openURL(url).catch(() => Alert.alert('Could not open link', 'Try again or copy the link from the message.'));
 }
 
-export const MessageContent = memo(function MessageContent({ text }: { text: string }) {
+/** Rendered message markdown. `copyable` adds the floating copy button; screens with their own Copy turn it off. */
+export const MessageContent = memo(function MessageContent({ text, copyable = true }: { text: string; copyable?: boolean }) {
   const colors = useColors();
   const { factor, codePt } = useTextScale();
   const markdownStyle = useMemo<MarkdownStyle>(() => {
@@ -66,7 +67,7 @@ export const MessageContent = memo(function MessageContent({ text }: { text: str
     : <FallbackMarkdown key={key} markdown={value} markdownStyle={markdownStyle} onLinkPress={openLink} />;
 
   return <View style={styles.content}>
-    <View style={styles.copy}><CopyButton text={text} /></View>
+    {copyable ? <View style={styles.copy}><CopyButton text={text} /></View> : null}
     {perlBlocks(text).flatMap((part, partIndex) => part.kind === 'perl'
       ? [<PerlCode key={`perl:${partIndex}`} code={part.text} />]
       : splitDiffFences(part.text).map((segment, segmentIndex) => segment.kind === 'diff' && hasNativeDiff()
