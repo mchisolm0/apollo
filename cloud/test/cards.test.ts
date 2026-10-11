@@ -81,6 +81,17 @@ describe('metrics', () => {
     expect(cards.find((c) => c.id === card.id)?.metrics).toEqual(updated.metrics);
   });
 
+  it('clears metrics on a re-upsert that omits them', async () => {
+    await call('/v1/cards', { token: producer, body: digest([coldStart]) });
+    const cleared = await (await call('/v1/cards', { token: producer, body: digest(undefined) })).json<Card>();
+    expect(cleared).not.toHaveProperty('metrics');
+  });
+
+  it('rejects an empty unit or delta', async () => {
+    expect((await call('/v1/cards', { token: producer, body: digest([{ ...coldStart, unit: '' }]) })).status).toBe(400);
+    expect((await call('/v1/cards', { token: producer, body: digest([{ ...coldStart, delta: '' }]) })).status).toBe(400);
+  });
+
   it('rejects a fifth metric', async () => {
     const response = await call('/v1/cards', { token: producer, body: digest(Array.from({ length: 5 }, (_, i) => ({ label: `m${i}`, value: '1' }))) });
     expect(response.status).toBe(400);

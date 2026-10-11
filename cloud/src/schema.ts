@@ -31,8 +31,8 @@ const pick = type({
 const metric = type({
   label: '0 < string <= 40',
   value: '0 < string <= 20',
-  'unit?': 'string <= 12',
-  'delta?': 'string <= 20',
+  'unit?': '0 < string <= 12',
+  'delta?': '0 < string <= 20',
   'trend?': "'good' | 'bad' | 'neutral'",
   '+': 'delete',
 });
