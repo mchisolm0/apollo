@@ -61,8 +61,8 @@ export function CloudProvider({ children }: PropsWithChildren) {
   const registered = useRef<string>(undefined);
   const granting = useRef(new Set<string>());
   const [saveError, setSaveError] = useState<string>();
-  // Belongs to the inbox it was made for, like `inbox`, so new credentials start empty.
-  const [settledState, setSettledState] = useState<{ url: string; cards: SettledCards }>();
+  // Belongs to the credential it was made for: a re-pair, even to the same URL, starts empty.
+  const [settledState, setSettledState] = useState<{ owner: CloudCredential; cards: SettledCards }>();
 
   const url = credential?.url;
   const setCards = useCallback((update: (current: readonly Card[]) => readonly Card[], source?: 'cache' | 'snapshot') => {
@@ -91,15 +91,18 @@ export function CloudProvider({ children }: PropsWithChildren) {
   useEffect(() => { if (credential) respondQueue.resume(); }, [credential]);
 
   useEffect(() => {
-    if (!url) return;
+    if (!credential) return;
     let live = true;
-    void AsyncStorage.getItem(SETTLED_KEY).then((saved) => {
-      const value: unknown = saved ? JSON.parse(saved) : undefined;
-      if (!live || !value || typeof value !== 'object' || !('url' in value) || value.url !== url || !('cards' in value)) return;
-      setSettledState({ url, cards: parseSettledCards(value.cards) });
-    }).catch(() => undefined);
+    void AsyncStorage.getItem(SETTLED_KEY).catch(() => null).then((saved) => {
+      if (!live) return;
+      let value: unknown;
+      try { value = saved ? JSON.parse(saved) : undefined; } catch { value = undefined; }
+      const stored = value && typeof value === 'object' && 'url' in value && value.url === credential.url && 'cards' in value ? parseSettledCards(value.cards) : NO_SETTLED;
+      // Settles made while storage was loading win over what it held.
+      setSettledState((current) => ({ owner: credential, cards: new Map([...stored, ...(current?.owner === credential ? current.cards : [])]) }));
+    });
     return () => { live = false; };
-  }, [url]);
+  }, [credential]);
 
   // Cached cards keep the inbox from jumping while the first snapshot loads, and work offline.
   useEffect(() => {
@@ -257,14 +260,14 @@ export function CloudProvider({ children }: PropsWithChildren) {
   }, []);
 
   // Settling is local: the Worker only lets producers close cards. Entries for cards that left the inbox are dropped on the next change.
-  const settled = url && settledState?.url === url ? settledState.cards : NO_SETTLED;
+  const settled = credential && settledState?.owner === credential ? settledState.cards : NO_SETTLED;
   const changeSettled = useCallback((cardId: string, value: boolean) => {
-    if (!url) return;
+    if (!url || !credential) return;
     const cards = inbox?.url === url ? inbox.cards : [];
     const next = updateSettledCards(settled, cards, cardId, value);
-    setSettledState({ url, cards: next });
+    setSettledState({ owner: credential, cards: next });
     void AsyncStorage.setItem(SETTLED_KEY, JSON.stringify({ url, cards: Object.fromEntries(next) })).catch(() => undefined);
-  }, [url, inbox, settled]);
+  }, [url, credential, inbox, settled]);
   const settle = useCallback((cardId: string) => changeSettled(cardId, true), [changeSettled]);
   const reopen = useCallback((cardId: string) => changeSettled(cardId, false), [changeSettled]);
 
