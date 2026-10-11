@@ -12,9 +12,9 @@ import { useApollo } from '@/lib/apollo-context';
 import type { Card, CardResponse } from '../../../cloud/src/contract';
 import { applyCard, applyStreamMessage, mergeSnapshot, parseCards, parseStreamMessage } from './cards';
 import { CloudRequestError, createCloudClient, pushRegistrationKey, type CloudCredential } from './cloud-client';
-import { CARD_CACHE_KEY, cloudCredentialStore, loadCloudCredential, saveCloudCredential } from './cloud-credentials';
+import { CARD_CACHE_KEY, SETTLED_KEY, cloudCredentialStore, loadCloudCredential, saveCloudCredential } from './cloud-credentials';
 import { ensureCloudChannels, respondQueue } from './cloud-runtime';
-import { withPendingResponses, type InboxCard } from './inbox-rows';
+import { NO_SETTLED, parseSettledCards, updateSettledCards, withPendingResponses, type InboxCard, type SettledCards } from './inbox-rows';
 
 /** off: no credential. live: stream open. offline: retrying. revoked: the token was rejected. */
 export type CloudStatus = 'off' | 'connecting' | 'live' | 'offline' | 'revoked';
@@ -29,6 +29,10 @@ type CloudContextValue = {
   error?: string;
   dismissError(): void;
   respond(cardId: string, response: CardResponse): Promise<void>;
+  /** Cards settled on this phone (id -> rev when settled); they sit in Settled until a newer rev arrives. */
+  settled: SettledCards;
+  settle(cardId: string): void;
+  reopen(cardId: string): void;
   /** Fetches a cloud token from this agent's connector and stores it. */
   connect(agentId: string): Promise<void>;
 };
@@ -57,6 +61,8 @@ export function CloudProvider({ children }: PropsWithChildren) {
   const registered = useRef<string>(undefined);
   const granting = useRef(new Set<string>());
   const [saveError, setSaveError] = useState<string>();
+  // Belongs to the credential it was made for: a re-pair, even to the same URL, starts empty.
+  const [settledState, setSettledState] = useState<{ owner: CloudCredential; cards: SettledCards }>();
 
   const url = credential?.url;
   const setCards = useCallback((update: (current: readonly Card[]) => readonly Card[], source?: 'cache' | 'snapshot') => {
@@ -83,6 +89,20 @@ export function CloudProvider({ children }: PropsWithChildren) {
 
   // New credentials (Reconnect, re-pair) resume a queue paused on 401/403.
   useEffect(() => { if (credential) respondQueue.resume(); }, [credential]);
+
+  useEffect(() => {
+    if (!credential) return;
+    let live = true;
+    void AsyncStorage.getItem(SETTLED_KEY).catch(() => null).then((saved) => {
+      if (!live) return;
+      let value: unknown;
+      try { value = saved ? JSON.parse(saved) : undefined; } catch { value = undefined; }
+      const stored = value && typeof value === 'object' && 'url' in value && value.url === credential.url && 'cards' in value ? parseSettledCards(value.cards) : NO_SETTLED;
+      // Settles made while storage was loading win over what it held.
+      setSettledState((current) => ({ owner: credential, cards: new Map([...stored, ...(current?.owner === credential ? current.cards : [])]) }));
+    });
+    return () => { live = false; };
+  }, [credential]);
 
   // Cached cards keep the inbox from jumping while the first snapshot loads, and work offline.
   useEffect(() => {
@@ -239,6 +259,18 @@ export function CloudProvider({ children }: PropsWithChildren) {
     setSaveError(undefined);
   }, []);
 
+  // Settling is local: the Worker only lets producers close cards. Entries for cards that left the inbox are dropped on the next change.
+  const settled = credential && settledState?.owner === credential ? settledState.cards : NO_SETTLED;
+  const changeSettled = useCallback((cardId: string, value: boolean) => {
+    if (!url || !credential) return;
+    const cards = inbox?.url === url ? inbox.cards : [];
+    const next = updateSettledCards(settled, cards, cardId, value);
+    setSettledState({ owner: credential, cards: next });
+    void AsyncStorage.setItem(SETTLED_KEY, JSON.stringify({ url, cards: Object.fromEntries(next) })).catch(() => undefined);
+  }, [url, credential, inbox, settled]);
+  const settle = useCallback((cardId: string) => changeSettled(cardId, true), [changeSettled]);
+  const reopen = useCallback((cardId: string) => changeSettled(cardId, false), [changeSettled]);
+
   const connect = useCallback(async (agentId: string) => {
     const grant = await cloudGrant(agentId);
     if (!grant) throw new Error('This agent has no cloud inbox configured.');
@@ -256,8 +288,11 @@ export function CloudProvider({ children }: PropsWithChildren) {
     error: saveError ?? queue.error,
     dismissError,
     respond,
+    settled,
+    settle,
+    reopen,
     connect,
-  }), [credential, status, inboxCards, current, saveError, queue.error, dismissError, respond, connect]);
+  }), [settled, settle, reopen, credential, status, inboxCards, current, saveError, queue.error, dismissError, respond, connect]);
   return <CloudContext.Provider value={value}>{children}</CloudContext.Provider>;
 }
 

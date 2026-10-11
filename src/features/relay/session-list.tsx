@@ -14,7 +14,7 @@ import type { ConnectionState } from './types';
 import { showThreadMenu } from './session-actions';
 import { useApollo } from '@/lib';
 import { BriefingCard, CardRow } from '@/features/cloud/card-ui';
-import { buildInboxRows, type CollapsibleSectionId, type InboxCard } from '@/features/cloud/inbox-rows';
+import { buildInboxRows, NO_SETTLED, settleAction, type CollapsibleSectionId, type InboxCard, type SettledCards } from '@/features/cloud/inbox-rows';
 import type { CardAction, CardPick } from '../../../cloud/src/contract';
 
 type Props = {
@@ -32,17 +32,21 @@ type Props = {
   onCardPress?: (card: InboxCard) => void;
   onCardAction?: (card: InboxCard, action: CardAction) => void;
   onPick?: (card: InboxCard, pick: CardPick) => void;
+  /** Cards settled on this phone. */
+  settledCards?: SettledCards;
+  onSettleCard?: (card: InboxCard) => void;
+  onReopenCard?: (card: InboxCard) => void;
 };
 const noCards: readonly InboxCard[] = [];
 const ignore = () => {};
 
 /** A searchable thread inbox with persistent finish/reopen actions. */
-export function SessionList({ sessions, connection = 'connected', onSessionPress, onSettle, onReopen, onNewSession, onForked, refreshing, onRefresh, cards = noCards, onCardPress = ignore, onCardAction = ignore, onPick = ignore }: Props) {
+export function SessionList({ sessions, connection = 'connected', onSessionPress, onSettle, onReopen, onNewSession, onForked, refreshing, onRefresh, cards = noCards, onCardPress = ignore, onCardAction = ignore, onPick = ignore, settledCards = NO_SETTLED, onSettleCard, onReopenCard }: Props) {
   const styles = useThemedStyles(createStyles);
   const colors = useColors();
   const { fontScale } = useWindowDimensions();
   const [query, setQuery] = useState('');
-  const [collapsed, setCollapsed] = useState<Record<CollapsibleSectionId, boolean>>({ updates: true, snoozed: true, settled: true });
+  const [collapsed, setCollapsed] = useState<Record<CollapsibleSectionId, boolean>>({ snoozed: true, settled: true });
   const [attentionOnly, setAttentionOnly] = useState(false);
   // Sessions carry their agent; the inbox route only ever shows one agent at a time.
   const { snoozed, snooze, unsnooze } = useSnoozeLedger(sessions[0]?.agentId ?? '');
@@ -51,7 +55,7 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
   const handleSnooze = useCallback((sessionId: string) => { void snooze(sessionId); }, [snooze]);
   const handleUnsnooze = useCallback((sessionId: string) => { void unsnooze(sessionId); }, [unsnooze]);
   const handleAutoSettle = useCallback((sessionId: string, enabled: boolean) => { void setAutoSettle(sessionId, enabled); }, [setAutoSettle]);
-  const rows = useMemo(() => buildInboxRows({ sessions, cards, query, attentionOnly, collapsed, isSnoozed: (id) => isSessionSnoozed(snoozed, id) }), [sessions, cards, query, collapsed, attentionOnly, snoozed]);
+  const rows = useMemo(() => buildInboxRows({ sessions, cards, settledCards, query, attentionOnly, collapsed, isSnoozed: (id) => isSessionSnoozed(snoozed, id) }), [sessions, cards, settledCards, query, collapsed, attentionOnly, snoozed]);
 
   return <KeyboardFrame key={fontScale}>
     <View style={styles.container}>
@@ -68,17 +72,13 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
       refreshing={refreshing}
       onRefresh={onRefresh}
       renderItem={({ item }) => {
-        if (item.kind === 'briefing') return <BriefingCard card={item.card} onOpen={onCardPress} onPick={onPick} onAction={onCardAction} />;
-        if (item.kind === 'card') return <CardRow card={item.card} onPress={onCardPress} onAction={onCardAction} />;
+        if (item.kind === 'briefing') return <BriefingCard card={item.card} onOpen={onCardPress} onPick={onPick} onAction={onCardAction} onSettle={onSettleCard} />;
+        if (item.kind === 'card') return <CardRow card={item.card} settled={item.settled} swipe={settleAction(item.card, settledCards)} onPress={onCardPress} onAction={onCardAction} onSettle={onSettleCard} onReopen={onReopenCard} />;
         if (item.kind === 'session') return <SessionRow session={item.session} snoozed={isSessionSnoozed(snoozed, item.session.id)} onPress={onSessionPress} onSettle={onSettle} onReopen={onReopen} onAutoSettle={autoSettleLoaded ? handleAutoSettle : undefined} onSnooze={handleSnooze} onUnsnooze={handleUnsnooze} onForked={onForked} />;
         const sectionId = item.id;
-        const title = <Text style={[styles.sectionText, sectionId === 'needs' && styles.needsText]}>{item.collapsible ? `${item.title} (${item.count})` : item.title}</Text>;
-        if (sectionId !== 'updates' && sectionId !== 'snoozed' && sectionId !== 'settled') {
-          return <View accessibilityRole="header" style={styles.section}>{title}<View style={styles.sectionRule} /></View>;
-        }
         const expanded = Boolean(query.trim()) || !collapsed[sectionId];
-        return <Pressable accessibilityRole="button" accessibilityLabel={`${item.title}, ${item.count} ${sectionId === 'updates' ? 'updates' : 'threads'}`} accessibilityState={{ expanded }} style={({ pressed }) => [styles.section, pressed && styles.pressed]} onPress={() => toggle(sectionId)}>
-          {title}
+        return <Pressable accessibilityRole="button" accessibilityLabel={`${item.title}, ${item.count}`} accessibilityState={{ expanded }} style={({ pressed }) => [styles.section, pressed && styles.pressed]} onPress={() => toggle(sectionId)}>
+          <Text style={styles.sectionText}>{item.title} ({item.count})</Text>
           <View style={styles.sectionRule} />
           <SymbolView name={{ ios: expanded ? 'chevron.up' : 'chevron.down', android: expanded ? 'expand_less' : 'expand_more', web: expanded ? 'expand_less' : 'expand_more' }} size={12} tintColor={colors.secondary} />
         </Pressable>;
@@ -174,7 +174,6 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   searchInput: { color: colors.primary, fontSize: 16, flex: 1, height: 44, paddingVertical: 8 },
   section: { marginHorizontal: 12, paddingHorizontal: 8, minHeight: 48, borderRadius: 6, flexDirection: 'row', alignItems: 'center', gap: 12 },
   sectionText: { color: colors.secondary, fontSize: 15 },
-  needsText: { color: colors.amber, fontWeight: '600' },
   sectionRule: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.line },
   rowContainer: { marginHorizontal: 12, backgroundColor: colors.background, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
   row: { paddingHorizontal: 8, paddingVertical: 12, minHeight: 44, borderRadius: 6, gap: 4, backgroundColor: colors.background, justifyContent: 'center' },

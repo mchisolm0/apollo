@@ -1,4 +1,4 @@
-import { CATEGORY, KINDS, SOURCES, type Card, type CardAction, type CardSnapshot, type CardPick, type CardState, type PushLevel, type StreamMessage } from '../../../cloud/src/contract.ts';
+import { CATEGORY, KINDS, SOURCES, type Card, type CardAction, type CardMetric, type CardSnapshot, type CardPick, type CardState, type PushLevel, type StreamMessage } from '../../../cloud/src/contract.ts';
 
 const STATES = ['open', 'resolved', 'settled'] as const satisfies readonly CardState[];
 const PUSH_LEVELS = ['alert', 'passive', 'none'] as const satisfies readonly PushLevel[];
@@ -6,6 +6,9 @@ const ACTION_STYLES = ['primary', 'default', 'destructive'] as const satisfies r
 const ID = /^[A-Za-z0-9._:~-]{1,256}$/u;
 
 type JsonObject = Record<string, unknown>;
+
+const TRENDS = ['good', 'bad', 'neutral'] as const satisfies readonly NonNullable<CardMetric['trend']>[];
+const MAX_METRICS = 4;
 
 function isObject(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -38,6 +41,17 @@ function parsePick(value: unknown): CardPick | undefined {
   return { n, text: label, done, ...(sub ? { sub } : {}) };
 }
 
+function parseMetric(value: unknown): CardMetric | undefined {
+  if (!isObject(value)) return undefined;
+  const label = text(value.label);
+  const figure = typeof value.value === 'number' && Number.isFinite(value.value) ? String(value.value) : text(value.value);
+  if (!label || figure === undefined) return undefined;
+  const unit = text(value.unit);
+  const delta = text(value.delta);
+  const trend = oneOf(TRENDS, value.trend);
+  return { label, value: figure, ...(unit ? { unit } : {}), ...(delta ? { delta } : {}), ...(trend ? { trend } : {}) };
+}
+
 function parseResolution(value: unknown): Card['resolution'] {
   if (!isObject(value)) return undefined;
   const actionId = text(value.actionId);
@@ -67,11 +81,12 @@ export function parseCard(value: unknown): Card | undefined {
   const actions = Array.isArray(value.actions) ? value.actions.map(parseAction).filter((action) => action !== undefined) : undefined;
   const picks = Array.isArray(value.picks) ? value.picks.map(parsePick).filter((pick) => pick !== undefined) : undefined;
   const meta = parseMeta(value.meta);
+  const metrics = Array.isArray(value.metrics) ? value.metrics.map(parseMetric).filter((metric) => metric !== undefined).slice(0, MAX_METRICS) : undefined;
   const resolution = parseResolution(value.resolution);
   return {
     id, rev, source, key, kind, title, state, push, createdAt, updatedAt,
     ...(body ? { body } : {}), ...(url ? { url } : {}), ...(expiresAt ? { expiresAt } : {}),
-    ...(actions ? { actions } : {}), ...(picks ? { picks } : {}), ...(meta ? { meta } : {}), ...(resolution ? { resolution } : {}),
+    ...(actions ? { actions } : {}), ...(picks ? { picks } : {}), ...(meta ? { meta } : {}), ...(metrics?.length ? { metrics } : {}), ...(resolution ? { resolution } : {}),
   };
 }
 
