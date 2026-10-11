@@ -33,6 +33,10 @@ The mobile app includes saved attachment paths and metadata in the Runs API inpu
 
 Paired devices read `GET /v1/inbox` and update `PATCH /v1/inbox` with `{ "settled": { "session-id": 123 } }`. Timestamps are session activity times in seconds; `null` explicitly reopens a thread. The connector saves this ledger in its existing state file, shared by all paired devices. Optional `"importOnly": true` fills missing entries without overriding existing timestamps or reopen markers. Update/restart the connector and update the app to enable this; opening the updated app on an existing device migrates its local settled threads. Other devices pick up changes when connecting or returning to the foreground.
 
+## Thread previews
+
+Hermes previews a session with its first user message, so threads that contain only assistant messages list with an empty `preview`. For `GET /api/sessions` and `GET /api/sessions/:id`, the connector fills an empty preview from the latest assistant message (`/api/sessions/:id/messages?limit=20&order=latest`), as one plain-text line capped at 60 characters like Hermes. Cached previews are always applied; at most 20 uncached sessions per response are looked up, 4 at a time, within one 2-second budget that also ends if the client disconnects. Results are cached by session id and `last_active`; failures and sessions without `last_active` are cached for 60 seconds. Any failure leaves the preview empty, and a rewritten response drops Hermes's `etag`. Other fields and non-empty previews are untouched.
+
 # Push notifications
 
 Set `APOLLO_EXPO_PUSH_URL=https://exp.host/--/api/v2/push/send` on the connector host to enable push delivery. If the Expo project uses push access-token security, also set `APOLLO_EXPO_ACCESS_TOKEN`.
