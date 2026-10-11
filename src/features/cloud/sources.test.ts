@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { SOURCES } from '../../../cloud/src/contract.ts';
 import { THEME_PALETTES } from '../relay/theme.ts';
-import { previewLine } from './card-text.ts';
+import { isOpenableUrl, latestAssistantPreview, parseApolloLink, previewLine } from './card-text.ts';
 import { glyphColors, mixHex, SOURCE_STYLES } from './sources.ts';
 
 function luminance(hex: string) {
@@ -43,4 +43,29 @@ test('previews take the first readable line of markdown', () => {
   assert.equal(previewLine('1. [x] _Done_ with snake_case_name and *one* thing'), 'Done with snake_case_name and one thing');
   assert.equal(previewLine('---\n\n   '), undefined);
   assert.equal(previewLine(undefined), undefined);
+});
+
+test('card links open only the web and known app schemes', () => {
+  for (const url of ['scryve-preview://preview/pr-376', 'https://github.com/mchisolm0/scryve/pull/376', 'SCRYVE://game/1', 'apollo://pair']) assert.equal(isOpenableUrl(url), true, url);
+  for (const url of ['javascript:alert(1)', 'itms-services://?action=download-manifest', 'shortcuts://run-shortcut?name=x', 'tel:5551234', 'file:///etc/hosts', '/relative/path', '']) assert.equal(isOpenableUrl(url), false, url);
+});
+
+test('a thread with no user message previews its latest assistant text', () => {
+  assert.equal(latestAssistantPreview([
+    { role: 'assistant', content: 'Older note' },
+    { role: 'assistant', content: '## Scryve #376 dice menu preview\nReady on device' },
+    { role: 'tool', content: '{"ok":true}' },
+    { role: 'assistant', content: '' },
+  ]), 'Scryve #376 dice menu preview');
+  assert.equal(latestAssistantPreview([{ role: 'user', content: 'hi' }]), undefined);
+  assert.equal(latestAssistantPreview(undefined), undefined);
+});
+
+test('apollo://session links open a thread in the app; incomplete ones are refused', () => {
+  assert.deepEqual(parseApolloLink('apollo://session/thread_376?agentId=mini'), { kind: 'session', id: 'thread_376', agentId: 'mini' });
+  assert.deepEqual(parseApolloLink(' apollo-preview://session/abc?agentId=a1 '), { kind: 'session', id: 'abc', agentId: 'a1' });
+  for (const url of ['apollo://session/?agentId=mini', 'apollo://session?agentId=mini', 'apollo://session/abc', 'apollo://session/abc?agentId=', 'apollo://session/a/b?agentId=mini', 'apollo://session/..%2F?agentId=mini', 'apollo://session/%E0?agentId=mini']) {
+    assert.deepEqual(parseApolloLink(url), { kind: 'invalid' }, url);
+  }
+  for (const url of ['apollo://pair?host=x', 'scryve-preview://preview/pr-376', 'https://example.com/session/1', 'not a url']) assert.equal(parseApolloLink(url), undefined, url);
 });

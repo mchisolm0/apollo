@@ -1,5 +1,5 @@
 import * as Clipboard from 'expo-clipboard';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { MessageContent } from '@/features/relay/message-content';
@@ -9,7 +9,7 @@ import { useApollo } from '@/lib';
 import type { CardAction, CardMetric, CardPick } from '../../../cloud/src/contract';
 import { acknowledgedLabel, actionLabel, CardButton, cardActions, CardGlyph, CardPicks, openCardLink, runAction } from './card-ui';
 import { useCloud } from './cloud-context';
-import { settleAction, type InboxCard } from './inbox-rows';
+import { settleAction, settleOnFirstSight, type InboxCard } from './inbox-rows';
 import { SOURCE_STYLES } from './sources';
 
 /** "Mon 08:00" in the phone's locale. */
@@ -50,6 +50,14 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
   const { agents } = useApollo();
   const [copied, setCopied] = useState(false);
   const card = cloud.cards.find((candidate) => candidate.id === cardId);
+  // Opening an update settles it, from a row or a notification alike, once per mount, so Reopen here sticks.
+  const { settle: settleCard, settled: settledCards } = cloud;
+  const seen = useRef<string>(undefined);
+  useEffect(() => {
+    const decision = settleOnFirstSight(seen.current, card, settledCards);
+    seen.current = decision.seen;
+    if (decision.settle && card) settleCard(card.id);
+  }, [card, settledCards, settleCard]);
   if (!card) {
     const waiting = cloud.status !== 'off' && !cloud.ready;
     return <View style={uiStyles.screen}>
@@ -103,10 +111,10 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
     <View style={styles.bar}>
       {decide.length ? <>
         {decide.map((action: CardAction) => <CardButton key={action.id} wide action={action} onPress={() => runAction(card, action, respond)} />)}
-        {link ? <CardButton wide action={{ label: 'Open link' }} onPress={() => openCardLink(link)} /> : null}
+        {link ? <CardButton wide action={{ label: 'Open link' }} onPress={() => void openCardLink(link)} /> : null}
       </> : <>
         <CardButton wide action={{ label: copied ? 'Copied' : 'Copy' }} onPress={copy} />
-        {link ? <CardButton wide action={{ label: 'Open' }} onPress={() => openCardLink(link)} /> : null}
+        {link ? <CardButton wide action={{ label: 'Open' }} onPress={() => void openCardLink(link)} /> : null}
         {swipe === 'settle' ? <CardButton wide action={{ label: 'Settle', style: 'primary' }} onPress={settle} />
           : swipe === 'reopen' ? <CardButton wide action={{ label: 'Reopen' }} onPress={() => cloud.reopen(card.id)} /> : null}
       </>}

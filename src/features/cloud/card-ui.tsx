@@ -1,3 +1,4 @@
+import { router } from 'expo-router';
 import { SymbolView, type AndroidSymbol, type SFSymbol } from 'expo-symbols';
 import { memo, useRef, type ReactNode } from 'react';
 import { Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -7,7 +8,7 @@ import { useColors, useTextScale, useThemedStyles, type RelayPalette } from '@/f
 import { dateLabel } from '@/features/relay/session-inbox';
 
 import type { Card, CardAction, CardPick, Source } from '../../../cloud/src/contract';
-import { previewLine } from './card-text';
+import { isOpenableUrl, parseApolloLink, previewLine } from './card-text';
 import type { InboxCard } from './inbox-rows';
 import { glyphColors, SOURCE_STYLES } from './sources';
 
@@ -35,17 +36,32 @@ export function cardAge(card: Card): string {
   return dateLabel(Math.floor(Date.parse(card.updatedAt) / 1000));
 }
 
-export function openCardLink(url: string) {
-  if (!/^https?:\/\//iu.test(url)) {
-    Alert.alert('Cannot open this link', 'Only HTTP and HTTPS links can be opened from a card.');
-    return;
+/**
+ * Opens a card URL. `apollo://session/...` links open that thread in Apollo; other links go
+ * to the system, including app schemes like `scryve-preview://`, so the owning app handles
+ * them. Resolves true once the link opened; refused or failed links alert.
+ */
+export function openCardLink(raw: string): Promise<boolean> {
+  const url = raw.trim();
+  const apollo = parseApolloLink(url);
+  if (apollo?.kind === 'session') {
+    // The thread screen sends an unknown agent back to the inbox.
+    router.push({ pathname: '/session/[id]', params: { id: apollo.id, agentId: apollo.agentId } });
+    return Promise.resolve(true);
   }
-  void Linking.openURL(url).catch(() => Alert.alert('Could not open link', 'Try again later.'));
+  if (apollo?.kind === 'invalid' || !isOpenableUrl(url)) {
+    Alert.alert('Cannot open this link', url);
+    return Promise.resolve(false);
+  }
+  return Linking.openURL(url).then(() => true, () => {
+    Alert.alert('Could not open link', 'No app on this phone handles it.');
+    return false;
+  });
 }
 
 /** Runs a card action: a URL action opens its link and records nothing; anything else is a response. */
-export function runAction(card: Card, action: CardAction, respond: (cardId: string, actionId: string) => void) {
-  if (action.url) openCardLink(action.url);
+export function runAction(card: Card, action: CardAction, respond: (cardId: string, actionId: string) => void, onOpened?: () => void) {
+  if (action.url) void openCardLink(action.url).then((opened) => { if (opened) onOpened?.(); });
   else respond(card.id, action.id);
 }
 
