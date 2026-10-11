@@ -80,16 +80,24 @@ export function CardButton({ action, onPress, label, wide = false }: { action: P
   </Pressable>;
 }
 
-/** Swipe left to settle an open card, or to reopen one this phone settled. */
-export function CardSwipe({ card, settled, onSettle, onReopen, children }: { card: InboxCard; settled: boolean; onSettle?: (card: InboxCard) => void; onReopen?: (card: InboxCard) => void; children: ReactNode }) {
+type SwipeAction = 'settle' | 'reopen';
+const swipeLabels = { settle: 'Settle', reopen: 'Reopen' } as const satisfies Record<SwipeAction, string>;
+
+/** VoiceOver's equivalent of the swipe, matching thread rows. */
+function swipeAccessibility(action: SwipeAction | undefined, run: (action: SwipeAction) => void) {
+  return action ? {
+    accessibilityActions: [{ name: action, label: swipeLabels[action] }],
+    onAccessibilityAction: (event: { nativeEvent: { actionName: string } }) => { if (event.nativeEvent.actionName === action) run(action); },
+  } : {};
+}
+
+/** Swipe left to settle an open card, or to reopen one this phone settled (see `settleAction`). */
+export function CardSwipe({ card, action, onRun, children }: { card: InboxCard; action?: SwipeAction; onRun: (action: SwipeAction) => void; children: ReactNode }) {
   const styles = useThemedStyles(createStyles);
   const swipe = useRef<SwipeableMethods>(null);
-  // A card the server closed cannot be reopened from the phone.
-  const action = !settled && onSettle ? { label: 'Settle', run: () => onSettle(card) }
-    : settled && card.state === 'open' && onReopen ? { label: 'Reopen', run: () => onReopen(card) } : undefined;
   if (!action) return children;
-  const perform = () => { swipe.current?.close(); action.run(); };
-  return <Swipeable ref={swipe} overshootRight={false} renderRightActions={() => <Pressable accessibilityRole="button" accessibilityLabel={`${action.label} ${card.title}`} onPress={perform} style={styles.swipeAction}><Text style={styles.swipeText}>{action.label}</Text></Pressable>}>
+  const perform = () => { swipe.current?.close(); onRun(action); };
+  return <Swipeable ref={swipe} overshootRight={false} renderRightActions={() => <Pressable accessibilityRole="button" accessibilityLabel={`${swipeLabels[action]} ${card.title}`} onPress={perform} style={styles.swipeAction}><Text style={styles.swipeText}>{swipeLabels[action]}</Text></Pressable>}>
     {children}
   </Swipeable>;
 }
@@ -140,9 +148,11 @@ export const BriefingCard = memo(function BriefingCard({ card, onOpen, onPick, o
   const picks = card.picks?.slice(0, 3) ?? [];
   const summary = card.acknowledged ? `${acknowledgedLabel(card, card.acknowledged)} · ${picks.filter((pick) => pick.done).length} of ${picks.length} done` : undefined;
   const actions = cardActions(card).filter((action) => !action.url);
-  return <CardSwipe card={card} settled={false} onSettle={onSettle}>
+  const swipe = onSettle ? 'settle' : undefined;
+  const run = () => onSettle?.(card);
+  return <CardSwipe card={card} action={swipe} onRun={run}>
     <View style={[styles.rowContainer, styles.briefing]}>
-      <Pressable accessibilityRole="button" accessibilityLabel={`${SOURCE_STYLES[card.source].label}, ${day}${calendar ? `, ${calendar}` : ''}. Open card`} onPress={() => onOpen(card)} style={({ pressed }) => [styles.briefingHeader, pressed && styles.pressed]}>
+      <Pressable {...swipeAccessibility(swipe, run)} accessibilityRole="button" accessibilityLabel={`${SOURCE_STYLES[card.source].label}, ${day}${calendar ? `, ${calendar}` : ''}. Open card`} onPress={() => onOpen(card)} style={({ pressed }) => [styles.briefingHeader, pressed && styles.pressed]}>
         <CardGlyph source={card.source} />
         <View style={styles.body}>
           <Text style={[styles.briefingTitle, { fontSize: 17 * factor, lineHeight: 22 * factor }]} numberOfLines={1}>{day}</Text>
@@ -161,9 +171,11 @@ export const BriefingCard = memo(function BriefingCard({ card, onOpen, onPick, o
  * An approval (title, preview, inline actions) or an update (title, source label and a
  * one-line preview) led by its source glyph. Settled cards are quiet and show no actions.
  */
-export const CardRow = memo(function CardRow({ card, settled, onPress, onAction, onSettle, onReopen }: {
+export const CardRow = memo(function CardRow({ card, settled, swipe, onPress, onAction, onSettle, onReopen }: {
   card: InboxCard;
   settled: boolean;
+  /** From `settleAction`: what a swipe may do with this card. */
+  swipe?: SwipeAction;
   onPress: (card: InboxCard) => void;
   onAction: (card: InboxCard, action: CardAction) => void;
   onSettle?: (card: InboxCard) => void;
@@ -179,9 +191,12 @@ export const CardRow = memo(function CardRow({ card, settled, onPress, onAction,
   const status = card.pendingAction ? actionLabel(card, card.pendingAction) : cardAge(card);
   const statusColor = card.pendingAction === 'approve' ? colors.green : card.pendingAction === 'reject' ? colors.red : approval ? colors.amber : colors.muted;
   // Actions are siblings of the row button, not children, so VoiceOver can reach them on their own.
-  return <CardSwipe card={card} settled={settled} onSettle={onSettle} onReopen={onReopen}>
+  const run = (action: SwipeAction) => (action === 'settle' ? onSettle : onReopen)?.(card);
+  const available = swipe && (swipe === 'settle' ? onSettle : onReopen) ? swipe : undefined;
+  return <CardSwipe card={card} action={available} onRun={run}>
     <View style={styles.rowContainer}>
       <Pressable
+        {...swipeAccessibility(available, run)}
         accessibilityRole="button"
         accessibilityLabel={`${source}: ${card.title}${card.pendingAction ? `, ${actionLabel(card, card.pendingAction).toLocaleLowerCase()}, sending` : approval ? ', needs you' : ''}${settled ? ', settled' : ''}`}
         onPress={() => onPress(card)}

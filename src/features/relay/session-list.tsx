@@ -14,7 +14,7 @@ import type { ConnectionState } from './types';
 import { showThreadMenu } from './session-actions';
 import { useApollo } from '@/lib';
 import { BriefingCard, CardRow } from '@/features/cloud/card-ui';
-import { buildInboxRows, type CollapsibleSectionId, type InboxCard } from '@/features/cloud/inbox-rows';
+import { buildInboxRows, NO_SETTLED, settleAction, type CollapsibleSectionId, type InboxCard, type SettledCards } from '@/features/cloud/inbox-rows';
 import type { CardAction, CardPick } from '../../../cloud/src/contract';
 
 type Props = {
@@ -32,17 +32,16 @@ type Props = {
   onCardPress?: (card: InboxCard) => void;
   onCardAction?: (card: InboxCard, action: CardAction) => void;
   onPick?: (card: InboxCard, pick: CardPick) => void;
-  /** Card ids settled on this phone. */
-  settledCards?: ReadonlySet<string>;
+  /** Cards settled on this phone. */
+  settledCards?: SettledCards;
   onSettleCard?: (card: InboxCard) => void;
   onReopenCard?: (card: InboxCard) => void;
 };
-const noIds: ReadonlySet<string> = new Set();
 const noCards: readonly InboxCard[] = [];
 const ignore = () => {};
 
 /** A searchable thread inbox with persistent finish/reopen actions. */
-export function SessionList({ sessions, connection = 'connected', onSessionPress, onSettle, onReopen, onNewSession, onForked, refreshing, onRefresh, cards = noCards, onCardPress = ignore, onCardAction = ignore, onPick = ignore, settledCards = noIds, onSettleCard, onReopenCard }: Props) {
+export function SessionList({ sessions, connection = 'connected', onSessionPress, onSettle, onReopen, onNewSession, onForked, refreshing, onRefresh, cards = noCards, onCardPress = ignore, onCardAction = ignore, onPick = ignore, settledCards = NO_SETTLED, onSettleCard, onReopenCard }: Props) {
   const styles = useThemedStyles(createStyles);
   const colors = useColors();
   const { fontScale } = useWindowDimensions();
@@ -74,7 +73,7 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
       onRefresh={onRefresh}
       renderItem={({ item }) => {
         if (item.kind === 'briefing') return <BriefingCard card={item.card} onOpen={onCardPress} onPick={onPick} onAction={onCardAction} onSettle={onSettleCard} />;
-        if (item.kind === 'card') return <CardRow card={item.card} settled={item.settled} onPress={onCardPress} onAction={onCardAction} onSettle={onSettleCard} onReopen={onReopenCard} />;
+        if (item.kind === 'card') return <CardRow card={item.card} settled={item.settled} swipe={settleAction(item.card, settledCards)} onPress={onCardPress} onAction={onCardAction} onSettle={onSettleCard} onReopen={onReopenCard} />;
         if (item.kind === 'session') return <SessionRow session={item.session} snoozed={isSessionSnoozed(snoozed, item.session.id)} onPress={onSessionPress} onSettle={onSettle} onReopen={onReopen} onAutoSettle={autoSettleLoaded ? handleAutoSettle : undefined} onSnooze={handleSnooze} onUnsnooze={handleUnsnooze} onForked={onForked} />;
         const sectionId = item.id;
         const expanded = Boolean(query.trim()) || !collapsed[sectionId];

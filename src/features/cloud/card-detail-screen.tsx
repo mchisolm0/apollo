@@ -9,13 +9,13 @@ import { useApollo } from '@/lib';
 import type { CardAction, CardMetric, CardPick } from '../../../cloud/src/contract';
 import { acknowledgedLabel, actionLabel, CardButton, cardActions, CardGlyph, CardPicks, openCardLink, runAction } from './card-ui';
 import { useCloud } from './cloud-context';
-import { isCardSettled, type InboxCard } from './inbox-rows';
+import { settleAction, type InboxCard } from './inbox-rows';
 import { SOURCE_STYLES } from './sources';
 
 /** "Mon 08:00" in the phone's locale. */
 function stamp(iso: string): string {
   const date = new Date(iso);
-  return `${date.toLocaleDateString(undefined, { weekday: 'short' })} ${date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}`;
+  return `${date.toLocaleDateString(undefined, { weekday: 'short' })} ${date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
 }
 
 function copyText(card: InboxCard): string {
@@ -34,9 +34,8 @@ function MetricRow({ metrics }: { metrics: readonly CardMetric[] }) {
       <Text style={[styles.metricValue, { fontSize: 22 * factor, lineHeight: 27 * factor }]} numberOfLines={1} adjustsFontSizeToFit>
         {metric.value}{metric.unit ? <Text style={[styles.metricUnit, { fontSize: 13 * factor }]}> {metric.unit}</Text> : null}
       </Text>
-      <Text style={[styles.metricLabel, { fontSize: 12 * factor }]} numberOfLines={1}>
-        {metric.label}{metric.delta ? <Text style={{ color: metric.trend === 'good' ? colors.green : metric.trend === 'bad' ? colors.red : colors.muted }}> {metric.delta}</Text> : null}
-      </Text>
+      <Text style={[styles.metricLabel, { fontSize: 12 * factor, lineHeight: 16 * factor }]} numberOfLines={2}>{metric.label}</Text>
+      {metric.delta ? <Text style={[styles.metricDelta, { color: metric.trend === 'good' ? colors.green : metric.trend === 'bad' ? colors.red : colors.muted, fontSize: 12 * factor, lineHeight: 16 * factor }]} numberOfLines={1}>{metric.delta}</Text> : null}
     </View>)}
   </View>;
 }
@@ -61,7 +60,7 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
     </View>;
   }
   const open = card.state === 'open';
-  const settled = isCardSettled(card, cloud.settled);
+  const swipe = settleAction(card, cloud.settled);
   const respond = (id: string, actionId: string) => { void cloud.respond(id, { actionId }); };
   const pick = (_: InboxCard, value: CardPick) => { void cloud.respond(card.id, { pick: value.n, done: !value.done }); };
   const host = agents.find((agent) => agent.id === cloud.credential?.agentId)?.label;
@@ -69,8 +68,10 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
     : card.pendingAction ? `${actionLabel(card, card.pendingAction)}, sending`
       : card.resolution ? `${actionLabel(card, card.resolution.actionId)} by ${card.resolution.by} · ${stamp(card.resolution.at)}`
         : open ? undefined : 'Settled';
-  // Open approvals answer from the bar; everything else gets Copy and Settle.
-  const decide = card.kind === 'approval' && open && !card.pendingAction ? cardActions(card) : [];
+  // An open approval, or a morning card not yet kept or skipped, answers from the bar; everything else gets Copy and Settle.
+  const unanswered = open && (card.kind === 'approval' ? !card.pendingAction : card.kind === 'briefing' && !card.acknowledged);
+  const decide = unanswered ? cardActions(card) : [];
+  const link = card.url && !decide.some((action) => action.url === card.url) ? card.url : undefined;
   const copy = () => void Clipboard.setStringAsync(copyText(card)).then(() => {
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
@@ -100,11 +101,14 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
       {card.body ? <MessageContent text={card.body} copyable={false} /> : null}
     </ScrollView>
     <View style={styles.bar}>
-      {decide.length ? decide.map((action: CardAction) => <CardButton key={action.id} wide action={action} onPress={() => runAction(card, action, respond)} />) : <>
+      {decide.length ? <>
+        {decide.map((action: CardAction) => <CardButton key={action.id} wide action={action} onPress={() => runAction(card, action, respond)} />)}
+        {link ? <CardButton wide action={{ label: 'Open link' }} onPress={() => openCardLink(link)} /> : null}
+      </> : <>
         <CardButton wide action={{ label: copied ? 'Copied' : 'Copy' }} onPress={copy} />
-        {card.url ? <CardButton wide action={{ label: 'Open' }} onPress={() => openCardLink(card.url ?? '')} /> : null}
-        {!settled ? <CardButton wide action={{ label: 'Settle', style: 'primary' }} onPress={settle} />
-          : open ? <CardButton wide action={{ label: 'Reopen' }} onPress={() => cloud.reopen(card.id)} /> : null}
+        {link ? <CardButton wide action={{ label: 'Open' }} onPress={() => openCardLink(link)} /> : null}
+        {swipe === 'settle' ? <CardButton wide action={{ label: 'Settle', style: 'primary' }} onPress={settle} />
+          : swipe === 'reopen' ? <CardButton wide action={{ label: 'Reopen' }} onPress={() => cloud.reopen(card.id)} /> : null}
       </>}
     </View>
   </View>;
@@ -128,6 +132,7 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   metricValue: { color: colors.primary, fontWeight: '700', fontVariant: ['tabular-nums'] },
   metricUnit: { color: colors.muted, fontWeight: '500' },
   metricLabel: { color: colors.muted },
+  metricDelta: { fontWeight: '600', fontVariant: ['tabular-nums'] },
   bar: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   emptyText: { color: colors.secondary, fontSize: 15, lineHeight: 22, textAlign: 'center' },

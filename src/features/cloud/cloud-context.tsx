@@ -14,7 +14,7 @@ import { applyCard, applyStreamMessage, mergeSnapshot, parseCards, parseStreamMe
 import { CloudRequestError, createCloudClient, pushRegistrationKey, type CloudCredential } from './cloud-client';
 import { CARD_CACHE_KEY, SETTLED_KEY, cloudCredentialStore, loadCloudCredential, saveCloudCredential } from './cloud-credentials';
 import { ensureCloudChannels, respondQueue } from './cloud-runtime';
-import { withPendingResponses, type InboxCard } from './inbox-rows';
+import { NO_SETTLED, parseSettledCards, updateSettledCards, withPendingResponses, type InboxCard, type SettledCards } from './inbox-rows';
 
 /** off: no credential. live: stream open. offline: retrying. revoked: the token was rejected. */
 export type CloudStatus = 'off' | 'connecting' | 'live' | 'offline' | 'revoked';
@@ -29,8 +29,8 @@ type CloudContextValue = {
   error?: string;
   dismissError(): void;
   respond(cardId: string, response: CardResponse): Promise<void>;
-  /** Card ids settled on this phone; they move to Settled. */
-  settled: ReadonlySet<string>;
+  /** Cards settled on this phone (id -> rev when settled); they sit in Settled until a newer rev arrives. */
+  settled: SettledCards;
   settle(cardId: string): void;
   reopen(cardId: string): void;
   /** Fetches a cloud token from this agent's connector and stores it. */
@@ -61,7 +61,8 @@ export function CloudProvider({ children }: PropsWithChildren) {
   const registered = useRef<string>(undefined);
   const granting = useRef(new Set<string>());
   const [saveError, setSaveError] = useState<string>();
-  const [settled, setSettled] = useState<ReadonlySet<string>>(new Set());
+  // Belongs to the inbox it was made for, like `inbox`, so new credentials start empty.
+  const [settledState, setSettledState] = useState<{ url: string; cards: SettledCards }>();
 
   const url = credential?.url;
   const setCards = useCallback((update: (current: readonly Card[]) => readonly Card[], source?: 'cache' | 'snapshot') => {
@@ -76,10 +77,6 @@ export function CloudProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     void loadCloudCredential();
     void respondQueue.load();
-    void AsyncStorage.getItem(SETTLED_KEY).then((saved) => {
-      const value: unknown = saved ? JSON.parse(saved) : [];
-      if (Array.isArray(value)) setSettled(new Set(value.filter((id): id is string => typeof id === 'string')));
-    }).catch(() => undefined);
     const appState = AppState.addEventListener('change', (next) => setActive(next === 'active'));
     const token = Platform.OS === 'web' ? undefined : Notifications.addPushTokenListener(() => {
       registered.current = undefined;
@@ -92,6 +89,17 @@ export function CloudProvider({ children }: PropsWithChildren) {
 
   // New credentials (Reconnect, re-pair) resume a queue paused on 401/403.
   useEffect(() => { if (credential) respondQueue.resume(); }, [credential]);
+
+  useEffect(() => {
+    if (!url) return;
+    let live = true;
+    void AsyncStorage.getItem(SETTLED_KEY).then((saved) => {
+      const value: unknown = saved ? JSON.parse(saved) : undefined;
+      if (!live || !value || typeof value !== 'object' || !('url' in value) || value.url !== url || !('cards' in value)) return;
+      setSettledState({ url, cards: parseSettledCards(value.cards) });
+    }).catch(() => undefined);
+    return () => { live = false; };
+  }, [url]);
 
   // Cached cards keep the inbox from jumping while the first snapshot loads, and work offline.
   useEffect(() => {
@@ -248,16 +256,15 @@ export function CloudProvider({ children }: PropsWithChildren) {
     setSaveError(undefined);
   }, []);
 
-  // Settling is local: the Worker only lets producers close cards. Ids of cards that left the inbox are dropped on the next change.
+  // Settling is local: the Worker only lets producers close cards. Entries for cards that left the inbox are dropped on the next change.
+  const settled = url && settledState?.url === url ? settledState.cards : NO_SETTLED;
   const changeSettled = useCallback((cardId: string, value: boolean) => {
-    setSettled((current) => {
-      const live = new Set(inbox?.cards.map((card) => card.id));
-      const next = new Set([...current].filter((id) => live.has(id) && id !== cardId));
-      if (value) next.add(cardId);
-      void AsyncStorage.setItem(SETTLED_KEY, JSON.stringify([...next])).catch(() => undefined);
-      return next;
-    });
-  }, [inbox]);
+    if (!url) return;
+    const cards = inbox?.url === url ? inbox.cards : [];
+    const next = updateSettledCards(settled, cards, cardId, value);
+    setSettledState({ url, cards: next });
+    void AsyncStorage.setItem(SETTLED_KEY, JSON.stringify({ url, cards: Object.fromEntries(next) })).catch(() => undefined);
+  }, [url, inbox, settled]);
   const settle = useCallback((cardId: string) => changeSettled(cardId, true), [changeSettled]);
   const reopen = useCallback((cardId: string) => changeSettled(cardId, false), [changeSettled]);
 

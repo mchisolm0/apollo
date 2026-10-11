@@ -34,9 +34,37 @@ export type InboxRow<S extends InboxRowSession = InboxRowSession> =
 const cardTime = (card: Card, field: 'createdAt' | 'updatedAt' = 'updatedAt') => Date.parse(card[field]) / 1000;
 const newestFirst = (field: 'createdAt' | 'updatedAt') => (a: Card, b: Card) => cardTime(b, field) - cardTime(a, field);
 
-/** A card leaves the open list once the server closes it or this phone settles it. */
-export function isCardSettled(card: Pick<Card, 'id' | 'state'>, settledCards: ReadonlySet<string>): boolean {
-  return card.state !== 'open' || settledCards.has(card.id);
+/** Cards this phone settled: id -> the card's rev at the time. */
+export type SettledCards = ReadonlyMap<string, number>;
+export const NO_SETTLED: SettledCards = new Map();
+
+/**
+ * A card leaves the open list once the server closes it, or while it still has the rev this
+ * phone settled it at. A producer re-upsert (a new digest, a re-posted approval) resurfaces it.
+ */
+export function isCardSettled(card: Pick<Card, 'id' | 'state' | 'rev'>, settledCards: SettledCards): boolean {
+  return card.state !== 'open' || settledCards.get(card.id) === card.rev;
+}
+
+/** What a swipe may do: settle an open card, or reopen one this phone settled. An open approval is never settled, since its producer is waiting. */
+export function settleAction(card: Pick<Card, 'id' | 'state' | 'rev' | 'kind'>, settledCards: SettledCards): 'settle' | 'reopen' | undefined {
+  if (card.state !== 'open') return undefined;
+  if (isCardSettled(card, settledCards)) return 'reopen';
+  return card.kind === 'approval' ? undefined : 'settle';
+}
+
+/** The next ledger after settling or reopening `cardId`, keeping only cards still in the inbox. */
+export function updateSettledCards(current: SettledCards, cards: readonly Pick<Card, 'id' | 'rev'>[], cardId: string, settle: boolean): SettledCards {
+  const revs = new Map(cards.map((card) => [card.id, card.rev]));
+  const next = new Map([...current].filter(([id, rev]) => id !== cardId && revs.get(id) === rev));
+  const rev = revs.get(cardId);
+  if (settle && rev !== undefined) next.set(cardId, rev);
+  return next;
+}
+
+export function parseSettledCards(value: unknown): SettledCards {
+  if (!value || typeof value !== 'object') return NO_SETTLED;
+  return new Map(Object.entries(value).filter((entry): entry is [string, number] => typeof entry[1] === 'number'));
 }
 
 /**
@@ -47,11 +75,11 @@ export function isCardSettled(card: Pick<Card, 'id' | 'state'>, settledCards: Re
  * never get their own row because the thread row already stands for them. Search and the
  * attention filter hide the morning card; the attention filter also hides updates.
  */
-export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isSnoozed, settledCards = new Set(), query = '', attentionOnly = false, collapsed }: {
+export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isSnoozed, settledCards = NO_SETTLED, query = '', attentionOnly = false, collapsed }: {
   sessions: readonly S[];
   cards: readonly InboxCard[];
   isSnoozed: (sessionId: string) => boolean;
-  settledCards?: ReadonlySet<string>;
+  settledCards?: SettledCards;
   query?: string;
   attentionOnly?: boolean;
   collapsed: Readonly<Record<CollapsibleSectionId, boolean>>;

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { Card } from '../../../cloud/src/contract.ts';
-import { buildInboxRows, withPendingResponses, type InboxRowSession } from './inbox-rows.ts';
+import { buildInboxRows, settleAction, updateSettledCards, withPendingResponses, type InboxRowSession } from './inbox-rows.ts';
 
 function card(id: string, kind: Card['kind'], patch: Partial<Card> = {}): Card {
   return { id, rev: 1, source: 'preview', key: id, kind, title: id, push: 'alert', state: 'open', createdAt: '2026-10-09T08:00:00Z', updatedAt: '2026-10-09T08:00:00Z', ...patch };
@@ -41,12 +41,32 @@ test('Settled mixes settled threads with closed and locally settled cards, newes
       card('open', 'update', { updatedAt: at(8) }),
       card('old morning', 'briefing', { state: 'settled', updatedAt: at(5) }),
     ],
-    settledCards: new Set(['swiped']),
+    settledCards: new Map([['swiped', 1]]),
     isSnoozed: () => false,
     collapsed: { ...collapsed, settled: false },
   });
   assert.deepEqual(layout(rows), ['card:open', '[Settled 4]', 'card:approved', 'card:swiped', 'session:old thread', 'card:old morning']);
   assert.deepEqual(rows.filter((row) => row.kind === 'card').map((row) => row.kind === 'card' && row.settled), [false, true, true, true]);
+});
+
+test('a settled card resurfaces when the producer re-upserts it with a newer rev', () => {
+  const digest = card('digest', 'update', { rev: 5 });
+  const settled = updateSettledCards(new Map(), [digest, card('gone', 'update', { rev: 2 })], 'digest', true);
+  assert.deepEqual([...settled], [['digest', 5]]);
+  const input = { sessions: [], isSnoozed: () => false, settledCards: settled, collapsed: { ...collapsed, settled: false } };
+  assert.deepEqual(layout(buildInboxRows({ ...input, cards: [digest] })), ['[Settled 1]', 'card:digest']);
+  assert.deepEqual(layout(buildInboxRows({ ...input, cards: [{ ...digest, rev: 9 }] })), ['card:digest']);
+  // Reopening removes it, and entries for cards that left the inbox are dropped.
+  assert.deepEqual([...updateSettledCards(new Map([['digest', 5], ['gone', 2]]), [digest], 'digest', false)], []);
+});
+
+test('an open approval cannot be swiped away; others settle, and locally settled ones reopen', () => {
+  const none = new Map<string, number>();
+  assert.equal(settleAction(card('a', 'approval'), none), undefined);
+  assert.equal(settleAction(card('u', 'update'), none), 'settle');
+  assert.equal(settleAction(card('b', 'briefing'), none), 'settle');
+  assert.equal(settleAction(card('u', 'update'), new Map([['u', 1]])), 'reopen');
+  assert.equal(settleAction(card('r', 'approval', { state: 'resolved' }), none), undefined);
 });
 
 test('without cards the inbox is the plain thread list', () => {
