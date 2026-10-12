@@ -14,6 +14,7 @@ import { SessionList } from '@/features/relay/session-list';
 import { useSessionInbox } from '@/features/relay/use-session-inbox';
 import { useApollo } from '@/lib';
 import { useLaunchGrace } from '@/features/relay/use-launch-grace';
+import { countsReady, displayConnection } from '@/features/relay/connection-state';
 import { useCloud } from '@/features/cloud/cloud-context';
 import { openCardLink, runAction } from '@/features/cloud/card-ui';
 import { latestAssistantPreview } from '@/features/cloud/card-text';
@@ -36,15 +37,13 @@ export default function SessionsRoute() {
   const pendingRunIds = useMemo(() => new Set(Object.values(runs ?? {}).filter((run) => run.status === 'waiting_for_approval').map((run) => run.runId)), [runs]);
   if (loading) return <View style={styles.loading}><ActivityIndicator color={colors.primary} accessibilityLabel="Loading agents" /></View>;
   if (!agent) return <Redirect href="/connect" />;
-  // A fresh launch is 'idle' until the first connect starts; that is connecting, not offline.
-  const connection = state?.status === 'connected' ? 'connected' : state?.status === 'revoked' ? 'revoked' : state?.status === 'connecting' || state?.status === 'idle' || !state ? 'connecting' : 'offline';
+  const connection = displayConnection(state?.status, settledLaunch);
   // Reconnecting shows only as the picker's dot color. Text appears for states that need action,
   // after the launch grace period, and never changes the header's layout.
   const headerStatus = settledLaunch && (connection === 'offline' || connection === 'revoked') ? connection : undefined;
   const statusAction = headerStatus ? <ConnectionAction state={headerStatus} onReconnect={() => void retryAgent(agent.id)} onDetails={() => router.push({ pathname: '/settings/[agentId]', params: { agentId: agent.id } })} /> : null;
   // Counts and the caught-up row wait for live sessions and cards, so cached numbers never jump.
-  const sessionsLive = Boolean(state?.capabilities) || (settledLaunch && connection !== 'connecting');
-  const cardsLive = cloud.status === 'off' || cloud.fresh || (settledLaunch && (cloud.status === 'offline' || cloud.status === 'revoked'));
+  const fresh = countsReady({ sessionsLoaded: Boolean(state?.capabilities), cardsLoaded: cloud.fresh, cloudOff: cloud.status === 'off', graceOver: settledLaunch });
   const open = (id: string) => router.push({ pathname: '/session/[id]', params: { id, agentId: agent.id } });
   const pendingSessions = new Map<string, InboxSession>();
   for (const item of outbox.items) {
@@ -97,7 +96,7 @@ export default function SessionsRoute() {
       onCardAction={(card, action) => runAction(card, action, (cardId, actionId) => { void cloud.respond(cardId, { actionId }); }, () => { if (cardOpenPlan(card).settle) cloud.settle(card.id); })}
       onPick={(card, pick) => { void cloud.respond(card.id, { pick: pick.n, done: !pick.done }); }}
       settledCards={cloud.settled}
-      fresh={sessionsLive && cardsLive}
+      fresh={fresh}
       pendingRunIds={pendingRunIds}
       onSettleCard={(card) => cloud.settle(card.id)}
       onReopenCard={(card) => cloud.reopen(card.id)} />

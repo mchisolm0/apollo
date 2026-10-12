@@ -1,4 +1,5 @@
 import * as Application from 'expo-application';
+import { usePathname } from 'expo-router';
 import * as Updates from 'expo-updates';
 import { useEffect, useState } from 'react';
 import { GlassView } from 'expo-glass-effect';
@@ -59,15 +60,17 @@ const DOCK_MARGIN = HAS_MAIL_TOOLBAR ? 16 : 12;
  */
 export function UpdateReadyNotice() {
   const colors = useColors();
+  // Only over the inbox: on a thread or card it would cover the composer or an approval.
+  const onInbox = usePathname() === '/';
   const insets = useSafeAreaInsets();
   const { state, noticeVisible, dismissNotice, error } = useAppUpdate();
   const [detailsOpen, setDetailsOpen] = useState(false);
   useEffect(() => {
-    if (noticeVisible) AccessibilityInfo.announceForAccessibility('Update ready');
-  }, [noticeVisible]);
+    if (noticeVisible && onInbox) AccessibilityInfo.announceForAccessibility('Update ready');
+  }, [noticeVisible, onInbox]);
   if (state.status !== 'ready') return null;
   return <>
-    {noticeVisible ? <Animated.View
+    {noticeVisible && onInbox ? <Animated.View
       entering={FadeInDown.duration(220)}
       exiting={FadeOutDown.duration(160)}
       pointerEvents="box-none"

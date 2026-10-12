@@ -6,6 +6,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { scheduleOnRN } from 'react-native-worklets';
 
 import type { AgentRecord, AgentRuntimeState } from '@/lib/types';
+import { displayConnection } from './connection-state';
+import { useLaunchGrace } from './use-launch-grace';
 import { ConnectionMark, connectionLabels, useTextScale, useThemedStyles, useColors, type RelayPalette } from './relay-ui';
 
 type Props = {
@@ -34,8 +36,8 @@ export function AgentPicker({ agents, selected, runtime, onSelect, onDetails, on
   const insets = useSafeAreaInsets();
   const progress = useSharedValue(0);
   const [reducedMotion, setReducedMotion] = useState(true);
-  const status = runtime[selected.id]?.status ?? 'offline';
-  const connection = status === 'idle' ? 'offline' : status;
+  const graceOver = useLaunchGrace();
+  const connection = displayConnection(runtime[selected.id]?.status, graceOver);
 
   useEffect(() => {
     let active = true;
@@ -120,8 +122,7 @@ export function AgentPicker({ agents, selected, runtime, onSelect, onDetails, on
       >
         <ScrollView bounces={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.menuContent}>
           {agents.map((agent) => {
-            const status = runtime[agent.id]?.status ?? 'offline';
-            const state = status === 'idle' ? 'offline' : status;
+            const state = displayConnection(runtime[agent.id]?.status, graceOver);
             const isSelected = agent.id === selected.id;
             return <View key={agent.id} style={styles.row}>
               <Pressable
