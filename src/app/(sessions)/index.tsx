@@ -13,6 +13,8 @@ import { AgentPicker } from '@/features/relay/agent-picker';
 import { SessionList } from '@/features/relay/session-list';
 import { useSessionInbox } from '@/features/relay/use-session-inbox';
 import { useApollo } from '@/lib';
+import { useLaunchGrace } from '@/features/relay/use-launch-grace';
+import { countsReady, displayConnection } from '@/features/relay/connection-state';
 import { useCloud } from '@/features/cloud/cloud-context';
 import { openCardLink, runAction } from '@/features/cloud/card-ui';
 import { latestAssistantPreview } from '@/features/cloud/card-text';
@@ -31,10 +33,17 @@ export default function SessionsRoute() {
   const inbox = useSessionInbox(agent?.id ?? '', state);
   const cloud = useCloud();
   const runs = state?.runs;
+  const settledLaunch = useLaunchGrace();
   const pendingRunIds = useMemo(() => new Set(Object.values(runs ?? {}).filter((run) => run.status === 'waiting_for_approval').map((run) => run.runId)), [runs]);
   if (loading) return <View style={styles.loading}><ActivityIndicator color={colors.primary} accessibilityLabel="Loading agents" /></View>;
   if (!agent) return <Redirect href="/connect" />;
-  const connection = state?.status === 'connected' ? 'connected' : state?.status === 'revoked' ? 'revoked' : state?.status === 'connecting' ? 'connecting' : 'offline';
+  const connection = displayConnection(state?.status, settledLaunch);
+  // Reconnecting shows only as the picker's dot color. Text appears for states that need action,
+  // after the launch grace period, and never changes the header's layout.
+  const headerStatus = settledLaunch && (connection === 'offline' || connection === 'revoked') ? connection : undefined;
+  const statusAction = headerStatus ? <ConnectionAction state={headerStatus} onReconnect={() => void retryAgent(agent.id)} onDetails={() => router.push({ pathname: '/settings/[agentId]', params: { agentId: agent.id } })} /> : null;
+  // Counts and the caught-up row wait for live sessions and cards, so cached numbers never jump.
+  const fresh = countsReady({ sessionsLoaded: Boolean(state?.capabilities), cardsLoaded: cloud.fresh, cloudOff: cloud.status === 'off', graceOver: settledLaunch });
   const open = (id: string) => router.push({ pathname: '/session/[id]', params: { id, agentId: agent.id } });
   const pendingSessions = new Map<string, InboxSession>();
   for (const item of outbox.items) {
@@ -58,7 +67,7 @@ export default function SessionsRoute() {
       headerShadowVisible: false,
       // Left to right. A native bar button gets the same system glass and 44pt size as the toolbar buttons.
       unstable_headerRightItems: () => [
-        ...(connection === 'connected' ? [] : [{ type: 'custom' as const, hidesSharedBackground: true, element: <ConnectionAction state={connection} onReconnect={() => void retryAgent(agent.id)} onDetails={() => router.push({ pathname: '/settings/[agentId]', params: { agentId: agent.id } })} /> }]),
+        ...(statusAction ? [{ type: 'custom' as const, hidesSharedBackground: true, element: statusAction }] : []),
         { type: 'button', label: 'Settings', icon: { type: 'sfSymbol', name: 'gearshape' }, tintColor: colors.primary, onPress: () => router.push('/settings') },
       ],
     }} /> : <View style={styles.header}>
@@ -68,7 +77,7 @@ export default function SessionsRoute() {
           onDetails={(agentId) => router.push({ pathname: '/settings/[agentId]', params: { agentId } })}
           onPair={() => router.push('/connect')} />
       </View>
-      <ConnectionAction state={connection} onReconnect={() => void retryAgent(agent.id)} onDetails={() => router.push({ pathname: '/settings/[agentId]', params: { agentId: agent.id } })} />
+      <View style={styles.statusSlot}>{statusAction}</View>
       <Pressable accessibilityRole="button" accessibilityLabel="Settings" onPress={() => router.push('/settings')} style={({ pressed }) => [styles.dockButton, pressed && { opacity: 0.6 }]}>
         <SymbolView name={{ ios: 'gearshape', android: 'settings', web: 'settings' }} size={22} tintColor={colors.primary} />
       </Pressable>
@@ -87,6 +96,7 @@ export default function SessionsRoute() {
       onCardAction={(card, action) => runAction(card, action, (cardId, actionId) => { void cloud.respond(cardId, { actionId }); }, () => { if (cardOpenPlan(card).settle) cloud.settle(card.id); })}
       onPick={(card, pick) => { void cloud.respond(card.id, { pick: pick.n, done: !pick.done }); }}
       settledCards={cloud.settled}
+      fresh={fresh}
       pendingRunIds={pendingRunIds}
       onSettleCard={(card) => cloud.settle(card.id)}
       onReopenCard={(card) => cloud.reopen(card.id)} />
@@ -98,6 +108,8 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   header: { flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 52, paddingHorizontal: 12 },
   identity: { flex: 1, minWidth: 0 },
+  // Fixed width so a status appearing never moves the picker or the gear.
+  statusSlot: { width: 112, alignItems: 'flex-end' },
   // Same size and fill as the bottom dock's buttons.
   dockButton: { width: 44, height: 44, borderRadius: 8, backgroundColor: colors.surface, alignItems: 'center', justifyContent: 'center' },
   error: { color: colors.red, fontSize: 14, padding: 20 },

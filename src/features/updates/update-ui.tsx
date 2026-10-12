@@ -1,9 +1,13 @@
 import * as Application from 'expo-application';
+import { usePathname } from 'expo-router';
 import * as Updates from 'expo-updates';
 import { useEffect, useState } from 'react';
+import { GlassView } from 'expo-glass-effect';
 import { AccessibilityInfo, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import Animated, { FadeInDown, FadeOutDown } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { HAS_MAIL_TOOLBAR, MAIL_TOOLBAR_INSET } from '@/features/relay/mail-toolbar';
 import { useColors } from '@/features/relay/relay-ui';
 import { buildSummary } from './update-state';
 import { useAppUpdate } from './update-provider';
@@ -46,23 +50,43 @@ function UpdateDetails({ visible, onClose }: { visible: boolean; onClose(): void
   </Modal>;
 }
 
+// Height of the bottom dock: the native toolbar on iOS 26+, else the JS dock (44pt buttons, 8pt padding).
+const DOCK_HEIGHT = HAS_MAIL_TOOLBAR ? MAIL_TOOLBAR_INSET : 60;
+const DOCK_MARGIN = HAS_MAIL_TOOLBAR ? 16 : 12;
+
+/**
+ * "Update ready" floats just above the bottom dock as an overlay, so it never moves the list,
+ * the dock or the safe area. Liquid Glass where available, the dock's surface elsewhere.
+ */
 export function UpdateReadyNotice() {
   const colors = useColors();
+  // Only over the inbox: on a thread or card it would cover the composer or an approval.
+  const onInbox = usePathname() === '/';
   const insets = useSafeAreaInsets();
   const { state, noticeVisible, dismissNotice, error } = useAppUpdate();
   const [detailsOpen, setDetailsOpen] = useState(false);
   useEffect(() => {
-    if (noticeVisible) AccessibilityInfo.announceForAccessibility('Update ready');
-  }, [noticeVisible]);
+    if (noticeVisible && onInbox) AccessibilityInfo.announceForAccessibility('Update ready');
+  }, [noticeVisible, onInbox]);
   if (state.status !== 'ready') return null;
   return <>
-    {noticeVisible ? <View style={[styles.noticeLayer, { paddingBottom: insets.bottom + 8, backgroundColor: colors.background }]}>
-      <View accessibilityLiveRegion="polite" style={[styles.notice, { backgroundColor: colors.elevated, borderColor: colors.line }]}>
-        <Text style={[styles.noticeText, { color: colors.primary }]}>Update ready</Text>
-        <UpdateActions onInfo={() => { dismissNotice(); setDetailsOpen(true); }} />
-      </View>
-      {error ? <Text style={[styles.note, { color: colors.red, backgroundColor: colors.surface }]}>{error}</Text> : null}
-    </View> : null}
+    {noticeVisible && onInbox ? <Animated.View
+      entering={FadeInDown.duration(220)}
+      exiting={FadeOutDown.duration(160)}
+      pointerEvents="box-none"
+      style={[styles.noticeLayer, { bottom: insets.bottom + DOCK_HEIGHT + 8, left: DOCK_MARGIN, right: DOCK_MARGIN }]}
+    >
+      {error ? <Text style={[styles.note, styles.noticeError, { color: colors.red, backgroundColor: colors.surface }]}>{error}</Text> : null}
+      {HAS_MAIL_TOOLBAR
+        ? <GlassView glassEffectStyle="regular" accessibilityLiveRegion="polite" style={[styles.notice, styles.noticeGlass]}>
+          <Text style={[styles.noticeText, { color: colors.primary }]}>Update ready</Text>
+          <UpdateActions onInfo={() => { dismissNotice(); setDetailsOpen(true); }} />
+        </GlassView>
+        : <View accessibilityLiveRegion="polite" style={[styles.notice, { backgroundColor: colors.surface }]}>
+          <Text style={[styles.noticeText, { color: colors.primary }]}>Update ready</Text>
+          <UpdateActions onInfo={() => { dismissNotice(); setDetailsOpen(true); }} />
+        </View>}
+    </Animated.View> : null}
     <UpdateDetails visible={detailsOpen} onClose={() => setDetailsOpen(false)} />
   </>;
 }
@@ -100,8 +124,10 @@ const styles = StyleSheet.create({
   about: { paddingVertical: 12, gap: 8 },
   summary: { fontSize: 14, lineHeight: 20 },
   fingerprint: { fontSize: 12, lineHeight: 17 },
-  noticeLayer: { paddingTop: 8, paddingHorizontal: 16, alignItems: 'center' },
-  notice: { flexDirection: 'row', alignItems: 'center', paddingLeft: 14, paddingRight: 4, borderWidth: StyleSheet.hairlineWidth, borderRadius: 4, maxWidth: 420 },
+  noticeLayer: { position: 'absolute', alignItems: 'center', gap: 6 },
+  notice: { flexDirection: 'row', alignItems: 'center', paddingLeft: 16, paddingRight: 4, borderRadius: 8, maxWidth: 420, overflow: 'hidden' },
+  noticeGlass: { borderRadius: 22 },
+  noticeError: { borderRadius: 8, overflow: 'hidden', paddingHorizontal: 12, paddingVertical: 6, marginBottom: 0 },
   noticeText: { flexShrink: 1, fontSize: 15, lineHeight: 21 },
   action: { minHeight: 44, minWidth: 44, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 12 },
   actionText: { fontSize: 15, lineHeight: 21, fontWeight: '600' },

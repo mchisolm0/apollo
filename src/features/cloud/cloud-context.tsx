@@ -25,6 +25,8 @@ type CloudContextValue = {
   cards: readonly InboxCard[];
   /** False until the first snapshot or cached copy is in, so screens can tell "loading" from "gone". */
   ready: boolean;
+  /** True once a live snapshot replaced the cached cards. */
+  fresh: boolean;
   /** A response that could not be saved or that the server rejected. Connection trouble shows in `status` instead. */
   error?: string;
   dismissError(): void;
@@ -132,6 +134,8 @@ export function CloudProvider({ children }: PropsWithChildren) {
     let attempt = 0;
     let socket: WebSocket | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
+    let snapshotRetry: ReturnType<typeof setTimeout> | undefined;
+    let snapshotFailures = 0;
     let ping: ReturnType<typeof setInterval> | undefined;
     let lastHeard = Date.now();
     // Set while a snapshot is in flight, so a stream removal is not undone by a stale snapshot.
@@ -150,6 +154,7 @@ export function CloudProvider({ children }: PropsWithChildren) {
         const snapshot = await client.cards();
         if (closed) return;
         synced = true;
+        snapshotFailures = 0;
         setCards((local) => mergeSnapshot(local, snapshot, removed), 'snapshot');
         // These credentials work, so a 401/403 seen earlier (a Worker deploy) no longer holds responses.
         respondQueue.resume();
@@ -157,6 +162,11 @@ export function CloudProvider({ children }: PropsWithChildren) {
       } catch (cause) {
         if (closed) return;
         if (cause instanceof CloudRequestError && (cause.status === 401 || cause.status === 403)) markRevoked();
+        // A live stream with a failed snapshot would leave cached cards forever; retry with backoff.
+        else if (socket?.readyState === WebSocket.OPEN) {
+          clearTimeout(snapshotRetry);
+          snapshotRetry = setTimeout(() => void sync(), Math.min(2000 * 2 ** snapshotFailures++, 30_000));
+        }
       } finally {
         if (removedDuringSync === removed) removedDuringSync = undefined;
       }
@@ -205,6 +215,7 @@ export function CloudProvider({ children }: PropsWithChildren) {
       setConnection(undefined);
       clearTimeout(fallback);
       clearTimeout(retry);
+      clearTimeout(snapshotRetry);
       clearInterval(ping);
       socket?.close();
     };
@@ -285,6 +296,7 @@ export function CloudProvider({ children }: PropsWithChildren) {
     credential,
     cards: inboxCards,
     ready: current?.ready ?? false,
+    fresh: current?.fresh ?? false,
     error: saveError ?? queue.error,
     dismissError,
     respond,
