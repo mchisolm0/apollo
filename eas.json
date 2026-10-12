@@ -18,6 +18,12 @@
         "APOLLO_APP_VARIANT": "development"
       }
     },
+    "development:simulator": {
+      "extends": "development:device",
+      "ios": {
+        "simulator": true
+      }
+    },
     "production:internal": {
       "extends": "production",
       "distribution": "internal"
