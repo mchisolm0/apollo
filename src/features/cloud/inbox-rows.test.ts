@@ -54,7 +54,7 @@ test('a settled card resurfaces when the producer re-upserts it with a newer rev
   const settled = updateSettledCards(new Map(), [digest, card('gone', 'update', { rev: 2 })], 'digest', true);
   assert.deepEqual([...settled], [['digest', 5]]);
   const input = { sessions: [], isSnoozed: () => false, settledCards: settled, collapsed: { ...collapsed, settled: false } };
-  assert.deepEqual(layout(buildInboxRows({ ...input, cards: [digest] })), ['[Settled 1]', 'card:digest']);
+  assert.deepEqual(layout(buildInboxRows({ ...input, cards: [digest] })), ['caughtUp:caught-up', '[Settled 1]', 'card:digest']);
   assert.deepEqual(layout(buildInboxRows({ ...input, cards: [{ ...digest, rev: 9 }] })), ['card:digest']);
   // Reopening removes it, and entries for cards that left the inbox are dropped.
   assert.deepEqual([...updateSettledCards(new Map([['digest', 5], ['gone', 2]]), [digest], 'digest', false)], []);
@@ -113,7 +113,7 @@ test('opening an update settles it and a link-only update opens its link; approv
   // Once settled on open, the update leaves the open list and waits in Settled.
   const update = card('p', 'update', { rev: 4 });
   const settled = updateSettledCards(new Map(), [update], 'p', cardOpenPlan(update).settle);
-  assert.deepEqual(layout(buildInboxRows({ sessions: [], cards: [update], settledCards: settled, isSnoozed: () => false, collapsed })), ['[Settled 1]']);
+  assert.deepEqual(layout(buildInboxRows({ sessions: [], cards: [update], settledCards: settled, isSnoozed: () => false, collapsed })), ['caughtUp:caught-up', '[Settled 1]']);
 });
 
 test('a detail screen settles an update once, the first time it sees it, so Reopen sticks', () => {
@@ -161,4 +161,16 @@ test('stale run state or a snoozed thread never hides a Hermes approval', () => 
   // Snoozed: the thread isn't on screen, so the card shows.
   const snoozed = buildInboxRows({ sessions: waiting, cards: [approval], runStateLive: true, isSnoozed: () => true, collapsed });
   assert.deepEqual(layout(snoozed), ['card:card:run_9:req_1', '[Snoozed 1]']);
+});
+
+test('until live data lands, sections show no count and nothing claims the inbox is empty', () => {
+  const input = { sessions: [session('old', { settled: true })], cards: [], isSnoozed: () => false, collapsed };
+  const cached = buildInboxRows({ ...input, fresh: false });
+  assert.deepEqual(cached.map((row) => row.kind === 'section' ? [row.title, row.count] : row.kind), [['Settled', undefined]]);
+  // Live and nothing open: a quiet "All caught up" sits above Settled.
+  assert.deepEqual(layout(buildInboxRows(input)), ['caughtUp:caught-up', '[Settled 1]']);
+  // Something open, a search or the attention filter: no caught-up row.
+  assert.deepEqual(layout(buildInboxRows({ ...input, sessions: [...input.sessions, session('open')] })), ['session:open', '[Settled 1]']);
+  assert.deepEqual(layout(buildInboxRows({ ...input, query: 'old' })), ['[Settled 1]', 'session:old']);
+  assert.deepEqual(layout(buildInboxRows({ sessions: [], cards: [], isSnoozed: () => false, collapsed })), []);
 });

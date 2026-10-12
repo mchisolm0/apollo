@@ -36,6 +36,8 @@ type Props = {
   settledCards?: SettledCards;
   /** Runs this phone knows are waiting for approval, to hide their duplicate Hermes cards. */
   pendingRunIds?: ReadonlySet<string>;
+  /** False until live sessions and cards have loaded; see `buildInboxRows`. */
+  fresh?: boolean;
   onSettleCard?: (card: InboxCard) => void;
   onReopenCard?: (card: InboxCard) => void;
 };
@@ -43,7 +45,7 @@ const noCards: readonly InboxCard[] = [];
 const ignore = () => {};
 
 /** A searchable thread inbox with persistent finish/reopen actions. */
-export function SessionList({ sessions, connection = 'connected', onSessionPress, onSettle, onReopen, onNewSession, onForked, refreshing, onRefresh, cards = noCards, onCardPress = ignore, onCardAction = ignore, onPick = ignore, settledCards = NO_SETTLED, pendingRunIds, onSettleCard, onReopenCard }: Props) {
+export function SessionList({ sessions, connection = 'connected', onSessionPress, onSettle, onReopen, onNewSession, onForked, refreshing, onRefresh, cards = noCards, onCardPress = ignore, onCardAction = ignore, onPick = ignore, settledCards = NO_SETTLED, pendingRunIds, fresh = true, onSettleCard, onReopenCard }: Props) {
   const styles = useThemedStyles(createStyles);
   const colors = useColors();
   const { fontScale } = useWindowDimensions();
@@ -57,7 +59,7 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
   const handleSnooze = useCallback((sessionId: string) => { void snooze(sessionId); }, [snooze]);
   const handleUnsnooze = useCallback((sessionId: string) => { void unsnooze(sessionId); }, [unsnooze]);
   const handleAutoSettle = useCallback((sessionId: string, enabled: boolean) => { void setAutoSettle(sessionId, enabled); }, [setAutoSettle]);
-  const rows = useMemo(() => buildInboxRows({ sessions, cards, settledCards, pendingRunIds, runStateLive: connection === 'connected', query, attentionOnly, collapsed, isSnoozed: (id) => isSessionSnoozed(snoozed, id) }), [sessions, cards, settledCards, pendingRunIds, connection, query, collapsed, attentionOnly, snoozed]);
+  const rows = useMemo(() => buildInboxRows({ sessions, cards, settledCards, pendingRunIds, runStateLive: connection === 'connected', fresh, query, attentionOnly, collapsed, isSnoozed: (id) => isSessionSnoozed(snoozed, id) }), [sessions, cards, settledCards, pendingRunIds, connection, fresh, query, collapsed, attentionOnly, snoozed]);
 
   return <KeyboardFrame key={fontScale}>
     <View style={styles.container}>
@@ -77,10 +79,11 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
         if (item.kind === 'briefing') return <BriefingCard card={item.card} onOpen={onCardPress} onPick={onPick} onAction={onCardAction} onSettle={onSettleCard} />;
         if (item.kind === 'card') return <CardRow card={item.card} settled={item.settled} swipe={settleAction(item.card, settledCards)} onPress={onCardPress} onAction={onCardAction} onSettle={onSettleCard} onReopen={onReopenCard} />;
         if (item.kind === 'session') return <SessionRow session={item.session} snoozed={isSessionSnoozed(snoozed, item.session.id)} onPress={onSessionPress} onSettle={onSettle} onReopen={onReopen} onAutoSettle={autoSettleLoaded ? handleAutoSettle : undefined} onSnooze={handleSnooze} onUnsnooze={handleUnsnooze} onForked={onForked} />;
+        if (item.kind === 'caughtUp') return <Text accessibilityRole="header" style={styles.caughtUp}>All caught up</Text>;
         const sectionId = item.id;
         const expanded = Boolean(query.trim()) || !collapsed[sectionId];
-        return <Pressable accessibilityRole="button" accessibilityLabel={`${item.title}, ${item.count}`} accessibilityState={{ expanded }} style={({ pressed }) => [styles.section, pressed && styles.pressed]} onPress={() => toggle(sectionId)}>
-          <Text style={styles.sectionText}>{item.title} ({item.count})</Text>
+        return <Pressable accessibilityRole="button" accessibilityLabel={item.count === undefined ? item.title : `${item.title}, ${item.count}`} accessibilityState={{ expanded }} style={({ pressed }) => [styles.section, pressed && styles.pressed]} onPress={() => toggle(sectionId)}>
+          <Text style={styles.sectionText}>{item.count === undefined ? item.title : `${item.title} (${item.count})`}</Text>
           <View style={styles.sectionRule} />
           <SymbolView name={{ ios: expanded ? 'chevron.up' : 'chevron.down', android: expanded ? 'expand_less' : 'expand_more', web: expanded ? 'expand_less' : 'expand_more' }} size={12} tintColor={colors.secondary} />
         </Pressable>;
@@ -190,5 +193,6 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   dock: { paddingHorizontal: 12, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 10 },
   dockCircle: { width: 44, height: 44, borderRadius: 8, backgroundColor: colors.surface },
   dockButton: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  caughtUp: { color: colors.secondary, fontSize: 15, paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 },
   empty: { padding: 20, paddingTop: 40, gap: 8 }, emptyTitle: { color: colors.primary, fontSize: 21, fontWeight: '600' }, emptyText: { color: colors.secondary, fontSize: 15, lineHeight: 22 },
 });

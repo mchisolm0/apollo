@@ -25,6 +25,8 @@ type CloudContextValue = {
   cards: readonly InboxCard[];
   /** False until the first snapshot or cached copy is in, so screens can tell "loading" from "gone". */
   ready: boolean;
+  /** True once a live snapshot replaced the cached cards. */
+  fresh: boolean;
   /** A response that could not be saved or that the server rejected. Connection trouble shows in `status` instead. */
   error?: string;
   dismissError(): void;
@@ -285,6 +287,7 @@ export function CloudProvider({ children }: PropsWithChildren) {
     credential,
     cards: inboxCards,
     ready: current?.ready ?? false,
+    fresh: current?.fresh ?? false,
     error: saveError ?? queue.error,
     dismissError,
     respond,

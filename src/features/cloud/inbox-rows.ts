@@ -28,7 +28,8 @@ export type CollapsibleSectionId = 'snoozed' | 'settled';
 
 export type InboxRow<S extends InboxRowSession = InboxRowSession> =
   | { kind: 'briefing'; id: string; card: InboxCard }
-  | { kind: 'section'; id: CollapsibleSectionId; title: string; count: number }
+  | { kind: 'section'; id: CollapsibleSectionId; title: string; count?: number }
+  | { kind: 'caughtUp'; id: 'caught-up' }
   | { kind: 'card'; id: string; card: InboxCard; settled: boolean }
   | { kind: 'session'; id: string; session: S };
 
@@ -110,13 +111,18 @@ export function parseSettledCards(value: unknown): SettledCards {
  * thread keeps that history. Search and the attention filter hide the morning card; the
  * attention filter also hides updates.
  */
-export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isSnoozed, settledCards = NO_SETTLED, pendingRunIds = NO_RUNS, runStateLive = false, query = '', attentionOnly = false, collapsed }: {
+export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isSnoozed, settledCards = NO_SETTLED, pendingRunIds = NO_RUNS, runStateLive = false, fresh = true, query = '', attentionOnly = false, collapsed }: {
   sessions: readonly S[];
   cards: readonly InboxCard[];
   /** Runs this phone knows are waiting for approval. */
   pendingRunIds?: ReadonlySet<string>;
   /** True while the agent is connected, so `pendingRunIds` and pending threads are current. */
   runStateLive?: boolean;
+  /**
+   * False while sessions or cards still come from cache. Section counts are left out and no
+   * "caught up" row is shown, so nothing on screen changes when the live data lands.
+   */
+  fresh?: boolean;
   isSnoozed: (sessionId: string) => boolean;
   settledCards?: SettledCards;
   query?: string;
@@ -155,10 +161,12 @@ export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isS
     ...threads.filter((session) => !session.pendingApproval).map(sessionRow),
   ];
   if (attentionOnly) return rows;
+  // Nothing open but something snoozed or settled: say so above those sections.
+  const nothingOpen = fresh && !search && rows.length === 0;
 
   const snoozed = inBucket('snoozed');
   if (snoozed.length) {
-    rows.push({ kind: 'section', id: 'snoozed', title: 'Snoozed', count: snoozed.length });
+    rows.push({ kind: 'section', id: 'snoozed', title: 'Snoozed', ...(fresh ? { count: snoozed.length } : {}) });
     if (expanded('snoozed')) rows.push(...snoozed.map(sessionRow));
   }
   const settled = [
@@ -166,8 +174,9 @@ export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isS
     ...shown.filter((card) => isCardSettled(card, settledCards) && matches(card.title, card.body)).map((card) => ({ at: cardTime(card), row: cardRow(true)(card) })),
   ].sort((a, b) => b.at - a.at);
   if (settled.length) {
-    rows.push({ kind: 'section', id: 'settled', title: 'Settled', count: settled.length });
+    rows.push({ kind: 'section', id: 'settled', title: 'Settled', ...(fresh ? { count: settled.length } : {}) });
     if (expanded('settled')) rows.push(...settled.map((entry) => entry.row));
   }
+  if (nothingOpen && rows.length) rows.unshift({ kind: 'caughtUp', id: 'caught-up' });
   return rows;
 }
