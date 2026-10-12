@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { HAS_MAIL_TOOLBAR } from '@/features/relay/mail-toolbar';
 import { useOutbox } from '@/lib/outbox-context';
 import { useIncomingShares } from '@/features/sharing';
@@ -29,6 +30,8 @@ export default function SessionsRoute() {
   const state = agent ? runtime[agent.id] : undefined;
   const inbox = useSessionInbox(agent?.id ?? '', state);
   const cloud = useCloud();
+  const runs = state?.runs;
+  const pendingRunIds = useMemo(() => new Set(Object.values(runs ?? {}).filter((run) => run.status === 'waiting_for_approval').map((run) => run.runId)), [runs]);
   if (loading) return <View style={styles.loading}><ActivityIndicator color={colors.primary} accessibilityLabel="Loading agents" /></View>;
   if (!agent) return <Redirect href="/connect" />;
   const connection = state?.status === 'connected' ? 'connected' : state?.status === 'revoked' ? 'revoked' : state?.status === 'connecting' ? 'connecting' : 'offline';
@@ -84,6 +87,7 @@ export default function SessionsRoute() {
       onCardAction={(card, action) => runAction(card, action, (cardId, actionId) => { void cloud.respond(cardId, { actionId }); }, () => { if (cardOpenPlan(card).settle) cloud.settle(card.id); })}
       onPick={(card, pick) => { void cloud.respond(card.id, { pick: pick.n, done: !pick.done }); }}
       settledCards={cloud.settled}
+      pendingRunIds={pendingRunIds}
       onSettleCard={(card) => cloud.settle(card.id)}
       onReopenCard={(card) => cloud.reopen(card.id)} />
   </SafeAreaView>;

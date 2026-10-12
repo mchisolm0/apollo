@@ -1,5 +1,6 @@
 import type { Card, CardResponse } from '../../../cloud/src/contract.ts';
 import type { InboxSession } from '../relay/session-inbox.ts';
+import { parseApolloLink } from './card-text.ts';
 
 /**
  * A card as the inbox shows it: queued responses applied on top of the server's copy.
@@ -37,6 +38,7 @@ const newestFirst = (field: 'createdAt' | 'updatedAt') => (a: Card, b: Card) => 
 /** Cards this phone settled: id -> the card's rev at the time. */
 export type SettledCards = ReadonlyMap<string, number>;
 export const NO_SETTLED: SettledCards = new Map();
+const NO_RUNS: ReadonlySet<string> = new Set();
 
 /**
  * A card leaves the open list once the server closes it, or while it still has the rev this
@@ -60,6 +62,13 @@ export function settleAction(card: Pick<Card, 'id' | 'state' | 'rev' | 'kind'>, 
  */
 export function cardOpenPlan(card: Pick<Card, 'kind' | 'url' | 'body'>): { target: 'link' | 'detail'; settle: boolean } {
   return { target: card.kind === 'update' && card.url && !card.body ? 'link' : 'detail', settle: card.kind === 'update' };
+}
+
+/** The thread and run a Hermes approval card belongs to: from its `apollo://session` url and its `<runId>:<requestId>` key. */
+export function hermesApprovalTarget(card: Pick<Card, 'key' | 'url'>): { sessionId?: string; runId?: string } {
+  const link = card.url ? parseApolloLink(card.url) : undefined;
+  const runId = card.key.includes(':') ? card.key.slice(0, card.key.indexOf(':')) : undefined;
+  return { ...(link?.kind === 'session' ? { sessionId: link.id } : {}), ...(runId ? { runId } : {}) };
 }
 
 /**
@@ -91,13 +100,23 @@ export function parseSettledCards(value: unknown): SettledCards {
  * that leave once handled, so they sit above ordinary threads: the open morning card, then
  * approval cards, threads waiting on approval, update cards newest first, the remaining
  * threads, and the collapsible Snoozed and Settled sections. Settled holds
- * settled threads and closed or locally settled cards, newest first. Cards from `hermes`
- * never get their own row because the thread row already stands for them. Search and the
- * attention filter hide the morning card; the attention filter also hides updates.
+ * settled threads and closed or locally settled cards, newest first.
+ *
+ * Hermes cards are approvals the connector posts for any run, including ones started on
+ * Discord, by cron or on another device. An open one shows as an approval unless the phone's
+ * run state is live (`runStateLive`, the agent is connected) and already shows that thread
+ * waiting in the open list or that run in `pendingRunIds`; then the thread row stands for it.
+ * Stale run state from an offline agent never hides a card, since its Approve can't land. Closed Hermes cards stay out of Settled; the
+ * thread keeps that history. Search and the attention filter hide the morning card; the
+ * attention filter also hides updates.
  */
-export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isSnoozed, settledCards = NO_SETTLED, query = '', attentionOnly = false, collapsed }: {
+export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isSnoozed, settledCards = NO_SETTLED, pendingRunIds = NO_RUNS, runStateLive = false, query = '', attentionOnly = false, collapsed }: {
   sessions: readonly S[];
   cards: readonly InboxCard[];
+  /** Runs this phone knows are waiting for approval. */
+  pendingRunIds?: ReadonlySet<string>;
+  /** True while the agent is connected, so `pendingRunIds` and pending threads are current. */
+  runStateLive?: boolean;
   isSnoozed: (sessionId: string) => boolean;
   settledCards?: SettledCards;
   query?: string;
@@ -107,9 +126,17 @@ export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isS
   const search = query.trim().toLocaleLowerCase();
   const matches = (...parts: (string | undefined)[]) => !search || parts.join(' ').toLocaleLowerCase().includes(search);
   const expanded = (id: CollapsibleSectionId) => Boolean(search) || !collapsed[id];
-  const shown = cards.filter((card) => card.source !== 'hermes');
-  const open = shown.filter((card) => !isCardSettled(card, settledCards));
   const bucket = (session: S) => session.settled ? 'settled' : isSnoozed(session.id) ? 'snoozed' : 'open';
+  // Only a waiting thread that is actually on screen (open, not snoozed) may stand for a card.
+  const waitingSessions = new Set(sessions.filter((session) => session.pendingApproval && bucket(session) === 'open').map((session) => session.id));
+  const knownLocally = (card: InboxCard) => {
+    if (!runStateLive) return false;
+    const { sessionId, runId } = hermesApprovalTarget(card);
+    return (sessionId !== undefined && waitingSessions.has(sessionId)) || (runId !== undefined && pendingRunIds.has(runId));
+  };
+  const shown = cards.filter((card) => card.source !== 'hermes');
+  const hermes = cards.filter((card) => card.source === 'hermes' && card.kind === 'approval' && !isCardSettled(card, settledCards) && !knownLocally(card));
+  const open = [...shown.filter((card) => !isCardSettled(card, settledCards)), ...hermes];
   const inBucket = (id: 'open' | 'snoozed' | 'settled') => sessions.filter((session) => bucket(session) === id && matches(session.title, session.preview));
 
   const briefing = search || attentionOnly ? undefined : open.filter((card) => card.kind === 'briefing').sort(newestFirst('createdAt'))[0];

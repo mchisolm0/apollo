@@ -10,6 +10,7 @@ import type { CardAction, CardMetric, CardPick } from '../../../cloud/src/contra
 import { acknowledgedLabel, actionLabel, CardButton, cardActions, CardGlyph, CardPicks, openCardLink, runAction } from './card-ui';
 import { useCloud } from './cloud-context';
 import { settleAction, settleOnFirstSight, type InboxCard } from './inbox-rows';
+import { parseApolloLink } from './card-text';
 import { SOURCE_STYLES } from './sources';
 
 /** "Mon 08:00" in the phone's locale. */
@@ -111,7 +112,7 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
     <View style={styles.bar}>
       {decide.length ? <>
         {decide.map((action: CardAction) => <CardButton key={action.id} wide action={action} onPress={() => runAction(card, action, respond)} />)}
-        {link ? <CardButton wide action={{ label: 'Open link' }} onPress={() => void openCardLink(link)} /> : null}
+        {link ? <CardButton wide action={{ label: parseApolloLink(link)?.kind === 'session' ? 'Open thread' : 'Open link' }} onPress={() => void openCardLink(link)} /> : null}
       </> : <>
         <CardButton wide action={{ label: copied ? 'Copied' : 'Copy' }} onPress={copy} />
         {link ? <CardButton wide action={{ label: 'Open' }} onPress={() => void openCardLink(link)} /> : null}

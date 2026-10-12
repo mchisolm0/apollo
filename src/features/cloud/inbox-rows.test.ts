@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { Card } from '../../../cloud/src/contract.ts';
-import { buildInboxRows, cardOpenPlan, settleAction, settleOnFirstSight, updateSettledCards, withPendingResponses, type InboxRowSession } from './inbox-rows.ts';
+import { buildInboxRows, cardOpenPlan, hermesApprovalTarget, settleAction, settleOnFirstSight, updateSettledCards, withPendingResponses, type InboxRowSession } from './inbox-rows.ts';
 
 function card(id: string, kind: Card['kind'], patch: Partial<Card> = {}): Card {
   return { id, rev: 1, source: 'preview', key: id, kind, title: id, push: 'alert', state: 'open', createdAt: '2026-10-09T08:00:00Z', updatedAt: '2026-10-09T08:00:00Z', ...patch };
@@ -29,7 +29,7 @@ test('cards come first: morning card, approvals, waiting threads, updates newest
     isSnoozed: (id) => id === 'later',
     collapsed,
   });
-  assert.deepEqual(layout(rows), ['briefing:morning', 'card:preview', 'session:waiting', 'card:jobs', 'card:build', 'session:thread', '[Snoozed 1]', '[Settled 1]']);
+  assert.deepEqual(layout(rows), ['briefing:morning', 'card:preview', 'card:hermes-approval', 'session:waiting', 'card:jobs', 'card:build', 'session:thread', '[Snoozed 1]', '[Settled 1]']);
 });
 
 test('Settled mixes settled threads with closed and locally settled cards, newest first', () => {
@@ -129,4 +129,36 @@ test('a detail screen settles an update once, the first time it sees it, so Reop
   assert.deepEqual(settleOnFirstSight(undefined, undefined, new Map()), { seen: undefined, settle: false });
   assert.deepEqual(settleOnFirstSight(undefined, update, new Map()), { seen: 'u', settle: true });
   assert.deepEqual(settleOnFirstSight(undefined, card('a', 'approval'), new Map()), { seen: 'a', settle: false });
+});
+
+test('a Hermes approval from a run this phone did not start shows as an approval', () => {
+  const approval = card('card:run_9:req_1', 'approval', { source: 'hermes', key: 'run_9:req_1', title: 'Allow git push?', url: 'apollo://session/session_9?agentId=mini&runId=run_9', actions: [{ id: 'approve', label: 'Approve', style: 'primary' }, { id: 'reject', label: 'Reject', style: 'destructive' }] });
+  const rows = buildInboxRows({ sessions: [session('session_9'), session('other')], cards: [approval], isSnoozed: () => false, collapsed });
+  assert.deepEqual(layout(rows), ['card:card:run_9:req_1', 'session:session_9', 'session:other']);
+  assert.deepEqual(hermesApprovalTarget(approval), { sessionId: 'session_9', runId: 'run_9' });
+  // The detail screen has the full command, the actions and "Open thread".
+  assert.deepEqual(cardOpenPlan(approval), { target: 'detail', settle: false });
+  // Resolved elsewhere: it leaves, and does not pile up in Settled.
+  assert.deepEqual(layout(buildInboxRows({ sessions: [], cards: [{ ...approval, state: 'resolved' }], isSnoozed: () => false, collapsed })), []);
+});
+
+test('a Hermes approval this phone already shows as a waiting thread is hidden behind the thread row', () => {
+  const approval = card('card:run_9:req_1', 'approval', { source: 'hermes', key: 'run_9:req_1', url: 'apollo://session/session_9?agentId=mini&runId=run_9' });
+  const waiting = [session('session_9', { pendingApproval: true, status: 'attention' })];
+  const bySession = buildInboxRows({ sessions: waiting, cards: [approval], runStateLive: true, isSnoozed: () => false, collapsed });
+  assert.deepEqual(layout(bySession), ['session:session_9']);
+  // Without a url, the run id from the key matches the phone's run state.
+  const byRun = buildInboxRows({ sessions: [], cards: [{ ...approval, url: undefined }], pendingRunIds: new Set(['run_9']), runStateLive: true, isSnoozed: () => false, collapsed });
+  assert.deepEqual(layout(byRun), []);
+});
+
+test('stale run state or a snoozed thread never hides a Hermes approval', () => {
+  const approval = card('card:run_9:req_1', 'approval', { source: 'hermes', key: 'run_9:req_1', url: 'apollo://session/session_9?agentId=mini&runId=run_9' });
+  const waiting = [session('session_9', { pendingApproval: true, status: 'attention' })];
+  // The agent is offline: its remembered runs and threads can't answer Hermes, so the card shows.
+  const offline = buildInboxRows({ sessions: waiting, cards: [approval], pendingRunIds: new Set(['run_9']), runStateLive: false, isSnoozed: () => false, collapsed });
+  assert.deepEqual(layout(offline), ['card:card:run_9:req_1', 'session:session_9']);
+  // Snoozed: the thread isn't on screen, so the card shows.
+  const snoozed = buildInboxRows({ sessions: waiting, cards: [approval], runStateLive: true, isSnoozed: () => true, collapsed });
+  assert.deepEqual(layout(snoozed), ['card:card:run_9:req_1', '[Snoozed 1]']);
 });
