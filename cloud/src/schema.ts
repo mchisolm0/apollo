@@ -19,8 +19,11 @@ const action = type({
   'url?': 'string.url',
   'repeat?': 'boolean',
   'input?': "'text'",
+  'prefill?': 'string <= 4000',
   '+': 'delete',
-}).narrow((a, ctx) => a.input === undefined || a.url === undefined || ctx.reject({ path: ['input'], description: 'not with url' }));
+}).narrow((a, ctx) =>
+  (a.input === undefined || a.url === undefined || ctx.reject({ path: ['input'], description: 'not with url' }))
+  && (a.prefill === undefined || a.input !== undefined || ctx.reject({ path: ['prefill'], description: 'only with input' })));
 
 const pick = type({
   n: 'number.integer >= 0',
@@ -55,7 +58,7 @@ export const CardInput = type({
   title: '0 < string <= 200',
   'body?': 'string <= 4000',
   'url?': 'string.url',
-  'actions?': action.array().atMostLength(6),
+  'actions?': action.array().atMostLength(8),
   'picks?': pick.array().atMostLength(3),
   'meta?': meta,
   'metrics?': metric.array().atMostLength(4),

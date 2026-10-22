@@ -33,6 +33,8 @@ export interface CardAction {
   repeat?: boolean;
   /** Asks for text before sending; the response carries it. Never set with `url`. */
   input?: 'text';
+  /** Text the composer starts with, e.g. the request being edited. Only with `input`. */
+  prefill?: string;
 }
 
 /** One figure in a card's metric row, e.g. { label: 'cold start', value: '377', unit: 'ms', delta: '−117', trend: 'good' }. */

@@ -86,4 +86,12 @@ describe('text', () => {
     const response = await call('/v1/cards', { token: producer, body: { ...request('request:6'), actions: [{ id: 'open', label: 'Open', url: 'https://example.com/', input: 'text' }] } });
     expect(response.status).toBe(400);
   });
+
+  it('can start with prefilled text, which only an input action carries', async () => {
+    const edit = { id: 'edit', label: 'Edit', input: 'text', repeat: true, prefill: 'Sync timers\n\nOn every phone' };
+    const card = await (await call('/v1/cards', { token: producer, body: { ...request('request:7'), actions: [edit] } })).json<Card>();
+    expect(card.actions).toEqual([edit]);
+    const bad = await call('/v1/cards', { token: producer, body: { ...request('request:8'), actions: [{ id: 'x', label: 'X', prefill: 'y' }] } });
+    expect(bad.status).toBe(400);
+  });
 });

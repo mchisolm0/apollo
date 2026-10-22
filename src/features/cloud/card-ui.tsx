@@ -281,7 +281,7 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   summary: { color: colors.secondary, fontWeight: '600', paddingTop: 8 },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingTop: 8 },
   button: { minHeight: 34, paddingHorizontal: 13, borderRadius: 10, borderWidth: 1, borderColor: colors.lineStrong, alignItems: 'center', justifyContent: 'center' },
-  buttonWide: { flex: 1, minHeight: 44 },
+  buttonWide: { flex: 1, flexBasis: '30%', minHeight: 44 },
   buttonPrimary: { backgroundColor: colors.primary, borderColor: colors.primary },
   buttonText: { color: colors.primary, fontWeight: '600' },
   buttonTextPrimary: { color: colors.background },

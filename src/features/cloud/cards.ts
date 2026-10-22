@@ -32,7 +32,8 @@ function parseAction(value: unknown): CardAction | undefined {
   const url = text(value.url);
   // A link action records nothing, so it never asks for text.
   const input = url ? undefined : oneOf(ACTION_INPUTS, value.input);
-  return { id, label, ...(style ? { style } : {}), ...(url ? { url } : {}), ...(value.repeat === true ? { repeat: true } : {}), ...(input ? { input } : {}) };
+  const prefill = input ? text(value.prefill) : undefined;
+  return { id, label, ...(style ? { style } : {}), ...(url ? { url } : {}), ...(value.repeat === true ? { repeat: true } : {}), ...(input ? { input } : {}), ...(prefill ? { prefill } : {}) };
 }
 
 function parsePick(value: unknown): CardPick | undefined {

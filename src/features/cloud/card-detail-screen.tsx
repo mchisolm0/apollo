@@ -59,7 +59,7 @@ function Composer({ action, onSend, onCancel }: { action: CardAction; onSend: (t
   const styles = useThemedStyles(createStyles);
   const colors = useColors();
   const { factor } = useTextScale();
-  const [draft, setDraft] = useState('');
+  const [draft, setDraft] = useState(action.prefill ?? '');
   const text = draft.trim();
   return <View style={styles.composer}>
     <TextInput
@@ -202,7 +202,7 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   metricUnit: { color: colors.muted, fontWeight: '500' },
   metricLabel: { color: colors.muted },
   metricDelta: { fontWeight: '600', fontVariant: ['tabular-nums'] },
-  bar: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
+  bar: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
   composer: { gap: 8, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
   composerInput: { color: colors.primary, minHeight: 88, maxHeight: 200, padding: 10, borderRadius: 10, borderWidth: 1, borderColor: colors.lineStrong, textAlignVertical: 'top' },
   composerBar: { flexDirection: 'row', gap: 8 },
