@@ -122,7 +122,8 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
       </View> : null}
       {card.metrics?.length ? <MetricRow metrics={card.metrics} /> : null}
       {card.picks?.length ? <CardPicks card={card} onPick={open ? pick : () => {}} /> : null}
-      {card.body ? <MessageContent text={card.body} copyable={false} /> : null}
+      {card.body && card.plainText ? <Text style={[styles.plainBody, { fontSize: 15 * factor, lineHeight: 22 * factor }]} selectable>{card.body}</Text>
+        : card.body ? <MessageContent text={card.body} copyable={false} /> : null}
     </ScrollView>
     <View style={styles.bar}>
       {decide.length ? <>
@@ -151,6 +152,7 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   metaLabel: { color: colors.muted, minWidth: 64 },
   metaValue: { color: colors.secondary, flex: 1, fontVariant: ['tabular-nums'] },
   linkValue: { color: colors.cyan, flex: 1 },
+  plainBody: { color: colors.primary },
   metrics: { flexDirection: 'row', borderTopWidth: StyleSheet.hairlineWidth, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: colors.line },
   metric: { flex: 1, minWidth: 0, paddingVertical: 10 },
   metricDivided: { paddingLeft: 12, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.line },

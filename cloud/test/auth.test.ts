@@ -119,8 +119,18 @@ describe('scoped tokens', () => {
     expect(await status({ ...approval('scoped:2') })).toBe(403);
     expect(await status(ready({ url: 'https://github.com/HashingSeedsEvil/x' }))).toBe(403);
     expect(await status(ready({ url: 'https://github.com/HashingSeeds/../elsewhere' }))).toBe(403);
-    expect(await status(ready({ body: 'Fixed, see [this](https://evil.example/login).' }))).toBe(403);
-    expect(await status(ready({ key: 'scoped:3', body: 'See [the run](https://github.com/HashingSeeds/scryve/actions/runs/1).' }))).toBe(201);
+    // Body links aren't checked: the card is plain text, so none can be opened.
+    const plain = await (await call('/v1/cards', { token: scoped, body: ready({ key: 'scoped:3', body: 'See [this](javascript:alert(1)) or //evil.example' }) })).json<Card>();
+    expect(plain.plainText).toBe(true);
+  });
+
+  it('keeps a card plain once a scoped token wrote it', async () => {
+    const byMini = await (await call('/v1/cards', { token: producer, body: ready({ key: 'scoped:5', body: '[run](https://example.test)' }) })).json<Card>();
+    expect(byMini.plainText).toBeUndefined();
+    const patched = await (await call(`/v1/cards/${byMini.id}`, { method: 'PATCH', token: scoped, body: { body: 'Publishing' } })).json<Card>();
+    expect(patched.plainText).toBe(true);
+    const again = await (await call('/v1/cards', { token: producer, body: ready({ key: 'scoped:5', body: 'Ready' }) })).json<Card>();
+    expect(again.plainText).toBe(true);
   });
 
   it('cannot patch or read another source', async () => {

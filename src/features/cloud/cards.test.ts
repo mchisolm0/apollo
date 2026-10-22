@@ -33,8 +33,8 @@ test('the stream never downgrades a card and removals during a fetch stick', () 
 
 test('card parsing keeps a phased card and its links, and drops a malformed progress', () => {
   const link = { id: 'earlier', title: 'Scryve #541 preview' };
-  const parsed = parseCard({ ...card('a', 1), phase: 'publishing', keepOpen: true, progress: { label: 'Fingerprint', step: 3, of: 7 }, replaces: link, replacedBy: { id: 'bad id!', title: 'x' } });
-  assert.deepEqual([parsed?.phase, parsed?.keepOpen, parsed?.progress, parsed?.replaces, parsed?.replacedBy], ['publishing', true, { label: 'Fingerprint', step: 3, of: 7 }, link, undefined]);
+  const parsed = parseCard({ ...card('a', 1), phase: 'publishing', keepOpen: true, progress: { label: 'Fingerprint', step: 3, of: 7 }, replaces: link, replacedBy: { id: 'bad id!', title: 'x' }, plainText: true });
+  assert.deepEqual([parsed?.phase, parsed?.keepOpen, parsed?.progress, parsed?.replaces, parsed?.replacedBy, parsed?.plainText], ['publishing', true, { label: 'Fingerprint', step: 3, of: 7 }, link, undefined, true]);
   assert.equal(parseCard({ ...card('a', 1), progress: { label: 'x', step: 8, of: 7 } })?.progress, undefined);
 });
 

@@ -110,6 +110,11 @@ export interface Card extends Omit<CardInput, 'push' | 'replaces'> {
   replaces?: CardLink;
   /** The card that superseded this one. */
   replacedBy?: CardLink;
+  /**
+   * Set once a scoped token writes the card, and never cleared: the app shows
+   * its body as plain text, so no link in it can be opened.
+   */
+  plainText?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -151,8 +156,9 @@ export type TokenRole = 'device' | 'producer' | 'connector';
 
 /**
  * Limits a producer token to one source, e.g. a CI secret that only drives
- * `preview` cards. It writes and reads only that source, and every link on its
- * cards must be canonical and start with one of `urls` (each ending in `/`).
+ * `preview` cards. It writes and reads only that source, its `url` and action
+ * links must be canonical and start with one of `urls` (each ending in `/`),
+ * and its cards' bodies show as plain text.
  */
 export interface TokenScope {
   source: Source;

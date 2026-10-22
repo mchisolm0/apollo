@@ -103,12 +103,13 @@ export function parseCard(value: unknown): Card | undefined {
   const keepOpen = value.keepOpen === true;
   const replaces = parseLink(value.replaces);
   const replacedBy = parseLink(value.replacedBy);
+  const plainText = value.plainText === true;
   return {
     id, rev, source, key, kind, title, state, push, createdAt, updatedAt,
     ...(body ? { body } : {}), ...(url ? { url } : {}), ...(expiresAt ? { expiresAt } : {}),
     ...(actions ? { actions } : {}), ...(picks ? { picks } : {}), ...(meta ? { meta } : {}), ...(metrics?.length ? { metrics } : {}), ...(resolution ? { resolution } : {}),
     ...(phase ? { phase } : {}), ...(progress ? { progress } : {}), ...(keepOpen ? { keepOpen } : {}),
-    ...(replaces ? { replaces } : {}), ...(replacedBy ? { replacedBy } : {}),
+    ...(replaces ? { replaces } : {}), ...(replacedBy ? { replacedBy } : {}), ...(plainText ? { plainText } : {}),
   };
 }
 

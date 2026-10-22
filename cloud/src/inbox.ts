@@ -177,15 +177,16 @@ export class Inbox extends DurableObject<Env> {
       const id = existing?.id ?? crypto.randomUUID();
       const earlier = replaces === undefined || replaces === input.key ? undefined : this.#cardBy('source = ? AND key = ?', input.source, replaces);
       const link = earlier ? { replaces: { id: earlier.id, title: earlier.title } } : existing?.replaces ? { replaces: existing.replaces } : {};
+      const plain = who.scope || existing?.plainText ? { plainText: true } : {};
       const rePush = existing !== undefined && fields.phase !== existing.phase;
       const card = existing
         // Producer fields are replaced; state, resolution and links stay, and push changes only with the phase.
         ? this.#commit({
-          ...fields, ...link, id, picks: keepDone(fields.picks, existing.picks),
+          ...fields, ...link, ...plain, id, picks: keepDone(fields.picks, existing.picks),
           push: rePush ? push ?? DEFAULT_PUSH[input.kind] : existing.push,
           state: existing.state, resolution: existing.resolution, replacedBy: existing.replacedBy, createdAt: existing.createdAt,
         })
-        : this.#commit({ ...fields, ...link, id, push: push ?? DEFAULT_PUSH[input.kind], state: 'open', createdAt: iso() });
+        : this.#commit({ ...fields, ...link, ...plain, id, push: push ?? DEFAULT_PUSH[input.kind], state: 'open', createdAt: iso() });
 
       // A new phase drops whatever the last one still owed, so an old alert can't retry after it.
       if (rePush) this.sql.exec(`DELETE FROM push_recipients WHERE card_id = ?`, id);
@@ -215,7 +216,7 @@ export class Inbox extends DurableObject<Env> {
       if (who.scope && card.source !== who.scope.source) return fail(403, 'out_of_scope', `this token only writes ${who.scope.source} cards`);
       // Only an open card changes state. Closing a closed card is a no-op.
       const { state, ...fields } = patch;
-      const next = { ...card, ...fields, state: card.state === 'open' && state ? state : card.state };
+      const next = { ...card, ...fields, ...(who.scope ? { plainText: true } : {}), state: card.state === 'open' && state ? state : card.state };
       if (JSON.stringify(next) === JSON.stringify(card)) return { card, changed: false };
       return { card: this.#commit(next), changed: true };
     });
@@ -628,21 +629,18 @@ function parseScope(column: string | null): { scope?: TokenScope } {
   return column === null ? {} : { scope: JSON.parse(column) };
 }
 
-// Scheme links anywhere in text, stopping where markdown or prose would end them.
-const TEXT_LINK = /[a-z][a-z0-9+.-]*:\/\/[^\s)\]>"'<]*/gi;
-
 /**
- * Every link a scoped token's card carries stays under the token's prefixes.
- * `url` and action URLs must also be canonical (what `new URL` prints), so a
- * path like `/HashingSeeds/../elsewhere` can't pass the prefix and then
- * resolve outside it. Links in the body or title only need the prefix.
+ * A scoped token's tappable links, `url` and action URLs, stay under its
+ * prefixes and must be canonical (what `new URL` prints), so a path like
+ * `/HashingSeeds/../elsewhere` can't pass the prefix and then resolve outside
+ * it. Links in the body aren't checked: the card is marked `plainText`, so
+ * none of them can be opened.
  */
 function linksAllowed(input: CardInput, prefixes: readonly string[]) {
-  const under = (link: string) => prefixes.some((prefix) => link.startsWith(prefix));
   const canonical = (link: string) => URL.canParse(link) && new URL(link).href === link;
-  const fields = [input.url, ...(input.actions ?? []).map((action) => action.url)].filter((link) => link !== undefined);
-  const inText = [input.title, input.body ?? ''].flatMap((text) => text.match(TEXT_LINK) ?? []);
-  return fields.every((link) => canonical(link) && under(link)) && inText.every(under);
+  return [input.url, ...(input.actions ?? []).map((action) => action.url)]
+    .filter((link) => link !== undefined)
+    .every((link) => canonical(link) && prefixes.some((prefix) => link.startsWith(prefix)));
 }
 
 /** A re-upserted pick keeps its done value when one with the same n and text existed. */

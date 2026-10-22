@@ -14,7 +14,9 @@ Every request carries `Authorization: Bearer <token>`. The Durable Object stores
 | `producer` | a machine or routine (`mini`, `nobara`) | post and patch cards, read events |
 | `connector` | the mini connector | everything `producer` can, plus mint `device` tokens |
 
-A producer token can be limited to one source (`TokenScope`), for a secret that lives somewhere less trusted, like a CI workflow. It writes and reads only that source's cards and events, and every link it puts on a card must start with one of its prefixes. `url` and action URLs must also be canonical, so `..` can't step outside a prefix. Anything else is `403 out_of_scope` or `403 link_not_allowed`.
+A producer token can be limited to one source (`TokenScope`), for a secret that lives somewhere less trusted, like a CI workflow. It writes and reads only that source's cards and events. Its `url` and action URLs must be canonical and start with one of its prefixes, so `..` can't step outside one. Anything else is `403 out_of_scope` or `403 link_not_allowed`. A card a scoped token writes is marked `plainText` for good, and the app shows its body without tappable links, so text from the producer (or from players, for feedback cards) can't carry one.
+
+Code older than token scopes ignores them, so revoke scoped tokens before rolling the Worker back past that change.
 
 The admin secret is a Worker secret. Only the token CLI (`cloud/cli`) uses it, through `/admin/*`, to create and revoke tokens. It never lives on a phone.
 
