@@ -67,7 +67,9 @@ const noContent: Reply<null> = { status: 204, body: null };
 const iso = (ms = Date.now()) => new Date(ms).toISOString();
 
 // Append-only. Each entry runs once, in order; the applied count lives in the
-// object's synchronous KV store.
+// object's synchronous KV store and only ever goes up, so code rolled back to
+// an older version never lowers it and a later deploy never re-runs a
+// migration (an ALTER would fail and break the object).
 const MIGRATIONS = [
   `
   CREATE TABLE tokens (
@@ -145,8 +147,10 @@ export class Inbox extends DurableObject<Env> {
     this.sql = ctx.storage.sql;
     ctx.storage.transactionSync(() => {
       const applied = ctx.storage.kv.get<number>('schemaVersion') ?? 0;
-      for (const migration of MIGRATIONS.slice(applied)) this.sql.exec(migration);
-      ctx.storage.kv.put('schemaVersion', MIGRATIONS.length);
+      if (applied < MIGRATIONS.length) {
+        for (const migration of MIGRATIONS.slice(applied)) this.sql.exec(migration);
+        ctx.storage.kv.put('schemaVersion', MIGRATIONS.length);
+      }
     });
     // Answered by the runtime without waking a hibernated object.
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
