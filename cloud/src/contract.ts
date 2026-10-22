@@ -3,7 +3,7 @@
 // producers in dotfiles all build against this file. It has no imports so
 // any of them can depend on it. See docs/cloud-inbox.md.
 
-export const SOURCES = ['morning', 'preview', 'fleet', 'digest', 'jobs', 'hermes'] as const;
+export const SOURCES = ['morning', 'preview', 'fleet', 'digest', 'jobs', 'hermes', 'feedback'] as const;
 export type Source = (typeof SOURCES)[number];
 
 /**
@@ -29,6 +29,10 @@ export interface CardAction {
   label: string;
   style?: 'primary' | 'default' | 'destructive';
   url?: string;
+  /** Can be used any number of times: each use records an event and never sets the card's resolution or closes it. */
+  repeat?: boolean;
+  /** Asks for text before sending; the response carries it. Never set with `url`. */
+  input?: 'text';
 }
 
 /** One figure in a card's metric row, e.g. { label: 'cold start', value: '377', unit: 'ms', delta: '−117', trend: 'good' }. */
@@ -129,8 +133,8 @@ export type CardPatch = Partial<Pick<CardInput, 'title' | 'body' | 'meta' | 'exp
  * `done` to the given value; it never toggles.
  */
 export type CardResponse =
-  | { actionId: string; pick?: never; done?: never }
-  | { pick: number; done: boolean; actionId?: never };
+  | { actionId: string; text?: string; pick?: never; done?: never }
+  | { pick: number; done: boolean; actionId?: never; text?: never };
 
 /** One row of the response log producers read from GET /v1/events. */
 export type InboxEvent = {
@@ -141,7 +145,7 @@ export type InboxEvent = {
   at: string;
   /** Token name of the device that responded. */
   by: string;
-} & ({ type: 'action'; actionId: string } | { type: 'pick'; pick: number; done: boolean });
+} & ({ type: 'action'; actionId: string; text?: string } | { type: 'pick'; pick: number; done: boolean });
 
 /** GET /v1/cards. `rev` is the inbox counter at the moment the snapshot was taken. */
 export interface CardSnapshot {

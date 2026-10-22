@@ -105,6 +105,14 @@ test('queued responses show right away: picks flip, an approval says so, a morni
   assert.equal(withPendingResponses([resolved], [{ cardId: 'morning', response: { actionId: 'keep' } }])[0].acknowledged, 'skip');
 });
 
+test('a queued repeat action shows as sending without answering the card', () => {
+  const feedback = card('f', 'approval', { source: 'feedback', actions: [{ id: 'reply', label: 'Reply', input: 'text', repeat: true }, { id: 'publish', label: 'Publish' }] });
+  const [sending] = withPendingResponses([feedback], [{ cardId: 'f', response: { actionId: 'reply', text: 'Thanks' } }]);
+  assert.equal(sending.sending, true);
+  assert.equal(sending.pendingAction, undefined);
+  assert.equal(withPendingResponses([feedback], [{ cardId: 'f', response: { actionId: 'publish' } }])[0].pendingAction, 'publish');
+});
+
 test('opening an update settles it and a link-only update opens its link; approvals and morning cards stay', () => {
   assert.deepEqual(cardOpenPlan(card('u', 'update', { body: 'Digest' })), { target: 'detail', settle: true });
   assert.deepEqual(cardOpenPlan(card('p', 'update', { url: 'scryve-preview://preview/pr-376' })), { target: 'link', settle: true });

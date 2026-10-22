@@ -73,3 +73,17 @@ test('metrics parse up to four valid figures and are absent when the producer se
   assert.equal(parseCard({ ...card('d', 2), metrics: [] })?.metrics, undefined);
   assert.equal(parseCard(card('d', 3))?.metrics, undefined);
 });
+
+test('actions keep repeat and text input, and a link action never asks for text', () => {
+  const parsed = parseCard({ ...card('f', 1), source: 'feedback', actions: [
+    { id: 'reply', label: 'Reply', input: 'text', repeat: true },
+    { id: 'open', label: 'Open', url: 'https://example.com/', input: 'text' },
+    { id: 'publish', label: 'Publish', repeat: 'yes', input: 'voice' },
+  ] });
+  assert.equal(parsed?.source, 'feedback');
+  assert.deepEqual(parsed?.actions, [
+    { id: 'reply', label: 'Reply', repeat: true, input: 'text' },
+    { id: 'open', label: 'Open', url: 'https://example.com/' },
+    { id: 'publish', label: 'Publish' },
+  ]);
+});

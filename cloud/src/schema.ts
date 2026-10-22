@@ -17,8 +17,10 @@ const action = type({
   label: '0 < string <= 80',
   'style?': "'primary' | 'default' | 'destructive'",
   'url?': 'string.url',
+  'repeat?': 'boolean',
+  'input?': "'text'",
   '+': 'delete',
-});
+}).narrow((a, ctx) => a.input === undefined || a.url === undefined || ctx.reject({ path: ['input'], description: 'not with url' }));
 
 const pick = type({
   n: 'number.integer >= 0',
@@ -76,7 +78,7 @@ export const CardPatch = type({
 });
 
 // The two variants are exact, so a body mixing actionId with pick is rejected.
-export const CardResponse = type({ actionId: '0 < string <= 64', '+': 'reject' }).or({
+export const CardResponse = type({ actionId: '0 < string <= 64', 'text?': '0 < string <= 4000', '+': 'reject' }).or({
   pick: 'number.integer >= 0',
   done: 'boolean',
   '+': 'reject',
