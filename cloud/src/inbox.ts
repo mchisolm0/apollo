@@ -24,6 +24,7 @@ import type {
   PushLevel,
   StreamMessage,
   TokenRole,
+  TokenScope,
 } from './contract';
 import { newToken, sha256Hex } from './crypto';
 import { sendPush } from './push';
@@ -34,9 +35,10 @@ export const TOKEN_HASH_HEADER = 'x-apollo-token-hash';
 export type Failure = { status: 400 | 401 | 403 | 404 | 409 | 422; body: ApiError };
 export type Reply<T> = { status: 200 | 201; body: T } | { status: 204; body: null } | Failure;
 
-export type TokenInfo = { id: string; role: TokenRole; name: string; createdAt: string };
+export type TokenInfo = { id: string; role: TokenRole; name: string; createdAt: string; scope?: TokenScope };
 
-type Principal = { id: string; role: TokenRole; name: string };
+type Principal = { id: string; role: TokenRole; name: string; scope?: TokenScope };
+type TokenRow = { id: string; role: TokenRole; name: string; scope: string | null };
 type CardRow = { data: string };
 type EventRow = { seq: number; data: string };
 type WithoutSeq<E> = E extends unknown ? Omit<E, 'seq'> : never;
@@ -135,6 +137,8 @@ const MIGRATIONS = [
   CREATE TABLE counters (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
   INSERT INTO counters (name, value) VALUES ('rev', 0);
   `,
+  // A TokenScope as JSON, or NULL for a token that may write any source.
+  `ALTER TABLE tokens ADD COLUMN scope TEXT;`,
 ];
 
 export class Inbox extends DurableObject<Env> {
@@ -154,28 +158,48 @@ export class Inbox extends DurableObject<Env> {
 
   // --- Cards -------------------------------------------------------------
 
-  /** Upserts by (source, key). Only a new card is pushed. */
+  /**
+   * Upserts by (source, key). A new card is pushed, and so is a re-upsert that
+   * changes its phase. With `replaces`, the earlier card settles in the same
+   * write and the two link.
+   */
   async upsertCard(tokenHash: string, input: CardInput): Promise<Reply<Card>> {
     const who = this.#authorize(tokenHash, PRODUCER);
     if ('status' in who) return who;
+    if (who.scope && input.source !== who.scope.source) return fail(403, 'out_of_scope', `this token only writes ${who.scope.source} cards`);
+    if (who.scope && !linksAllowed(input, who.scope.urls)) return fail(403, 'link_not_allowed', `a link on this card is outside the token's allowed prefixes`);
 
-    const { push, ...fields } = input;
-    const { card, created, changed, pushing } = this.ctx.storage.transactionSync(() => {
+    const { push, replaces, ...fields } = input;
+    const { card, superseded, created, changed, pushing } = this.ctx.storage.transactionSync(() => {
       const existing = this.#cardBy('source = ? AND key = ?', input.source, input.key);
-      if (existing && existing.state !== 'open') return { card: existing, created: false, changed: false, pushing: false };
-      if (existing) {
-        // Producer fields are replaced; state, resolution and push stay put.
-        const { id, push, state, resolution, createdAt } = existing;
-        const picks = keepDone(fields.picks, existing.picks);
-        return { card: this.#commit({ ...fields, picks, id, push, state, resolution, createdAt }), created: false, changed: true, pushing: false };
-      }
-      const card = this.#commit({ ...fields, id: crypto.randomUUID(), push: push ?? DEFAULT_PUSH[input.kind], state: 'open', createdAt: iso() });
-      const pushing = card.push !== 'none' && this.#addRecipients(card.id) > 0;
-      if (pushing) this.sql.exec(`UPDATE cards SET push_status = 'pending', push_next_at = ? WHERE id = ?`, Date.now(), card.id);
-      return { card, created: true, changed: true, pushing };
+      if (existing && existing.state !== 'open') return { card: existing, superseded: [], created: false, changed: false, pushing: false };
+
+      const id = existing?.id ?? crypto.randomUUID();
+      const earlier = replaces === undefined || replaces === input.key ? undefined : this.#cardBy('source = ? AND key = ?', input.source, replaces);
+      const link = earlier ? { replaces: { id: earlier.id, title: earlier.title } } : existing?.replaces ? { replaces: existing.replaces } : {};
+      const rePush = existing !== undefined && fields.phase !== existing.phase;
+      const card = existing
+        // Producer fields are replaced; state, resolution and links stay, and push changes only with the phase.
+        ? this.#commit({
+          ...fields, ...link, id, picks: keepDone(fields.picks, existing.picks),
+          push: rePush ? push ?? DEFAULT_PUSH[input.kind] : existing.push,
+          state: existing.state, resolution: existing.resolution, replacedBy: existing.replacedBy, createdAt: existing.createdAt,
+        })
+        : this.#commit({ ...fields, ...link, id, push: push ?? DEFAULT_PUSH[input.kind], state: 'open', createdAt: iso() });
+
+      // A new phase drops whatever the last one still owed, so an old alert can't retry after it.
+      if (rePush) this.sql.exec(`DELETE FROM push_recipients WHERE card_id = ?`, id);
+      const pushing = (!existing || rePush) && card.push !== 'none' && this.#addRecipients(card.id) > 0;
+      if (pushing) this.sql.exec(`UPDATE cards SET push_status = 'pending', push_attempts = 0, push_next_at = ? WHERE id = ?`, Date.now(), card.id);
+      else if (rePush) this.sql.exec(`UPDATE cards SET push_status = 'none', push_next_at = NULL WHERE id = ?`, id);
+
+      const superseded = earlier && (earlier.state === 'open' || earlier.replacedBy?.id !== id)
+        ? [this.#commit({ ...earlier, state: earlier.state === 'open' ? 'settled' : earlier.state, replacedBy: { id, title: card.title } })]
+        : [];
+      return { card, superseded, created: !existing, changed: true, pushing };
     });
 
-    if (changed) this.#broadcast({ type: 'card', card });
+    if (changed) this.#broadcast(...[card, ...superseded].map((c): StreamMessage => ({ type: 'card', card: c })));
     if (pushing) this.ctx.waitUntil(this.#deliverDuePushes());
     await this.#scheduleAlarm();
     return ok(card, created ? 201 : 200);
@@ -188,6 +212,7 @@ export class Inbox extends DurableObject<Env> {
     const result = this.ctx.storage.transactionSync(() => {
       const card = this.#cardBy('id = ?', id);
       if (!card) return fail(404, 'not_found', 'card not found');
+      if (who.scope && card.source !== who.scope.source) return fail(403, 'out_of_scope', `this token only writes ${who.scope.source} cards`);
       // Only an open card changes state. Closing a closed card is a no-op.
       const { state, ...fields } = patch;
       const next = { ...card, ...fields, state: card.state === 'open' && state ? state : card.state };
@@ -221,9 +246,10 @@ export class Inbox extends DurableObject<Env> {
 
   /**
    * Records a phone's answer. The first action sets the card's resolution:
-   * approvals and updates resolve and later actions get 409; a briefing stays
-   * open so picks keep working, and later actions return it unchanged. A
-   * replayed Idempotency-Key returns the stored response.
+   * approvals and updates resolve and later actions get 409; a briefing (so
+   * picks keep working) or a `keepOpen` card (so its producer can move it on)
+   * stays open, and later actions return it unchanged. A replayed
+   * Idempotency-Key returns the stored response.
    */
   async respond(tokenHash: string, id: string, response: CardResponse, idempotency: { key: string; bodyHash: string }): Promise<Reply<Card>> {
     const who = this.#authorize(tokenHash, DEVICE);
@@ -257,12 +283,12 @@ export class Inbox extends DurableObject<Env> {
         const action = card.actions?.find((a) => a.id === response.actionId && !a.url);
         if (!action) return fail(400, 'unknown_action', 'card has no such recordable action');
         const resolution = { actionId: action.id, by: who.name, at };
-        if (card.kind === 'briefing' && card.resolution) {
+        const staysOpen = card.kind === 'briefing' || card.keepOpen === true;
+        if (staysOpen && card.resolution) {
           // The first answer wins. Later ones return the card as it is.
           next = card;
         } else {
-          // A briefing stays open so picks keep working.
-          next = this.#commit({ ...card, state: card.kind === 'briefing' ? 'open' : 'resolved', resolution });
+          next = this.#commit({ ...card, state: staysOpen ? 'open' : 'resolved', resolution });
           event = { ...base, type: 'action', actionId: action.id };
         }
       } else {
@@ -299,9 +325,11 @@ export class Inbox extends DurableObject<Env> {
     const who = this.#authorize(tokenHash, PRODUCER);
     if ('status' in who) return who;
 
+    if (who.scope && query.source !== undefined && query.source !== who.scope.source) return fail(403, 'out_of_scope', `this token only reads ${who.scope.source} events`);
     const after = query.after ?? 0;
-    const rows = query.source
-      ? this.sql.exec<EventRow>('SELECT seq, data FROM events WHERE seq > ? AND source = ? ORDER BY seq LIMIT ?', after, query.source, EVENTS_PAGE)
+    const source = who.scope?.source ?? query.source;
+    const rows = source
+      ? this.sql.exec<EventRow>('SELECT seq, data FROM events WHERE seq > ? AND source = ? ORDER BY seq LIMIT ?', after, source, EVENTS_PAGE)
       : this.sql.exec<EventRow>('SELECT seq, data FROM events WHERE seq > ? ORDER BY seq LIMIT ?', after, EVENTS_PAGE);
     return ok(rows.toArray().map((row): InboxEvent => ({ seq: row.seq, ...JSON.parse(row.data) })));
   }
@@ -362,14 +390,17 @@ export class Inbox extends DurableObject<Env> {
 
   // --- Admin (the Worker checks ADMIN_SECRET before calling these) --------
 
-  async createToken(request: { role: TokenRole; name: string }): Promise<TokenInfo & { token: string }> {
+  async createToken(request: { role: TokenRole; name: string; scope?: TokenScope }): Promise<TokenInfo & { token: string }> {
     const token = newToken();
-    const info = this.#insertToken(await sha256Hex(token), request.role, request.name);
+    const info = this.#insertToken(await sha256Hex(token), request.role, request.name, request.scope);
     return { ...info, token };
   }
 
   listTokens(): TokenInfo[] {
-    return this.sql.exec<TokenInfo>('SELECT id, role, name, created_at AS createdAt FROM tokens ORDER BY created_at').toArray();
+    return this.sql
+      .exec<TokenRow & { createdAt: string }>('SELECT id, role, name, scope, created_at AS createdAt FROM tokens ORDER BY created_at')
+      .toArray()
+      .map(({ scope, ...info }) => ({ ...info, ...parseScope(scope) }));
   }
 
   revokeToken(id: string): boolean {
@@ -426,15 +457,19 @@ export class Inbox extends DurableObject<Env> {
   // --- Internals ---------------------------------------------------------
 
   #authorize(tokenHash: string, roles: readonly TokenRole[]): Principal | Failure {
-    const [token] = this.sql.exec<Principal>('SELECT id, role, name FROM tokens WHERE hash = ?', tokenHash).toArray();
+    const [token] = this.sql.exec<TokenRow>('SELECT id, role, name, scope FROM tokens WHERE hash = ?', tokenHash).toArray();
     if (!token) return fail(401, 'unauthorized', 'token is missing, invalid or revoked');
     if (!roles.includes(token.role)) return fail(403, 'forbidden', `needs a ${roles.join(' or ')} token`);
-    return token;
+    const { scope, ...principal } = token;
+    return { ...principal, ...parseScope(scope) };
   }
 
-  #insertToken(hash: string, role: TokenRole, name: string): TokenInfo {
-    const info: TokenInfo = { id: crypto.randomUUID(), role, name, createdAt: iso() };
-    this.sql.exec('INSERT INTO tokens (id, hash, role, name, created_at) VALUES (?, ?, ?, ?, ?)', info.id, hash, role, name, info.createdAt);
+  #insertToken(hash: string, role: TokenRole, name: string, scope?: TokenScope): TokenInfo {
+    const info: TokenInfo = { id: crypto.randomUUID(), role, name, createdAt: iso(), ...(scope ? { scope } : {}) };
+    this.sql.exec(
+      'INSERT INTO tokens (id, hash, role, name, scope, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      info.id, hash, role, name, scope ? JSON.stringify(scope) : null, info.createdAt,
+    );
     return info;
   }
 
@@ -586,6 +621,28 @@ export class Inbox extends DurableObject<Env> {
 
 function parseCard(row: CardRow): Card {
   return JSON.parse(row.data);
+}
+
+/** `{ scope }` for a scoped token's stored column, `{}` for an unscoped one. */
+function parseScope(column: string | null): { scope?: TokenScope } {
+  return column === null ? {} : { scope: JSON.parse(column) };
+}
+
+// Scheme links anywhere in text, stopping where markdown or prose would end them.
+const TEXT_LINK = /[a-z][a-z0-9+.-]*:\/\/[^\s)\]>"'<]*/gi;
+
+/**
+ * Every link a scoped token's card carries stays under the token's prefixes.
+ * `url` and action URLs must also be canonical (what `new URL` prints), so a
+ * path like `/HashingSeeds/../elsewhere` can't pass the prefix and then
+ * resolve outside it. Links in the body or title only need the prefix.
+ */
+function linksAllowed(input: CardInput, prefixes: readonly string[]) {
+  const under = (link: string) => prefixes.some((prefix) => link.startsWith(prefix));
+  const canonical = (link: string) => URL.canParse(link) && new URL(link).href === link;
+  const fields = [input.url, ...(input.actions ?? []).map((action) => action.url)].filter((link) => link !== undefined);
+  const inText = [input.title, input.body ?? ''].flatMap((text) => text.match(TEXT_LINK) ?? []);
+  return fields.every((link) => canonical(link) && under(link)) && inText.every(under);
 }
 
 /** A re-upserted pick keeps its done value when one with the same n and text existed. */

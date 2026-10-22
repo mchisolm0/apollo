@@ -14,6 +14,8 @@ Every request carries `Authorization: Bearer <token>`. The Durable Object stores
 | `producer` | a machine or routine (`mini`, `nobara`) | post and patch cards, read events |
 | `connector` | the mini connector | everything `producer` can, plus mint `device` tokens |
 
+A producer token can be limited to one source (`TokenScope`), for a secret that lives somewhere less trusted, like a CI workflow. It writes and reads only that source's cards and events, and every link it puts on a card must start with one of its prefixes. `url` and action URLs must also be canonical, so `..` can't step outside a prefix. Anything else is `403 out_of_scope` or `403 link_not_allowed`.
+
 The admin secret is a Worker secret. Only the token CLI (`cloud/cli`) uses it, through `/admin/*`, to create and revoke tokens. It never lives on a phone.
 
 ## Endpoints
@@ -32,19 +34,21 @@ Errors are `ApiError` (`{ error: { code, message } }`) with a matching HTTP stat
 | `DELETE` | `/v1/devices/self` | device | → 204. Stops push to this device. |
 | `POST` | `/v1/device-tokens` | connector | `DeviceTokenRequest` → `DeviceTokenResponse`. Revokes any earlier token with that name. |
 | `DELETE` | `/v1/device-tokens/:name` | connector | → 204. Called when the connector revokes a phone. |
-| `POST` | `/admin/tokens` | admin secret | `{ role, name }` → `{ id, token, role, name }`. The only time the raw token is shown. |
-| `GET` | `/admin/tokens` | admin secret | → `{ id, role, name, createdAt }[]`. |
+| `POST` | `/admin/tokens` | admin secret | `{ role, name, scope? }` → `{ id, token, role, name, scope? }`. The only time the raw token is shown. |
+| `GET` | `/admin/tokens` | admin secret | → `{ id, role, name, createdAt, scope? }[]`. |
 | `DELETE` | `/admin/tokens/:id` | admin secret | → 204. |
 | `GET` | `/v1/health` | none | Liveness. |
 
 ## Rules
 
 - **One writer.** The Durable Object handles one request at a time, so every check below happens in the same transaction as the write it guards.
-- **Responding.** Only open cards accept responses; anything else gets `409 card_closed`. On approval and update cards an action resolves the card and appends one `action` event; the first response wins. On a briefing card the first action sets `resolution` and appends one `action` event, but the card stays `open` so picks keep working; any later action returns the card unchanged and appends nothing. Producers settle a briefing with `PATCH` when the next one replaces it. A pick sets `done` and appends one `pick` event; it never toggles.
+- **Responding.** Only open cards accept responses; anything else gets `409 card_closed`. On approval and update cards an action resolves the card and appends one `action` event; the first response wins. On a briefing card, or any card posted with `keepOpen`, the first action sets `resolution` and appends one `action` event, but the card stays `open` (so picks keep working, or so the producer can move it to its next phase); any later action returns the card unchanged and appends nothing. Producers settle a briefing with `PATCH` when the next one replaces it. A pick sets `done` and appends one `pick` event; it never toggles.
 - **Idempotency.** `Idempotency-Key` is scoped to the token and kept for 24 hours alongside the event it produced. A replay returns the stored response and appends nothing. Reusing a key with a different body is `422 idempotency_mismatch`.
-- **Upserts.** An upsert never changes `state`, `resolution` or push status. A closed card stays closed and is returned as is. For an open card the producer's fields are replaced, so a field left out of a re-upsert (`metrics` included) is cleared. A pick keeps its `done` value when a pick with the same `n` and `text` existed.
+- **Upserts.** An upsert never changes `state` or `resolution`. A closed card stays closed and is returned as is. For an open card the producer's fields are replaced, so a field left out of a re-upsert (`metrics` included) is cleared. A pick keeps its `done` value when a pick with the same `n` and `text` existed.
 - **Events.** `seq` increases across the whole inbox and is never reused, even after retention deletes old events.
-- **Push.** A card is pushed once. Delivery state is stored on the card, and the object's alarm retries a failed Expo send up to 5 times over 10 minutes. Upserts never trigger another push.
+- **Phases.** A card can carry a `phase` (e.g. `waiting`, `publishing`, `ready`) and `progress` (`{ label, step, of }`). A re-upsert that changes `phase` takes the `push` level it sends (or the kind's default) and pushes again; anything the previous phase still owed is dropped. A re-upsert with the same phase never pushes.
+- **Replacing.** A card posted with `replaces: <key>` settles the open card with that key in the same source, in the same write. The new card gets `replaces: { id, title }` and the old one `replacedBy: { id, title }`, so the phone can link them. A key with no card is ignored. Re-upserts keep the link.
+- **Push.** A card is pushed when it is created and again on each phase change. Delivery state is stored on the card, and the object's alarm retries a failed Expo send up to 5 times over 10 minutes.
 - **Reconciling.** Every card write bumps the inbox-wide `rev` counter. The phone opens the stream first, then does a full `GET /v1/cards` on launch, on foreground and after the stream reconnects. When merging, a card with a higher `rev` always wins, whether it came from the stream or the snapshot. A local card missing from the snapshot is dropped if its `rev` is at or below the snapshot's `rev`.
 - **Revocation.** Deleting a device token also closes its open WebSockets, deletes its push registrations and drops its pending pushes, all in one step.
 

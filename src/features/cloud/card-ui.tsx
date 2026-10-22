@@ -7,7 +7,7 @@ import Swipeable, { type SwipeableMethods } from 'react-native-gesture-handler/R
 import { useColors, useTextScale, useThemedStyles, type RelayPalette } from '@/features/relay/relay-ui';
 import { dateLabel } from '@/features/relay/session-inbox';
 
-import type { Card, CardAction, CardPick, Source } from '../../../cloud/src/contract';
+import type { Card, CardAction, CardPick, CardProgress, Source } from '../../../cloud/src/contract';
 import { isOpenableUrl, parseApolloLink, previewLine } from './card-text';
 import type { InboxCard } from './inbox-rows';
 import { glyphColors, SOURCE_STYLES } from './sources';
@@ -94,6 +94,20 @@ export function CardButton({ action, onPress, label, wide = false }: { action: P
   >
     <Text numberOfLines={1} style={[styles.buttonText, primary && styles.buttonTextPrimary, action.style === 'destructive' && styles.destructive, { fontSize: 15 * factor }]}>{action.label}</Text>
   </Pressable>;
+}
+
+/** "Fingerprint  3/7" over a thin bar, for a card whose producer reports progress. */
+export function CardProgressBar({ progress }: { progress: CardProgress }) {
+  const styles = useThemedStyles(createStyles);
+  const { factor } = useTextScale();
+  const { label, step, of } = progress;
+  return <View accessible accessibilityRole="progressbar" accessibilityLabel={label} accessibilityValue={{ min: 0, max: of, now: step }} style={styles.progress}>
+    <View style={styles.progressLine}>
+      <Text numberOfLines={1} style={[styles.secondary, styles.progressLabel, { fontSize: 13 * factor, lineHeight: 18 * factor }]}>{label}</Text>
+      <Text style={[styles.status, styles.tabular, { fontSize: 13 * factor, lineHeight: 18 * factor }]}>{step}/{of}</Text>
+    </View>
+    <View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${(step / of) * 100}%` }]} /></View>
+  </View>;
 }
 
 type SwipeAction = 'settle' | 'reopen';
@@ -203,9 +217,11 @@ export const CardRow = memo(function CardRow({ card, settled, swipe, onPress, on
   const approval = card.kind === 'approval' && !settled;
   const source = SOURCE_STYLES[card.source].label;
   const preview = previewLine(card.body);
-  const actions = approval && !card.pendingAction ? cardActions(card).filter((action) => !action.url) : [];
-  const status = card.pendingAction ? actionLabel(card, card.pendingAction) : cardAge(card);
-  const statusColor = card.pendingAction === 'approve' ? colors.green : card.pendingAction === 'reject' ? colors.red : approval ? colors.amber : colors.muted;
+  // A keepOpen card stays open once answered, so its answer stands in for the buttons.
+  const answer = card.pendingAction ?? (card.state === 'open' ? card.resolution?.actionId : undefined);
+  const actions = approval && !answer ? cardActions(card).filter((action) => !action.url) : [];
+  const status = answer ? actionLabel(card, answer) : cardAge(card);
+  const statusColor = answer === 'approve' ? colors.green : answer === 'reject' ? colors.red : approval ? colors.amber : colors.muted;
   // Actions are siblings of the row button, not children, so VoiceOver can reach them on their own.
   const run = (action: SwipeAction) => (action === 'settle' ? onSettle : onReopen)?.(card);
   const available = swipe && (swipe === 'settle' ? onSettle : onReopen) ? swipe : undefined;
@@ -214,7 +230,7 @@ export const CardRow = memo(function CardRow({ card, settled, swipe, onPress, on
       <Pressable
         {...swipeAccessibility(available, run)}
         accessibilityRole="button"
-        accessibilityLabel={`${source}: ${card.title}${card.pendingAction ? `, ${actionLabel(card, card.pendingAction).toLocaleLowerCase()}, sending` : approval ? ', needs you' : ''}${settled ? ', settled' : ''}`}
+        accessibilityLabel={`${source}: ${card.title}${answer ? `, ${actionLabel(card, answer).toLocaleLowerCase()}${card.pendingAction ? ', sending' : ''}` : approval ? ', needs you' : ''}${settled ? ', settled' : ''}`}
         onPress={() => onPress(card)}
         style={({ pressed }) => [styles.row, pressed && styles.pressed]}
       >
@@ -226,6 +242,7 @@ export const CardRow = memo(function CardRow({ card, settled, swipe, onPress, on
           </View>
           {settled ? null : approval ? (preview ? <Text numberOfLines={1} style={[styles.secondary, { fontSize: 15 * factor, lineHeight: 20 * factor }]}>{preview}</Text> : null)
             : <Text numberOfLines={1} style={[styles.secondary, { fontSize: 15 * factor, lineHeight: 20 * factor }]}><Text style={[styles.source, { fontSize: 13 * factor }]}>{source}  </Text>{preview ?? ''}</Text>}
+          {card.progress && !settled ? <CardProgressBar progress={card.progress} /> : null}
         </View>
       </Pressable>
       {actions.length ? <View style={[styles.actions, styles.rowActions]}>{actions.map((action) => <CardButton key={action.id} action={action} label={`${action.label} ${card.title}`} onPress={() => onAction(card, action)} />)}</View> : null}
@@ -252,6 +269,12 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   title: { color: colors.primary, fontWeight: '500', flex: 1, minWidth: 0 },
   quiet: { color: colors.muted, fontWeight: '400' },
   status: { color: colors.muted },
+  tabular: { fontVariant: ['tabular-nums'] },
+  progress: { gap: 4, paddingTop: 4 },
+  progressLine: { flexDirection: 'row', gap: 8 },
+  progressLabel: { flex: 1, minWidth: 0 },
+  progressTrack: { height: 3, borderRadius: 1.5, backgroundColor: colors.line, overflow: 'hidden' },
+  progressFill: { height: 3, backgroundColor: colors.cyan },
   secondary: { color: colors.secondary },
   source: { color: colors.muted, fontWeight: '600' },
   metaLabel: { color: colors.muted, fontWeight: '600' },

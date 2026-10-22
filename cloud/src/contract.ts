@@ -47,6 +47,19 @@ export interface CardPick {
   done: boolean;
 }
 
+/** How far along a card's work is, e.g. { label: 'Fingerprint', step: 3, of: 7 }. */
+export interface CardProgress {
+  label: string;
+  step: number;
+  of: number;
+}
+
+/** Another card, as it was when the two were linked. */
+export interface CardLink {
+  id: string;
+  title: string;
+}
+
 /** What a producer sends. Upserts by (source, key). */
 export interface CardInput {
   source: Source;
@@ -63,20 +76,40 @@ export interface CardInput {
   meta?: Record<string, string>;
   /** At most 4, shown as one row. Replaced on upsert like the other producer fields. */
   metrics?: CardMetric[];
-  /** Defaults: approval and briefing alert, update passive. Re-upserts never re-push. */
+  /**
+   * Defaults: approval and briefing alert, update passive. A re-upsert pushes
+   * again only when it changes `phase`, at the level it sends.
+   */
   push?: PushLevel;
+  /**
+   * Where the card's work stands, e.g. `waiting`, `publishing`, `ready`. The
+   * card is pushed when created and each time a re-upsert changes this.
+   */
+  phase?: string;
+  progress?: CardProgress;
+  /**
+   * An action records the response but leaves the card open, so its producer
+   * can carry it to the next phase. Briefings always behave this way.
+   */
+  keepOpen?: boolean;
+  /** Key of an earlier card from the same source that this one supersedes. It settles, and the two link. */
+  replaces?: string;
   /** ISO time after which the card settles on its own. */
   expiresAt?: string;
 }
 
-export interface Card extends Omit<CardInput, 'push'> {
+export interface Card extends Omit<CardInput, 'push' | 'replaces'> {
   id: string;
   /** Inbox-wide counter bumped on every write to any card. Higher wins on the phone. */
   rev: number;
   push: PushLevel;
   state: CardState;
-  /** The first action taken. A briefing keeps state `open` after it so picks still work. */
+  /** The first action taken. Briefings and `keepOpen` cards stay `open` after it. */
   resolution?: { actionId: string; by: string; at: string };
+  /** The card this one superseded. */
+  replaces?: CardLink;
+  /** The card that superseded this one. */
+  replacedBy?: CardLink;
   createdAt: string;
   updatedAt: string;
 }
@@ -115,6 +148,16 @@ export interface CardSnapshot {
 export type StreamMessage = { type: 'card'; card: Card } | { type: 'remove'; id: string };
 
 export type TokenRole = 'device' | 'producer' | 'connector';
+
+/**
+ * Limits a producer token to one source, e.g. a CI secret that only drives
+ * `preview` cards. It writes and reads only that source, and every link on its
+ * cards must be canonical and start with one of `urls` (each ending in `/`).
+ */
+export interface TokenScope {
+  source: Source;
+  urls: string[];
+}
 
 /** POST /v1/device-tokens. `name` is the connector's device id; minting again for it revokes the old token. */
 export interface DeviceTokenRequest {
