@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createTranscriptProjector, type TranscriptActivityRow, type TranscriptRow } from './transcript.ts';
+import { createTranscriptProjector, stepSummary, type TranscriptActivityRow, type TranscriptRow } from './transcript.ts';
 import type { HermesMessage, HermesRunEvent } from '../../lib/types.ts';
 
 const message = (value: Partial<HermesMessage> & Pick<HermesMessage, 'role'>): HermesMessage => value;
@@ -12,6 +12,87 @@ function activityOf(rows: readonly TranscriptRow[]): TranscriptActivityRow {
   if (!row || row.kind !== 'activity') assert.fail('expected an activity row');
   return row;
 }
+
+test('thought summaries remove inline markdown while tool targets stay literal', () => {
+  assert.equal(stepSummary({ id: 't', kind: 'thought', text: '**Planning dotfiles inspection** Use *care* and `ls -a`.' }), 'Planning dotfiles inspection Use care and ls -a.');
+  assert.equal(stepSummary({ id: 't', kind: 'thought', text: '__Review__ _local_ `file_name.ts`' }), 'Review local file_name.ts');
+  assert.equal(stepSummary({ id: 't', kind: 'tool', name: 'terminal', input: 'ls **/*.ts', output: '', status: 'complete' }), 'ls **/*.ts');
+});
+
+test('thoughts starting with fenced code keep a readable summary and remain expandable', () => {
+  assert.equal(stepSummary({ id: 't', kind: 'thought', text: '```ts\nconst x = 1;\n```\n**Inspect the result.**' }), 'Inspect the result.');
+});
+
+test('thought summaries keep markers inside code spans and show code-only thoughts without fences', () => {
+  assert.equal(stepSummary({ id: 't', kind: 'thought', text: 'Check `__init__.py` and `**/*.ts`' }), 'Check __init__.py and **/*.ts');
+  assert.equal(stepSummary({ id: 't', kind: 'thought', text: '```ts\nconst x = 1;\n```' }), 'const x = 1;');
+});
+
+test('an assistant failed_turn notice stays inside its failed turn', () => {
+  const rows = createTranscriptProjector()({
+    history: [
+      message({ id: 'u1', role: 'user', content: 'Run the tests' }),
+      message({ id: 'a1', role: 'assistant', toolCalls: [{ id: 'call-1', type: 'function', function: { name: 'terminal', arguments: '{"command":"pnpm test"}' } }] }),
+      message({ id: 't1', role: 'tool', toolName: 'terminal', toolCallId: 'call-1', content: 'ok' }),
+      message({ id: 'a2', role: 'assistant', content: 'The turn failed.', displayKind: 'failed_turn' }),
+    ],
+    events: [], runStatus: 'failed', running: false,
+  });
+  assert.deepEqual(rows.map((row) => row.kind), ['user', 'activity', 'assistant']);
+  assert.equal(activityOf(rows).status, 'failed');
+});
+
+test('drops hidden Hermes nudges and labels legacy system notes as system', () => {
+  const rows = createTranscriptProjector()({
+    history: [
+      message({ id: 'u1', role: 'user', content: 'Hi' }),
+      message({ id: 'h1', role: 'user', content: '[System: The stream timed out. Continue.]', displayKind: 'hidden' }),
+      message({ id: 'n1', role: 'user', content: '[System note: Your previous turn was interrupted.]' }),
+    ],
+    events: [], running: false,
+  });
+  assert.deepEqual(rows.map((row) => row.kind), ['user', 'system']);
+});
+
+test('labels backend-authored user turns as system and keeps their turn boundaries', () => {
+  const injected = [
+    { content: '[ASYNC DELEGATION BATCH COMPLETE — deleg_a1b2c3d4]\nResult' },
+    { content: '[ASYNC DELEGATION COMPLETE — deleg_a1b2c3d4]\nResult' },
+    { content: '[ASYNC DELEGATION TASK FAILED — deleg_a1b2c3d4, task 1/2]\nFailed' },
+    { content: 'Background result', displayKind: 'internal_notification' },
+    { content: 'Delegation result', displayKind: 'async_delegation_complete' },
+    { content: 'Process result', displayKind: 'process_complete' },
+    { content: 'Resuming', displayKind: 'auto_continue' },
+  ];
+  for (const notice of injected) {
+    const rows = createTranscriptProjector()({
+      history: [
+        message({ id: 'u1', role: 'user', content: 'Inspect dotfiles', timestamp: 10 }),
+        message({ id: 'a1', role: 'assistant', content: 'Delegated.', timestamp: 11 }),
+        message({ id: 'system1', role: 'user', timestamp: 20, ...notice }),
+        message({ id: 'a2', role: 'assistant', reasoning: 'Reviewing results', content: 'Done.', timestamp: 21 }),
+      ],
+      events: [], running: false,
+    });
+    assert.deepEqual(rows.map((row) => row.kind), ['user', 'assistant', 'system', 'activity', 'assistant'], JSON.stringify(notice));
+    assert.equal(activityOf(rows).startedAt, 20);
+  }
+});
+
+test('keeps ordinary user messages and quoted delegation envelopes as user-authored', () => {
+  const rows = createTranscriptProjector()({
+    history: [message({ role: 'user', content: 'Explain [ASYNC DELEGATION BATCH COMPLETE — deleg_a1b2c3d4]' })],
+    events: [], running: false,
+  });
+  assert.equal(rows[0]?.kind, 'user');
+});
+
+test('updates authorship when durable display metadata arrives', () => {
+  const project = createTranscriptProjector();
+  const notice = message({ id: 'notice', role: 'user', content: 'Background result' });
+  assert.equal(project({ history: [notice], events: [], running: false })[0]?.kind, 'user');
+  assert.equal(project({ history: [{ ...notice, displayKind: 'internal_notification' }], events: [], running: false })[0]?.kind, 'system');
+});
 
 test('folds commentary and tool calls of a finished turn into one activity row', () => {
   const rows = createTranscriptProjector()({
@@ -344,4 +425,12 @@ test('terminal output dedupes against equal fresh history', () => {
   const projector = createTranscriptProjector();
   const live = projector({ history, events, runId: 'run-1', running: false });
   assert.deepEqual(live.map((row) => row.kind), ['user', 'assistant']);
+});
+
+test('a user message that only starts with a bracketed System word stays the user', () => {
+  const rows = createTranscriptProjector()({
+    history: [message({ id: 'u1', role: 'user', content: '[System design] review please', timestamp: 10 })],
+    events: [], running: false,
+  });
+  assert.equal(rows.find((row) => row.id.includes('u1'))?.kind, 'user');
 });

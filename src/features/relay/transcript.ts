@@ -1,6 +1,7 @@
 import { eventTransportIdentity } from '../../lib/run-state.ts';
 import type { HermesMessage, HermesRunEvent, HermesRunState } from '../../lib/types';
-import { toSeconds, toolTarget } from './activity.ts';
+import { previewLine } from '../cloud/card-text.ts';
+import { oneLine, toSeconds, toolTarget } from './activity.ts';
 
 export type TranscriptStatus = 'running' | 'complete' | 'failed';
 
@@ -34,7 +35,7 @@ export type TranscriptStep = TranscriptToolStep | TranscriptNoteStep | Transcrip
 
 export interface TranscriptMessageRow {
   readonly id: string;
-  readonly kind: 'user' | 'assistant' | 'error';
+  readonly kind: 'user' | 'assistant' | 'system' | 'error';
   readonly text: string;
   readonly status?: TranscriptStatus;
   /** Unix seconds or milliseconds, from durable history. */
@@ -90,7 +91,7 @@ type FlatRow = TranscriptMessageRow | WorkRow;
 
 type MessageDescriptor = {
   readonly key: string;
-  readonly kind: 'user' | 'assistant' | 'error';
+  readonly kind: 'user' | 'assistant' | 'system' | 'error';
   readonly text: string;
   readonly status: TranscriptStatus;
   readonly timestamp?: number;
@@ -152,6 +153,20 @@ type LiveCache = {
 };
 
 const EMPTY = '';
+/** Display kinds Hermes puts on user-role rows it injects itself. */
+const SYSTEM_DISPLAY_KINDS = new Set([
+  'internal_notification', 'async_delegation_complete', 'process_complete',
+  'auto_continue', 'model_switch', 'personality_switch',
+]);
+/** Injected user rows without a display kind: delegation results and `[System note: ...]` nudges. */
+const SYSTEM_PROMPT = /^\s*(?:\[ASYNC DELEGATION (?:BATCH COMPLETE|COMPLETE|TASK FAILED) — deleg_|\[System(?: note)?:)/u;
+
+/** One-line prose summaries drop markdown markers; tool commands and paths stay literal. */
+export function stepSummary(step: TranscriptStep): string {
+  if (step.kind === 'tool') return oneLine(step.input || step.output);
+  // A code-only thought has no prose line; show the code without its fences.
+  return previewLine(step.text) ?? oneLine(step.text.replace(/^\s*```.*$/gmu, ''));
+}
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
@@ -182,7 +197,7 @@ function messageKey(message: HermesMessage, index: number, occurrence: number): 
 
 function historyFingerprint(message: HermesMessage, index: number): string {
   const calls = message.toolCalls?.map((call) => `${toolIdentity(call) ?? ''}:${callName(call) ?? ''}:${JSON.stringify(callArguments(call))}`).join('|') ?? '';
-  return [message.id ?? `index-${index}`, message.timestamp, message.role, message.content, message.reasoningContent, message.reasoning, message.toolCallId, message.toolName, calls].map((value) => value ?? '').join('\u001f');
+  return [message.id ?? `index-${index}`, message.timestamp, message.role, message.displayKind, message.content, message.reasoningContent, message.reasoning, message.toolCallId, message.toolName, calls].map((value) => value ?? '').join('\u001f');
 }
 
 function toolText(value: Record<string, unknown>): string {
@@ -323,14 +338,19 @@ function buildHistory(history: readonly HermesMessage[], previous?: HistoryCache
       pushTool(key, { identity: message.toolCallId, name: message.toolName, output: text }, index, resultFailed(message.content) ? 'failed' : 'complete');
       continue;
     }
-    if (role !== 'user' && role !== 'assistant' && role !== 'error') continue;
+    const injectable = role === 'user' || role === 'system';
+    // Hermes hides its own `[System: ...]` nudges, such as stream-timeout retries.
+    if (injectable && message.displayKind === 'hidden') continue;
+    // Assistant rows (including Hermes's `failed_turn` notice) stay assistant text inside their turn.
+    const system = injectable && (SYSTEM_DISPLAY_KINDS.has(message.displayKind ?? '') || SYSTEM_PROMPT.test(text));
+    if (role !== 'user' && role !== 'assistant' && role !== 'error' && !(role === 'system' && system)) continue;
     const reasoning = role === 'assistant' ? message.reasoningContent ?? message.reasoning : undefined;
     if (reasoning?.trim()) pushStep({ id: `history-thought-${key}`, kind: 'thought', text: reasoning });
     if (!text) {
       if (role === 'assistant') pushCalls(key, message);
       continue;
     }
-    const kind: MessageDescriptor['kind'] = role === 'user' ? 'user' : role === 'assistant' ? 'assistant' : 'error';
+    const kind: MessageDescriptor['kind'] = system ? 'system' : role === 'user' ? 'user' : role === 'assistant' ? 'assistant' : 'error';
     descriptors.push({ key: `history-${key}`, kind, text, status: statusForMessage(message, kind), timestamp: message.timestamp });
     if (kind === 'assistant') {
       lastAssistantText = text;
@@ -580,12 +600,12 @@ function settledStatus(body: readonly FlatRow[], runStatus: HermesRunState | und
 }
 
 /**
- * Fold one turn: the user message, then a single activity row holding every
+ * Fold one turn: its user or system prompt, then an activity row holding every
  * tool call, thought, and interim note, then errors and the final answer.
  * Assistant text after the last tool call stays visible; while running it may
  * still turn into a note once another tool starts.
  */
-function groupTurn(user: TranscriptMessageRow | undefined, body: readonly FlatRow[], current: boolean, input: TranscriptProjectionInput, previous: ReadonlyMap<string, TranscriptRow>): TranscriptRow[] {
+function groupTurn(prompt: TranscriptMessageRow | undefined, body: readonly FlatRow[], current: boolean, input: TranscriptProjectionInput, previous: ReadonlyMap<string, TranscriptRow>): TranscriptRow[] {
   // Only tool calls mark text as interim: Hermes reports reasoning after the answer it produced.
   const lastWork = body.findLastIndex((row) => row.kind === 'work' && row.steps.some((step) => step.kind === 'tool'));
   const steps: TranscriptStep[] = [];
@@ -599,18 +619,18 @@ function groupTurn(user: TranscriptMessageRow | undefined, body: readonly FlatRo
   const runStatus = current ? input.runStatus : undefined;
   const status = running ? 'running' : settledStatus(body, runStatus);
   // A settled turn without steps only needs a row when it ended badly.
-  if (!running && !steps.length && status !== 'stopped' && !(current && runStatus === 'failed')) return user ? [user, ...visible] : [...visible];
+  if (!running && !steps.length && status !== 'stopped' && !(current && runStatus === 'failed')) return prompt ? [prompt, ...visible] : [...visible];
 
-  const startedAt = (current ? input.runStartedAt : undefined) ?? user?.timestamp;
+  const startedAt = (current ? input.runStartedAt : undefined) ?? prompt?.timestamp;
   const endedAt = running ? undefined : body.findLast((row): row is TranscriptMessageRow => row.kind !== 'work' && row.timestamp !== undefined)?.timestamp ?? (current ? input.runEndedAt : undefined);
-  const id = `activity-${user?.id ?? 'leading'}`;
+  const id = `activity-${prompt?.id ?? 'leading'}`;
   const prior = previous.get(id);
   const stable = stableSteps(steps, prior?.kind === 'activity' ? prior.steps : []);
   const phase = running ? activityPhase(runStatus) : undefined;
   const activity: TranscriptActivityRow = prior?.kind === 'activity' && prior.status === status && prior.phase === phase && prior.startedAt === startedAt && prior.endedAt === endedAt && sameSteps(prior.steps, stable)
     ? prior
     : { id, kind: 'activity', status, phase, steps: stable, startedAt, endedAt };
-  return user ? [user, activity, ...visible] : [activity, ...visible];
+  return prompt ? [prompt, activity, ...visible] : [activity, ...visible];
 }
 
 function groupTurns(rows: readonly FlatRow[], input: TranscriptProjectionInput, previous: readonly TranscriptRow[]): readonly TranscriptRow[] {
@@ -620,11 +640,11 @@ function groupTurns(rows: readonly FlatRow[], input: TranscriptProjectionInput, 
   let cursor = 0;
   while (cursor < rows.length) {
     const head = rows[cursor];
-    const user = head.kind === 'user' ? head : undefined;
-    const bodyStart = user ? cursor + 1 : cursor;
-    const next = rows.findIndex((row, index) => index >= bodyStart && row.kind === 'user');
+    const prompt = head.kind === 'user' || head.kind === 'system' ? head : undefined;
+    const bodyStart = prompt ? cursor + 1 : cursor;
+    const next = rows.findIndex((row, index) => index >= bodyStart && (row.kind === 'user' || row.kind === 'system'));
     const end = next < 0 ? rows.length : next;
-    output.push(...groupTurn(user, rows.slice(bodyStart, end), end === rows.length, input, previousById));
+    output.push(...groupTurn(prompt, rows.slice(bodyStart, end), end === rows.length, input, previousById));
     cursor = end;
   }
   return output;

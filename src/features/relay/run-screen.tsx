@@ -1,7 +1,7 @@
 import { TextInputWrapper } from 'expo-paste-input';
 import * as Clipboard from 'expo-clipboard';
 import { canSteerMessage, type QueuedMessage } from '../../lib/outbox';
-import { followAfterScroll } from './feed-follow';
+import { feedFollowOptions, followAfterScroll } from './feed-follow';
 import { CopyButton } from '../content/copy-button';
 import { splitAttachmentMessage, type AttachmentSource, type DraftAttachment } from '../../lib/attachments';
 import { AttachmentStrip } from './attachment-strip';
@@ -17,11 +17,11 @@ import { RingSpinner } from './ring-spinner';
 import { insertSkill, matchingSkills, selectedSkillNames, skillTrigger, type SkillTrigger } from './composer-skills';
 import { showSessionActions } from './session-actions';
 import { MessageContent } from './message-content';
-import { ModelPicker } from './model-picker';
+import { ModelPicker, modelDisplayName } from './model-picker';
 import type { HermesModel, HermesSkill } from '../../lib/types';
 import type { ApprovalRequest, ConnectionState, RelaySession } from './types';
-import { elapsed, formatDuration, liveActivityLabel, oneLine, readableOutput, settledActivityLabel, toolVerb } from './activity';
-import type { TranscriptActivityRow, TranscriptRow, TranscriptStep } from './transcript';
+import { elapsed, formatDuration, liveActivityLabel, readableOutput, settledActivityLabel, toolVerb } from './activity';
+import { stepSummary, type TranscriptActivityRow, type TranscriptRow, type TranscriptStep } from './transcript';
 
 export type RunScreenProps = {
   session: RelaySession;
@@ -81,13 +81,25 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
   const dragEndTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(dragEndTimer.current), []);
   const [following, setFollowing] = useState(true);
+  const followFrame = useRef<number | undefined>(undefined);
+  const followToEnd = useCallback(() => {
+    if (!following) return;
+    if (followFrame.current !== undefined) cancelAnimationFrame(followFrame.current);
+    followFrame.current = requestAnimationFrame(() => {
+      if (!dragging.current) void list.current?.scrollToEnd({ animated: false });
+    });
+  }, [following]);
+  useEffect(() => () => {
+    if (followFrame.current !== undefined) cancelAnimationFrame(followFrame.current);
+  }, [following]);
   const [observedSelection, setObservedSelection] = useState<{ start: number; end: number; text: string }>();
   const [inputSelection, setInputSelection] = useState<{ start: number; end: number }>();
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [skillsDismissed, setSkillsDismissed] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [focused, setFocused] = useState(false);
-  const activeModel = selectedModel ?? defaultModel ?? models[0]?.id;
+  const activeModel = selectedModel ?? defaultModel ?? models.find((model) => model.default)?.id;
+  const activeModelLabel = activeModel ? shortModelName(models.find((model) => model.id === activeModel && (!selectedProvider || model.provider === selectedProvider)) ?? { id: activeModel }) : 'Default';
   const selection = observedSelection?.text === draft
     ? { start: Math.min(observedSelection.start, draft.length), end: Math.min(observedSelection.end, draft.length) }
     : { start: draft.length, end: draft.length };
@@ -148,12 +160,11 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
         ListEmptyComponent={isLoading ? <ActivityIndicator color={colors.cyan} accessibilityLabel="Loading messages" /> : <NewThreadEmpty />}
         initialScrollAtEnd
         maintainVisibleContentPosition
-        // Keep the reading position when the keyboard resizes the viewport.
-        maintainScrollAtEnd={following ? { on: { dataChange: true, itemLayout: true, layout: false } } : false}
+        // Composer and keyboard measurements can shrink the viewport after the first end scroll.
+        maintainScrollAtEnd={feedFollowOptions(following)}
         maintainScrollAtEndThreshold={0.15}
-        onContentSizeChange={() => {
-          if (following) requestAnimationFrame(() => list.current?.scrollToEnd({ animated: false }));
-        }}
+        onLayout={followToEnd}
+        onContentSizeChange={followToEnd}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
         onScrollBeginDrag={() => { clearTimeout(dragEndTimer.current); dragging.current = true; setFollowing((current) => followAfterScroll(current, 'begin', atEnd.current)); }}
@@ -245,9 +256,9 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
                   }
                 }}
               />
-              {activeModel ? (
-                <Pressable accessibilityRole="button" accessibilityLabel={`Model, ${activeModel}`} onPress={() => setModelOpen(true)} style={({ pressed }) => [styles.modelButton, { opacity: pressed ? 0.6 : 1 }]}>
-                  <Text numberOfLines={1} style={styles.modelLabel}>{shortModelName(activeModel)}</Text>
+              {activeModel || models.length > 0 ? (
+                <Pressable accessibilityRole="button" accessibilityLabel={`Model, ${activeModelLabel}`} onPress={() => setModelOpen(true)} style={({ pressed }) => [styles.modelButton, { opacity: pressed ? 0.6 : 1 }]}>
+                  <Text numberOfLines={1} style={styles.modelLabel}>{activeModelLabel}</Text>
                 </Pressable>
               ) : null}
               <View style={styles.toolbarSpacer} />
@@ -269,10 +280,12 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
   );
 }
 
-/** Short display name for a Hermes model id. The full id stays visible inside the picker. */
-function shortModelName(modelId: string): string {
-  const tail = modelId.split('/').pop() ?? modelId;
-  return tail.split(':')[0] || modelId;
+/** Composer button name: labels as the picker shows them, unlabeled ids cut to their last segment. The full id stays visible inside the picker. */
+function shortModelName(model: Pick<HermesModel, 'id' | 'label'>): string {
+  const name = modelDisplayName(model);
+  if (name !== model.id) return name;
+  const tail = model.id.split('/').pop() ?? model.id;
+  return tail.split(':')[0] || model.id;
 }
 
 function ComposerIcon({ name, label, disabled = false, selected = false, onPress }: { name: 'plus' | 'shippingbox'; label: string; disabled?: boolean; selected?: boolean; onPress?: () => void }) {
@@ -334,13 +347,14 @@ const TranscriptEntry = memo(function TranscriptEntry({ row, agentName, attachme
   const colors = useColors();
   if (row.kind === 'error') return <View style={styles.error} accessibilityRole="alert"><Text selectable style={styles.errorText}>{row.text}</Text></View>;
   const user = row.kind === 'user';
+  const author = user ? 'You' : row.kind === 'system' ? 'System' : agentName;
   // An agent row without content has nothing to show and only eats vertical space.
   if (!user && !row.text.trim()) return null;
   const message = user ? splitAttachmentMessage(row.text) : undefined;
   return <View style={styles.message}>
-    <View accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[styles.avatar, user && styles.userAvatar]}><Text style={[styles.avatarText, user && { color: colors.primary }]}>{user ? 'Y' : agentName.charAt(0).toUpperCase()}</Text></View>
+    <View accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[styles.avatar, user && styles.userAvatar]}><Text style={[styles.avatarText, user && { color: colors.primary }]}>{author.charAt(0).toUpperCase()}</Text></View>
     <View style={styles.messageBody}>
-      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}><Text style={[styles.author, { fontSize: 14 * factor }]}>{user ? 'You' : agentName}</Text>{user ? <CopyButton text={message?.text ?? row.text} /> : null}</View>
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}><Text style={[styles.author, { fontSize: 14 * factor }]}>{author}</Text>{user ? <CopyButton text={message?.text ?? row.text} /> : null}</View>
       {message ? <>{message.text ? <Text selectable style={[styles.userText, { fontSize: 16 * factor, lineHeight: 24 * factor }]}>{message.text}</Text> : null}<AttachmentStrip files={message.attachments.map((file) => ({ ...file, source: attachmentSource?.(file.id) }))} /></> : <MessageContent text={row.text} />}
     </View>
   </View>;
@@ -402,7 +416,7 @@ const StepEntry = memo(function StepEntry({ step, onDisclosure }: { step: Transc
   if (step.kind === 'note') return <Text selectable style={styles.note}>{step.text.trim()}</Text>;
   const tool = step.kind === 'tool' ? step : undefined;
   const verb = tool ? toolVerb(tool.name, tool.status) : 'Thought';
-  const target = oneLine(step.kind === 'tool' ? step.input || step.output : step.text);
+  const target = stepSummary(step);
   const failed = tool?.status === 'failed';
   const trailing = tool?.status === 'running' ? <RingSpinner size={12} color={colors.muted} />
     : failed ? <Text style={[styles.stepTime, styles.failedText]}>Failed</Text>
