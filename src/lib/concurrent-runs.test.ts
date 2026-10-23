@@ -126,7 +126,7 @@ function providerFixture(sessions: readonly HermesSession[] = []) {
     renderToString(createElement(exports.ApolloProvider!, { catalog }, createElement(Capture)));
     return api!;
   }
-  return { mount, streams, stopped, approved, removal, requests, locks, resolveDetail: detail.resolve,
+  return { mount, streams, stopped, approved, removal, requests, locks, statuses, resolveDetail: detail.resolve,
     get record() { return record; },
     get detailRequests() { return detailRequests; },
     setDetail: (session: HermesSession) => { detailResult = Promise.resolve(session); },
@@ -359,4 +359,16 @@ test('an older persisted outbox item without a model snapshot sends no override'
     assert.equal(setup.requests[0].options.provider, undefined);
     assert.equal(setup.locks.length, 1);
   } finally { await outbox.dispose(); }
+});
+
+test('a restored lost run stays connected without reopening its stream', async () => {
+  const setup = providerFixture();
+  const api = setup.mount();
+  await api.refreshAgent('agent');
+  const lost = await api.startRun('agent', 'First', { sessionId: 'thread' });
+  setup.statuses.set(lost.runId, { ...lost, status: 'unknown' });
+  await api.refreshAgent('agent');
+  assert.equal(setup.runtime.agent.status, 'connected');
+  assert.equal(setup.runtime.agent.runs[lost.runId].sessionId, 'thread');
+  assert.equal(setup.streams.has(lost.runId), false);
 });

@@ -48,6 +48,17 @@ const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
 const clientWith = (body: unknown, seen: { url?: string; init?: RequestInit }[] = []) =>
   new HermesClient({ endpoint: 'https://agent.example.ts.net', token: 'token', fetchImpl: stubFetch(body, seen) });
 
+test('lost and future run statuses keep the run identity without breaking restoration', async () => {
+  for (const status of ['unknown', 'waiting_for_input']) {
+    const run = await clientWith({ run_id: 'lost', session_id: 'thread', status }).runStatus('lost');
+    assert.equal(run.runId, 'lost');
+    assert.equal(run.sessionId, 'thread');
+    assert.equal(run.status, 'unknown');
+    assert.match(run.error ?? '', /run|status/i);
+  }
+  await assert.rejects(clientWith({ run_id: 'broken', status: 42 }).runStatus('broken'), /run response was invalid/);
+});
+
 test('models parser tolerates unknown shapes and skips malformed entries', () => {
   assert.deepEqual(plain(parseModels({ data: [{ id: 'hermes-large' }, null, { id: '' }, { name: 'hermes-mini', provider: 'Hermes' }] })), [
     { id: 'hermes-large' },

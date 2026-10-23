@@ -2,6 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { currentApproval, isRunActive, statusAfterEvent } from './run-state.ts';
 
+test('a lost run does not keep streaming or show a stale approval', () => {
+  const run = { runId: 'lost', status: 'unknown', approval: { command: 'pwd' } } as const;
+  assert.equal(isRunActive(run.status), false);
+  assert.equal(currentApproval([{ event: 'approval.request', command: 'pwd' }], run), undefined);
+});
+
 test('approval events override stale status and terminal events end attention', () => {
   const waiting = { runId: 'run-1', status: 'waiting_for_approval', approval: { command: 'pwd' } } as const;
   assert.equal(currentApproval([], waiting)?.command, 'pwd');

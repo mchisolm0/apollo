@@ -218,7 +218,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
 
   if (!agent) return <Redirect href="/" />;
   const connection = state?.status === 'connected' ? 'connected' : state?.status === 'connecting' ? 'connecting' : state?.status === 'revoked' ? 'revoked' : 'offline';
-  const statusLabel = approval ? 'Needs approval' : running ? 'Working' : run?.status === 'failed' ? 'Failed' : run?.status === 'completed' ? 'Complete' : undefined;
+  const statusLabel = run?.status === 'unknown' ? 'Lost run' : approval ? 'Needs approval' : running ? 'Working' : run?.status === 'failed' ? 'Failed' : run?.status === 'completed' ? 'Complete' : undefined;
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
       <RunScreen
@@ -272,7 +272,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
         isSending={running}
         isActing={acting}
         statusLabel={statusLabel}
-        error={localError ?? draftError ?? outbox.error}
+        error={localError ?? draftError ?? outbox.error ?? (run?.status === 'unknown' ? run.error : undefined)}
         onRetryError={() => void act(async () => {
           await retryLoad();
           await outbox.reload();
