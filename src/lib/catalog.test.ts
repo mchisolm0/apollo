@@ -33,9 +33,11 @@ test('device names survive catalog reloads and legacy records remain readable', 
   assert.equal(catalog.get('invalid-name')?.deviceName, undefined);
   await catalog.upsert({ ...legacy, id: 'paired', deviceName: 'Apollo QA 4' });
   await catalog.update('paired', { lastConnectedAt: 2 });
+  await catalog.update('paired', { label: 'Studio' });
   const reloaded = new Catalog({ metadata });
   await reloaded.load();
   assert.equal(reloaded.get('paired')?.deviceName, 'Apollo QA 4');
   assert.equal(reloaded.get('paired')?.lastConnectedAt, 2);
+  assert.equal(reloaded.get('paired')?.label, 'Studio');
   assert.equal(reloaded.get('legacy')?.deviceName, undefined);
 });

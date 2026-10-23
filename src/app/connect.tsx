@@ -110,7 +110,7 @@ export default function ConnectRoute() {
         isBusy={isBusy}
         errorMessage={errorMessage}
         qrContent={Device.isDevice ? camera : undefined}
-        onBack={() => router.back()}
+        onBack={router.canGoBack() ? () => router.back() : undefined}
         onManualSubmit={(value) => void prepare(value)}
         onConfirm={() => void confirm()}
         onCancel={() => {
