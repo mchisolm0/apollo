@@ -258,8 +258,10 @@ export class Inbox extends DurableObject<Env> {
    * Records a phone's answer. The first action sets the card's resolution:
    * approvals and updates resolve and later actions get 409; a briefing (so
    * picks keep working) or a `keepOpen` card (so its producer can move it on)
-   * stays open, and later actions return it unchanged. A replayed
-   * Idempotency-Key returns the stored response.
+   * stays open, and later actions return it unchanged. A `repeat` action
+   * records an event each time and leaves the card as it is. `text` comes
+   * with, and only with, an `input` action. A replayed Idempotency-Key
+   * returns the stored response.
    */
   async respond(tokenHash: string, id: string, response: CardResponse, idempotency: { key: string; bodyHash: string }): Promise<Reply<Card>> {
     const who = this.#authorize(tokenHash, DEVICE);
@@ -292,14 +294,20 @@ export class Inbox extends DurableObject<Env> {
       if ('actionId' in response) {
         const action = card.actions?.find((a) => a.id === response.actionId && !a.url);
         if (!action) return fail(400, 'unknown_action', 'card has no such recordable action');
+        if ((action.input === 'text') !== (response.text !== undefined)) {
+          return fail(400, 'bad_text', action.input === 'text' ? 'this action needs text' : 'this action takes no text');
+        }
         const resolution = { actionId: action.id, by: who.name, at };
         const staysOpen = card.kind === 'briefing' || card.keepOpen === true;
-        if (staysOpen && card.resolution) {
+        if (action.repeat) {
+          next = card;
+          event = { ...base, type: 'action', actionId: action.id, ...(response.text === undefined ? {} : { text: response.text }) };
+        } else if (staysOpen && card.resolution) {
           // The first answer wins. Later ones return the card as it is.
           next = card;
         } else {
           next = this.#commit({ ...card, state: staysOpen ? 'open' : 'resolved', resolution });
-          event = { ...base, type: 'action', actionId: action.id };
+          event = { ...base, type: 'action', actionId: action.id, ...(response.text === undefined ? {} : { text: response.text }) };
         }
       } else {
         if (!card.picks?.some((p) => p.n === response.pick)) return fail(400, 'unknown_pick', 'card has no such pick');
@@ -318,15 +326,13 @@ export class Inbox extends DurableObject<Env> {
         JSON.stringify(next),
         Date.now(),
       );
-      return { card: next, changed: event !== undefined };
+      return { card: next, changed: next !== card };
     });
 
     if ('status' in result) return result;
-    if (result.changed) {
-      this.#broadcast({ type: 'card', card: result.card });
-      // A resolved card now waits on retention.
-      await this.#scheduleAlarm();
-    }
+    if (result.changed) this.#broadcast({ type: 'card', card: result.card });
+    // A resolved card waits on retention, and every answer leaves an idempotency record to sweep.
+    await this.#scheduleAlarm();
     return ok(result.card);
   }
 

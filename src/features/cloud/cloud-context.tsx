@@ -30,7 +30,8 @@ type CloudContextValue = {
   /** A response that could not be saved or that the server rejected. Connection trouble shows in `status` instead. */
   error?: string;
   dismissError(): void;
-  respond(cardId: string, response: CardResponse): Promise<void>;
+  /** Resolves false when the response couldn't be saved on the phone; `error` says why. */
+  respond(cardId: string, response: CardResponse): Promise<boolean>;
   /** Cards settled on this phone (id -> rev when settled); they sit in Settled until a newer rev arrives. */
   settled: SettledCards;
   settle(cardId: string): void;
@@ -261,9 +262,10 @@ export function CloudProvider({ children }: PropsWithChildren) {
       await respondQueue.enqueue({ key: randomUUID(), cardId, response });
     } catch {
       setSaveError('Could not save your response. Try again.');
-      return;
+      return false;
     }
     void respondQueue.flush();
+    return true;
   }, []);
   const dismissError = useCallback(() => {
     respondQueue.clearError();

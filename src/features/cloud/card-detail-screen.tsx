@@ -1,7 +1,7 @@
 import * as Clipboard from 'expo-clipboard';
 import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { MessageContent } from '@/features/relay/message-content';
 import { IconButton, useColors, useRelayStyles, useTextScale, useThemedStyles, type RelayPalette } from '@/features/relay/relay-ui';
@@ -52,6 +52,46 @@ function LinkedCard({ label, link }: { label: string; link: CardLink }) {
   </Pressable>;
 }
 
+const MAX_TEXT = 4000;
+
+/** Inline text for an `input` action: Send records it, Cancel drops it. */
+function Composer({ action, onSend, onCancel }: { action: CardAction; onSend: (text: string) => Promise<void>; onCancel: () => void }) {
+  const styles = useThemedStyles(createStyles);
+  const colors = useColors();
+  const { factor } = useTextScale();
+  const [draft, setDraft] = useState(action.prefill ?? '');
+  const [saving, setSaving] = useState(false);
+  // A ref, not state, so a second tap in the same frame can't send the reply twice.
+  const savingNow = useRef(false);
+  const text = draft.trim();
+  const submit = () => {
+    if (!text || savingNow.current) return;
+    savingNow.current = true;
+    setSaving(true);
+    void onSend(text).finally(() => {
+      savingNow.current = false;
+      setSaving(false);
+    });
+  };
+  return <View style={styles.composer}>
+    <TextInput
+      autoFocus
+      multiline
+      value={draft}
+      onChangeText={setDraft}
+      maxLength={MAX_TEXT}
+      placeholder={action.label}
+      placeholderTextColor={colors.muted}
+      accessibilityLabel={action.label}
+      style={[styles.composerInput, { fontSize: 16 * factor, lineHeight: 22 * factor }]}
+    />
+    <View style={styles.composerBar}>
+      <CardButton wide action={{ label: 'Cancel' }} onPress={onCancel} />
+      <CardButton wide action={{ label: saving ? 'Saving' : 'Send', style: text && !saving ? 'primary' : 'default' }} onPress={submit} />
+    </View>
+  </View>;
+}
+
 /** Full card: source header, title, meta, metrics, picks, markdown body and a bottom action bar. */
 export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: () => void }) {
   const styles = useThemedStyles(createStyles);
@@ -61,6 +101,8 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
   const cloud = useCloud();
   const { agents } = useApollo();
   const [copied, setCopied] = useState(false);
+  const [composing, setComposing] = useState<CardAction>();
+  const [sent, setSent] = useState(false);
   const card = cloud.cards.find((candidate) => candidate.id === cardId);
   // Opening an update settles it, from a row or a notification alike, once per mount, so Reopen here sticks.
   const { settle: settleCard, settled: settledCards } = cloud;
@@ -84,14 +126,25 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
   const respond = (id: string, actionId: string) => { void cloud.respond(id, { actionId }); };
   const pick = (_: InboxCard, value: CardPick) => { void cloud.respond(card.id, { pick: value.n, done: !value.done }); };
   const host = agents.find((agent) => agent.id === cloud.credential?.agentId)?.label;
-  const outcome = card.acknowledged ? acknowledgedLabel(card, card.acknowledged)
+  const outcome = card.sending ? 'Sending' : sent ? 'Sent'
+    : card.acknowledged ? acknowledgedLabel(card, card.acknowledged)
     : card.pendingAction ? `${actionLabel(card, card.pendingAction)}, sending`
       : card.resolution ? `${actionLabel(card, card.resolution.actionId)} by ${card.resolution.by} · ${stamp(card.resolution.at)}`
         : open ? undefined : 'Settled';
   // An open approval, or a morning card not yet kept or skipped, answers from the bar; everything else gets Copy and Settle.
   // A keepOpen approval stays open after its answer, so a resolution counts as answered too.
   const unanswered = open && (card.kind === 'approval' ? !card.pendingAction && !card.resolution : card.kind === 'briefing' && !card.acknowledged);
-  const decide = unanswered ? cardActions(card) : [];
+  // A repeat action, like Reply, stays available for as long as the card is open.
+  const decide = cardActions(card).filter((action) => unanswered || (open && action.repeat));
+  const onlyRepeats = decide.length > 0 && !unanswered;
+  const run = (action: CardAction) => action.input ? setComposing(action) : runAction(card, action, respond);
+  // The composer keeps the draft until the reply is saved on the phone.
+  const send = async (action: CardAction, text: string) => {
+    if (!(await cloud.respond(card.id, { actionId: action.id, text }))) return;
+    setComposing(undefined);
+    setSent(true);
+    setTimeout(() => setSent(false), 1500);
+  };
   const link = card.url && !decide.some((action) => action.url === card.url) ? card.url : undefined;
   const copy = () => void Clipboard.setStringAsync(copyText(card)).then(() => {
     setCopied(true);
@@ -99,7 +152,7 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
   }).catch(() => Alert.alert('Could not copy', 'Try selecting the text instead.'));
   const settle = () => { cloud.settle(card.id); onBack(); };
   const meta = Object.entries(card.meta ?? {});
-  return <View style={uiStyles.screen}>
+  return <KeyboardAvoidingView style={uiStyles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
     <View style={styles.header}>
       <IconButton name="chevron.left" label="Go back" onPress={onBack} />
       <CardGlyph source={card.source} />
@@ -111,6 +164,7 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
     <ScrollView contentContainerStyle={styles.content}>
       <Text style={[styles.title, { fontSize: 24 * factor, lineHeight: 30 * factor }]} accessibilityRole="header" selectable>{card.title}</Text>
       {outcome ? <Text style={[styles.outcome, (card.pendingAction ?? card.resolution?.actionId) === 'approve' && { color: colors.green }, { fontSize: 15 * factor }]}>{outcome}</Text> : null}
+      {cloud.error ? <Text style={[styles.outcome, { color: colors.red, fontSize: 15 * factor }]} accessibilityRole="alert" onPress={cloud.dismissError}>{cloud.error}</Text> : null}
       {card.progress && open ? <CardProgressBar progress={card.progress} /> : null}
       {card.replaces ? <LinkedCard label="Replaces" link={card.replaces} /> : null}
       {card.replacedBy ? <LinkedCard label="Replaced by" link={card.replacedBy} /> : null}
@@ -125,18 +179,19 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
       {card.body && card.plainText ? <Text style={[styles.plainBody, { fontSize: 15 * factor, lineHeight: 22 * factor }]} selectable>{card.body}</Text>
         : card.body ? <MessageContent text={card.body} copyable={false} /> : null}
     </ScrollView>
-    <View style={styles.bar}>
+    {composing ? <Composer key={composing.id} action={composing} onSend={(text) => send(composing, text)} onCancel={() => setComposing(undefined)} /> : <View style={styles.bar}>
       {decide.length ? <>
-        {decide.map((action: CardAction) => <CardButton key={action.id} wide action={action} onPress={() => runAction(card, action, respond)} />)}
+        {decide.map((action: CardAction) => <CardButton key={action.id} wide action={action} onPress={() => run(action)} />)}
         {link ? <CardButton wide action={{ label: parseApolloLink(link)?.kind === 'session' ? 'Open thread' : 'Open link' }} onPress={() => void openCardLink(link)} /> : null}
+        {onlyRepeats && swipe === 'settle' ? <CardButton wide action={{ label: 'Settle' }} onPress={settle} /> : null}
       </> : <>
         <CardButton wide action={{ label: copied ? 'Copied' : 'Copy' }} onPress={copy} />
         {link ? <CardButton wide action={{ label: 'Open' }} onPress={() => void openCardLink(link)} /> : null}
         {swipe === 'settle' ? <CardButton wide action={{ label: 'Settle', style: 'primary' }} onPress={settle} />
           : swipe === 'reopen' ? <CardButton wide action={{ label: 'Reopen' }} onPress={() => cloud.reopen(card.id)} /> : null}
       </>}
-    </View>
-  </View>;
+    </View>}
+  </KeyboardAvoidingView>;
 }
 
 const createStyles = (colors: RelayPalette) => StyleSheet.create({
@@ -160,7 +215,10 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   metricUnit: { color: colors.muted, fontWeight: '500' },
   metricLabel: { color: colors.muted },
   metricDelta: { fontWeight: '600', fontVariant: ['tabular-nums'] },
-  bar: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
+  bar: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
+  composer: { gap: 8, paddingHorizontal: 16, paddingTop: 10, paddingBottom: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
+  composerInput: { color: colors.primary, minHeight: 88, maxHeight: 200, padding: 10, borderRadius: 10, borderWidth: 1, borderColor: colors.lineStrong, textAlignVertical: 'top' },
+  composerBar: { flexDirection: 'row', gap: 8 },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   emptyText: { color: colors.secondary, fontSize: 15, lineHeight: 22, textAlign: 'center' },
 });

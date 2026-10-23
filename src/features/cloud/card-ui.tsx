@@ -192,7 +192,7 @@ export const BriefingCard = memo(function BriefingCard({ card, onOpen, onPick, o
       <CardPicks card={card} onPick={onPick} inset={GLYPH_INSET} />
       {Object.entries(meta).map(([label, value]) => <Text key={label} style={[styles.secondary, styles.inset, { fontSize: 14 * factor, lineHeight: 19 * factor }]} numberOfLines={2}><Text style={styles.metaLabel}>{label} </Text>{value}</Text>)}
       {summary ? <Text style={[styles.summary, styles.inset, { fontSize: 14 * factor, lineHeight: 19 * factor }]} numberOfLines={1}>{summary}</Text>
-        : actions.length ? <View style={[styles.actions, styles.inset]}>{actions.map((action) => <CardButton key={action.id} action={action} label={`${action.label} morning card`} onPress={() => onAction(card, action)} />)}</View> : null}
+        : actions.length ? <View style={[styles.actions, styles.inset]}>{actions.map((action) => <CardButton key={action.id} action={action} label={`${action.label} morning card`} onPress={() => action.input ? onOpen(card) : onAction(card, action)} />)}</View> : null}
     </View>
   </CardSwipe>;
 });
@@ -245,7 +245,7 @@ export const CardRow = memo(function CardRow({ card, settled, swipe, onPress, on
           {card.progress && !settled ? <CardProgressBar progress={card.progress} /> : null}
         </View>
       </Pressable>
-      {actions.length ? <View style={[styles.actions, styles.rowActions]}>{actions.map((action) => <CardButton key={action.id} action={action} label={`${action.label} ${card.title}`} onPress={() => onAction(card, action)} />)}</View> : null}
+      {actions.length ? <View style={[styles.actions, styles.rowActions]}>{actions.map((action) => <CardButton key={action.id} action={action} label={`${action.label} ${card.title}`} onPress={() => action.input ? onPress(card) : onAction(card, action)} />)}</View> : null}
     </View>
   </CardSwipe>;
 });
@@ -281,7 +281,7 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   summary: { color: colors.secondary, fontWeight: '600', paddingTop: 8 },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingTop: 8 },
   button: { minHeight: 34, paddingHorizontal: 13, borderRadius: 10, borderWidth: 1, borderColor: colors.lineStrong, alignItems: 'center', justifyContent: 'center' },
-  buttonWide: { flex: 1, minHeight: 44 },
+  buttonWide: { flex: 1, flexBasis: '30%', minHeight: 44 },
   buttonPrimary: { backgroundColor: colors.primary, borderColor: colors.primary },
   buttonText: { color: colors.primary, fontWeight: '600' },
   buttonTextPrimary: { color: colors.background },

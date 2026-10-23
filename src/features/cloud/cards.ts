@@ -3,6 +3,7 @@ import { CATEGORY, KINDS, SOURCES, type Card, type CardAction, type CardLink, ty
 const STATES = ['open', 'resolved', 'settled'] as const satisfies readonly CardState[];
 const PUSH_LEVELS = ['alert', 'passive', 'none'] as const satisfies readonly PushLevel[];
 const ACTION_STYLES = ['primary', 'default', 'destructive'] as const satisfies readonly NonNullable<CardAction['style']>[];
+const ACTION_INPUTS = ['text'] as const satisfies readonly NonNullable<CardAction['input']>[];
 const ID = /^[A-Za-z0-9._:~-]{1,256}$/u;
 
 type JsonObject = Record<string, unknown>;
@@ -29,7 +30,10 @@ function parseAction(value: unknown): CardAction | undefined {
   if (!id || !label) return undefined;
   const style = oneOf(ACTION_STYLES, value.style);
   const url = text(value.url);
-  return { id, label, ...(style ? { style } : {}), ...(url ? { url } : {}) };
+  // A link action records nothing, so it never asks for text.
+  const input = url ? undefined : oneOf(ACTION_INPUTS, value.input);
+  const prefill = input ? text(value.prefill) : undefined;
+  return { id, label, ...(style ? { style } : {}), ...(url ? { url } : {}), ...(value.repeat === true ? { repeat: true } : {}), ...(input ? { input } : {}), ...(prefill ? { prefill } : {}) };
 }
 
 function parsePick(value: unknown): CardPick | undefined {

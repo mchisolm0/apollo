@@ -92,7 +92,10 @@ const v1 = router<Authed>()
     const response = await readBody(request, schema.CardResponse);
     if (response instanceof Response) return response;
     // Hash a canonical form so key order in the client's JSON doesn't matter.
-    const canonical: CardResponse = 'actionId' in response ? { actionId: response.actionId } : { pick: response.pick, done: response.done };
+    const canonical: CardResponse =
+      'actionId' in response
+        ? { actionId: response.actionId, ...(response.text === undefined ? {} : { text: response.text }) }
+        : { pick: response.pick, done: response.done };
     const bodyHash = await sha256Hex(JSON.stringify(canonical));
     return send(await inbox.respond(auth, id, canonical, { key, bodyHash }));
   })

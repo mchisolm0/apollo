@@ -170,3 +170,17 @@ test('responses older than the idempotency window are not replayed', async () =>
   assert.deepEqual(setup.queue.getSnapshot().items, []);
   assert.equal(setup.sent.length, 0);
 });
+
+test('a reply keeps its text through an offline retry and a restart', async () => {
+  let online = false;
+  const setup = fixture(async () => online ? card : offline());
+  await setup.queue.enqueue({ key: 'reply', cardId: 'card_1', response: { actionId: 'reply', text: 'Thanks, fixed in 2.1.0' } });
+  await setup.queue.flush();
+  const restarted = createRespondQueue({ storage: { getItem: async () => setup.stored(), setItem: async () => undefined }, send: async () => card });
+  await restarted.load();
+  assert.deepEqual(restarted.getSnapshot().items.map((item) => item.response), [{ actionId: 'reply', text: 'Thanks, fixed in 2.1.0' }]);
+  online = true;
+  setup.advance(60_000);
+  await setup.queue.flush();
+  assert.deepEqual(setup.sent.map((item) => item.response), [{ actionId: 'reply', text: 'Thanks, fixed in 2.1.0' }, { actionId: 'reply', text: 'Thanks, fixed in 2.1.0' }]);
+});

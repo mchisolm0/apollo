@@ -32,7 +32,7 @@ function failureOf(error: unknown): Failure {
 
 function isResponse(value: unknown): value is CardResponse {
   if (!value || typeof value !== 'object') return false;
-  if ('actionId' in value) return typeof value.actionId === 'string' && !('pick' in value);
+  if ('actionId' in value) return typeof value.actionId === 'string' && !('pick' in value) && (!('text' in value) || typeof value.text === 'string');
   return 'pick' in value && 'done' in value && typeof value.pick === 'number' && typeof value.done === 'boolean';
 }
 

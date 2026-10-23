@@ -30,7 +30,7 @@ Errors are `ApiError` (`{ error: { code, message } }`) with a matching HTTP stat
 | `PATCH` | `/v1/cards/:id` | producer | `CardPatch` → `Card`. Resolving a card that is already closed is a no-op that returns it. |
 | `GET` | `/v1/cards` | device | → `CardSnapshot` (`{ rev, cards }`): every open card plus cards closed in the last 7 days, read atomically with the inbox `rev`. |
 | `GET` | `/v1/stream` | device | WebSocket of `StreamMessage`s (hibernatable). Auth uses the `Authorization` header. A text `ping` is answered with `pong`. |
-| `POST` | `/v1/cards/:id/respond` | device | `CardResponse` → `Card`. Requires `Idempotency-Key`. `409 card_closed` (with `error.card`) if the card isn't open. |
+| `POST` | `/v1/cards/:id/respond` | device | `CardResponse` (`{ actionId, text? }` or `{ pick, done }`) → `Card`. Requires `Idempotency-Key`. `409 card_closed` (with `error.card`) if the card isn't open. |
 | `GET` | `/v1/events?after=<seq>&source=<s>` | producer | → `InboxEvent[]`, oldest first, at most 500. Page with the last `seq`. |
 | `POST` | `/v1/devices` | device | `DeviceRegistration` → 204. |
 | `DELETE` | `/v1/devices/self` | device | → 204. Stops push to this device. |
@@ -45,6 +45,7 @@ Errors are `ApiError` (`{ error: { code, message } }`) with a matching HTTP stat
 
 - **One writer.** The Durable Object handles one request at a time, so every check below happens in the same transaction as the write it guards.
 - **Responding.** Only open cards accept responses; anything else gets `409 card_closed`. On approval and update cards an action resolves the card and appends one `action` event; the first response wins. On a briefing card, or any card posted with `keepOpen`, the first action sets `resolution` and appends one `action` event, but the card stays `open` (so picks keep working, or so the producer can move it to its next phase); any later action returns the card unchanged and appends nothing. Producers settle a briefing with `PATCH` when the next one replaces it. A pick sets `done` and appends one `pick` event; it never toggles.
+- **Repeat and text actions.** An action with `repeat: true` can be used any number of times while the card is open: each use appends one `action` event and leaves `state`, `resolution` and `rev` alone, even after the first answer. An action with `input: 'text'` (never with `url`) needs `text` (1 to 4000 characters) in the response, and no other action takes it (`400 bad_text`). The event carries the text, so a producer can forward a reply, e.g. a `feedback` card's Reply. `prefill` (only with `input`) is the text the composer starts with, e.g. the request being edited. A card has at most 8 actions.
 - **Idempotency.** `Idempotency-Key` is scoped to the token and kept for 24 hours alongside the event it produced. A replay returns the stored response and appends nothing. Reusing a key with a different body is `422 idempotency_mismatch`.
 - **Upserts.** An upsert never changes `state` or `resolution`. A closed card stays closed and is returned as is. For an open card the producer's fields are replaced, so a field left out of a re-upsert (`metrics` included) is cleared. A pick keeps its `done` value when a pick with the same `n` and `text` existed.
 - **Events.** `seq` increases across the whole inbox and is never reused, even after retention deletes old events.

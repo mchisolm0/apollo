@@ -6,15 +6,19 @@ import { parseApolloLink } from './card-text.ts';
  * A card as the inbox shows it: queued responses applied on top of the server's copy.
  * `pendingAction` is an action still on its way. A morning card stays open after Keep or
  * Skip so its picks stay tappable; `acknowledged` is its `resolution`, or a queued action.
+ * A `repeat` action never answers the card, so on its way it only sets `sending`.
  */
-export type InboxCard = Card & { pendingAction?: string; acknowledged?: string };
+export type InboxCard = Card & { pendingAction?: string; acknowledged?: string; sending?: boolean };
 
 /** Overlays responses that have not reached the server yet, so taps show immediately and survive offline. */
 export function withPendingResponses(cards: readonly Card[], pending: readonly { cardId: string; response: CardResponse }[]): InboxCard[] {
   return cards.map((card) => {
     const overlaid = pending.reduce<InboxCard>((current, { cardId, response }) => {
       if (cardId !== current.id) return current;
-      if (response.actionId !== undefined) return current.kind === 'briefing' ? { ...current, acknowledged: response.actionId } : { ...current, pendingAction: response.actionId };
+      if (response.actionId !== undefined) {
+        if (current.actions?.some((action) => action.id === response.actionId && action.repeat)) return { ...current, sending: true };
+        return current.kind === 'briefing' ? { ...current, acknowledged: response.actionId } : { ...current, pendingAction: response.actionId };
+      }
       return { ...current, picks: current.picks?.map((pick) => pick.n === response.pick ? { ...pick, done: response.done } : pick) };
     }, card);
     // The server's first answer wins over a queued one; the queued one shows until it lands.
