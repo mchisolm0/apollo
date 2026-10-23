@@ -126,12 +126,12 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
   const decide = cardActions(card).filter((action) => unanswered || (open && action.repeat));
   const onlyRepeats = decide.length > 0 && !unanswered;
   const run = (action: CardAction) => action.input ? setComposing(action) : runAction(card, action, respond);
-  const send = (action: CardAction, text: string) => {
+  // The composer keeps the draft until the reply is saved on the phone.
+  const send = async (action: CardAction, text: string) => {
+    if (!(await cloud.respond(card.id, { actionId: action.id, text }))) return;
     setComposing(undefined);
-    void cloud.respond(card.id, { actionId: action.id, text }).then(() => {
-      setSent(true);
-      setTimeout(() => setSent(false), 1500);
-    });
+    setSent(true);
+    setTimeout(() => setSent(false), 1500);
   };
   const link = card.url && !decide.some((action) => action.url === card.url) ? card.url : undefined;
   const copy = () => void Clipboard.setStringAsync(copyText(card)).then(() => {
@@ -152,6 +152,7 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
     <ScrollView contentContainerStyle={styles.content}>
       <Text style={[styles.title, { fontSize: 24 * factor, lineHeight: 30 * factor }]} accessibilityRole="header" selectable>{card.title}</Text>
       {outcome ? <Text style={[styles.outcome, (card.pendingAction ?? card.resolution?.actionId) === 'approve' && { color: colors.green }, { fontSize: 15 * factor }]}>{outcome}</Text> : null}
+      {cloud.error ? <Text style={[styles.outcome, { color: colors.red, fontSize: 15 * factor }]} accessibilityRole="alert" onPress={cloud.dismissError}>{cloud.error}</Text> : null}
       {card.progress && open ? <CardProgressBar progress={card.progress} /> : null}
       {card.replaces ? <LinkedCard label="Replaces" link={card.replaces} /> : null}
       {card.replacedBy ? <LinkedCard label="Replaced by" link={card.replacedBy} /> : null}
@@ -166,7 +167,7 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
       {card.body && card.plainText ? <Text style={[styles.plainBody, { fontSize: 15 * factor, lineHeight: 22 * factor }]} selectable>{card.body}</Text>
         : card.body ? <MessageContent text={card.body} copyable={false} /> : null}
     </ScrollView>
-    {composing ? <Composer key={composing.id} action={composing} onSend={(text) => send(composing, text)} onCancel={() => setComposing(undefined)} /> : <View style={styles.bar}>
+    {composing ? <Composer key={composing.id} action={composing} onSend={(text) => void send(composing, text)} onCancel={() => setComposing(undefined)} /> : <View style={styles.bar}>
       {decide.length ? <>
         {decide.map((action: CardAction) => <CardButton key={action.id} wide action={action} onPress={() => run(action)} />)}
         {link ? <CardButton wide action={{ label: parseApolloLink(link)?.kind === 'session' ? 'Open thread' : 'Open link' }} onPress={() => void openCardLink(link)} /> : null}
