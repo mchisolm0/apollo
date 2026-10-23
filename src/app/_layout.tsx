@@ -6,7 +6,8 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StatusBar } from 'expo-status-bar';
 
 import { TextScaleProvider, useColors } from '@/features/relay/relay-ui';
-import { ApolloProvider } from '@/lib';
+import { SessionInboxAutoSettle } from '@/features/relay/use-session-inbox';
+import { ApolloProvider, useApollo } from '@/lib';
 import { OutboxProvider } from '@/lib/outbox-context';
 import { CloudProvider } from '@/features/cloud/cloud-context';
 import { IncomingShareProvider } from '@/features/sharing';
@@ -33,9 +34,15 @@ function InnerStack() {
       <StatusBar style="light" />
       <ScreenTracker />
       <NotificationNavigation />
+      <InboxAutoSettle />
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }} />
     </ThemeProvider>
   );
+}
+
+function InboxAutoSettle() {
+  const { agents, runtime } = useApollo();
+  return agents.map((agent) => <SessionInboxAutoSettle key={agent.id} agentId={agent.id} state={runtime[agent.id]} />);
 }
 
 function ScreenTracker() {

@@ -1,8 +1,13 @@
 import { createSessionInboxProjector, type SessionInboxState } from './session-inbox.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+import ts from 'typescript';
+import * as inboxModule from './session-inbox.ts';
+import type { SessionInboxResult } from './use-session-inbox';
 
-import { AUTO_SETTLE_DELAY_SECONDS, countSnoozedSessions, canSettleSession, dateLabel, deriveSessionInbox, isAutoSettleDue, isSessionSnoozed, pruneSnoozedLedger, reopenSession, settleSession, snoozeSession, unsnoozeSession } from './session-inbox.ts';
+import { AUTO_SETTLE_DELAY_SECONDS, canSettleSession, dateLabel, deriveSessionInbox, isAutoSettleDue, isSessionSnoozed, pruneSnoozedLedger, reopenSession, settleSession, snoozeSession, unsnoozeSession } from './session-inbox.ts';
 
 const baseState = {
   status: 'connected' as const,
@@ -215,14 +220,11 @@ test('snoozed threads stay hidden until the snooze expires', () => {
   assert.equal(isSessionSnoozed(ledger, 'other', 99), false);
 });
 
-test('expiry prunes the ledger and counts drop back to zero', () => {
+test('expiry prunes the ledger', () => {
   const ledger = snoozeSession(snoozeSession({}, 'a', 50), 'b', 150);
-  const sessions = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
-  assert.equal(countSnoozedSessions(sessions, ledger, 40), 2);
-  assert.equal(countSnoozedSessions(sessions, ledger, 100), 1);
   const pruned = pruneSnoozedLedger(ledger, 100);
   assert.deepEqual(pruned, { b: 150 });
-  assert.equal(countSnoozedSessions(sessions, pruned, 200), 0);
+  assert.deepEqual(pruneSnoozedLedger(pruned, 200), {});
 });
 
 test('unsnooze returns the thread immediately', () => {
@@ -231,21 +233,28 @@ test('unsnooze returns the thread immediately', () => {
   assert.equal(unsnoozeSession(ledger, 'missing'), ledger);
 });
 
-test('auto-settle fires only 3h after activity on settle-eligible threads', () => {
-  const due = { settled: false, running: false, pendingApproval: false, pinned: false, activityAt: 1000 };
-  const at = (seconds: number) => isAutoSettleDue(due, undefined, seconds);
-  assert.equal(at(1000 + AUTO_SETTLE_DELAY_SECONDS), false);
-  assert.equal(at(1000 + AUTO_SETTLE_DELAY_SECONDS + 1), true);
+test('auto-settle fires only 3h after reading the latest activity', () => {
+  const due = { settled: false, running: false, pendingApproval: false, pinned: false, activityAt: 1000, unread: false, failed: false, attention: false };
+  const readAt = 2000;
+  const at = (seconds: number) => isAutoSettleDue(due, undefined, seconds, readAt);
+  assert.equal(at(1000 + AUTO_SETTLE_DELAY_SECONDS + 1), false);
+  assert.equal(at(readAt + AUTO_SETTLE_DELAY_SECONDS), false);
+  assert.equal(at(readAt + AUTO_SETTLE_DELAY_SECONDS + 1), true);
 
-  const exempt = (overrides: Partial<typeof due>, disabled?: boolean) => isAutoSettleDue({ ...due, ...overrides }, disabled, 1000 + AUTO_SETTLE_DELAY_SECONDS + 1);
+  const exempt = (overrides: Partial<typeof due>, disabled?: boolean) => isAutoSettleDue({ ...due, ...overrides }, disabled, readAt + AUTO_SETTLE_DELAY_SECONDS + 1, readAt);
   assert.equal(exempt({ settled: true }), false);
   assert.equal(exempt({ running: true }), false);
   assert.equal(exempt({ pendingApproval: true }), false);
   assert.equal(exempt({ pinned: true }), false);
+  assert.equal(exempt({ unread: true }), false);
+  assert.equal(exempt({ failed: true }), false);
+  assert.equal(exempt({ attention: true }), false);
   assert.equal(exempt({}, true), false);
   assert.equal(exempt({}, false), true);
   assert.equal(exempt({}, undefined), true);
-  assert.equal(isAutoSettleDue({ ...due, activityAt: 0 }, undefined, 1000 + AUTO_SETTLE_DELAY_SECONDS + 1), false);
+  assert.equal(exempt({ activityAt: 0 }), false);
+  assert.equal(exempt({ activityAt: readAt + 1 }), false);
+  assert.equal(isAutoSettleDue(due, false, readAt + AUTO_SETTLE_DELAY_SECONDS + 1, undefined), false);
 });
 
 test('inbox ages are compact for the last week', () => {
@@ -263,5 +272,154 @@ test('inbox ages are compact for the last week', () => {
 test('queued messages prevent manual and automatic settling', () => {
   const session = { ...deriveSessionInbox('agent', baseState).find((item) => item.id === 'quiet')!, queued: true };
   assert.equal(canSettleSession(session), false);
-  assert.equal(isAutoSettleDue(session, false, session.activityAt + AUTO_SETTLE_DELAY_SECONDS + 1), false);
+  assert.equal(isAutoSettleDue(session, false, session.activityAt + AUTO_SETTLE_DELAY_SECONDS + 1, session.activityAt), false);
+});
+
+test('auto-settle keeps overnight results, failures, and never-opened threads visible', () => {
+  const state: SessionInboxState = {
+    sessions: [{ id: 'thread', lastActive: 1000, endedAt: 1000 }],
+    runs: {},
+    events: [],
+  };
+  const now = 1000 + AUTO_SETTLE_DELAY_SECONDS + 1;
+  const unread = deriveSessionInbox('agent', state)[0];
+  assert.equal(isAutoSettleDue(unread, false, now, undefined), false);
+  const neverOpened = deriveSessionInbox('agent', { ...state, sessions: [{ id: 'thread', lastActive: 1000 }] })[0];
+  assert.equal(isAutoSettleDue(neverOpened, false, now, undefined), false);
+  const failed = deriveSessionInbox('agent', { ...state, sessions: [{ ...state.sessions[0], endReason: 'run failed' }] }, {}, { thread: 1000 })[0];
+  assert.equal(failed.unread, false);
+  assert.equal(isAutoSettleDue(failed, false, now, 1000), false);
+});
+
+
+// Exercise the real hook/store with a clock and hook lifetimes, without native modules.
+function inboxFixture() {
+  const storage = new Map<string, string>();
+  const writes: { agentId: string; settled: Record<string, number> }[] = [];
+  const timers = new Map<number, () => void>();
+  let now = 100_000;
+  let nextTimer = 0;
+  let releaseSave: (() => void) | undefined;
+  const saving = new Promise<void>((resolve) => { releaseSave = resolve; });
+  type Slot = { deps: readonly unknown[]; value?: unknown; cleanup?: () => void };
+  let slots: Slot[] = [];
+  let cursor = 0;
+  let effects: (() => void)[] = [];
+  const same = (a: readonly unknown[], b: readonly unknown[]) => a.length === b.length && a.every((value, index) => Object.is(value, b[index]));
+  const memo = (factory: () => unknown, deps: readonly unknown[]) => {
+    const index = cursor++;
+    if (!slots[index] || !same(slots[index].deps, deps)) slots[index] = { deps, value: factory() };
+    return slots[index].value;
+  };
+  const exports = {} as {
+    useSessionInbox: (agentId: string, state: SessionInboxState) => SessionInboxResult;
+    SessionInboxAutoSettle: (props: { agentId: string; state: SessionInboxState }) => null;
+  };
+  const source = ts.transpileModule(readFileSync(new URL('./use-session-inbox.ts', import.meta.url), 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  runInNewContext(source, {
+    exports, Date: { now: () => now * 1000 },
+    setInterval: (tick: () => void) => { const id = ++nextTimer; timers.set(id, tick); return id; },
+    clearInterval: (id: number) => timers.delete(id),
+    require: (name: string) => {
+      if (name === './session-inbox') return inboxModule;
+      if (name === '@/config/posthog') return { posthog: { capture() {} } };
+      if (name.endsWith('/outbox-context')) return { useOutbox: () => ({ items: [] }) };
+      if (name === '@react-native-async-storage/async-storage') return { __esModule: true, default: {
+        getItem: async (key: string) => storage.get(key) ?? null,
+        setItem: async (key: string, value: string) => { storage.set(key, value); },
+      } };
+      if (name === '@/lib') return { useApollo: () => ({ saveInbox: async (agentId: string, settled: Record<string, number>) => { writes.push({ agentId, settled }); await saving; } }) };
+      if (name === 'react') return {
+        useMemo: memo,
+        useCallback: (callback: unknown, deps: readonly unknown[]) => memo(() => callback, deps),
+        useRef: (value: unknown) => memo(() => ({ current: value }), []),
+        useSyncExternalStore: (_subscribe: unknown, snapshot: () => unknown) => snapshot(),
+        useEffect: (effect: () => (() => void) | undefined, deps: readonly unknown[]) => {
+          const index = cursor++;
+          const old = slots[index];
+          if (old && same(old.deps, deps)) return;
+          const slot: Slot = { deps };
+          slots[index] = slot;
+          effects.push(() => { old?.cleanup?.(); slot.cleanup = effect(); });
+        },
+      };
+      throw new Error(`Unexpected import: ${name}`);
+    },
+  });
+  function mount<T>(component: () => T) {
+    const ownSlots: Slot[] = [];
+    return {
+      render: () => {
+        slots = ownSlots;
+        cursor = 0;
+        effects = [];
+        const result = component();
+        effects.forEach((effect) => effect());
+        return result;
+      },
+      unmount: () => ownSlots.forEach((slot) => slot.cleanup?.()),
+    };
+  }
+  return { storage, writes, timers, mount, api: exports,
+    setNow: (seconds: number) => { now = seconds; },
+    tick: () => [...timers.values()].forEach((tick) => tick()),
+    releaseSave: () => releaseSave!(),
+  };
+}
+
+const flushInbox = () => new Promise((resolve) => setImmediate(resolve));
+
+test('reading and rereading use wall time in the compatible local ledger without a read-effect loop', async () => {
+  const fixture = inboxFixture();
+  const state = { sessions: [{ id: 'thread', lastActive: 20, endedAt: 20 }], runs: {}, events: [] };
+  const screen = fixture.mount(() => fixture.api.useSessionInbox('agent', state));
+  screen.render();
+  await flushInbox();
+  const { markRead } = screen.render();
+  await markRead('thread');
+  const saved = () => JSON.parse(fixture.storage.get('apollo:session-inbox:agent')!);
+  assert.deepEqual(saved(), { settled: {}, read: { thread: 100_000 }, snoozed: {}, autoSettleDisabled: {} });
+  assert.equal(screen.render().markRead, markRead);
+  fixture.setNow(101_000);
+  await markRead('thread');
+  assert.equal(saved().read.thread, 101_000);
+  assert.equal(fixture.timers.size, 0);
+  assert.equal(fixture.writes.length, 0);
+});
+
+test('screen mounts do not tick; each agent owner waits after a reread and deduplicates pending settles', async () => {
+  const fixture = inboxFixture();
+  let state = { sessions: [{ id: 'thread', lastActive: 20, endedAt: 20 }], runs: {}, events: [] };
+  const inbox = fixture.mount(() => fixture.api.useSessionInbox('agent', state));
+  const thread = fixture.mount(() => fixture.api.useSessionInbox('agent', state));
+  const owner = fixture.mount(() => fixture.api.SessionInboxAutoSettle({ agentId: 'agent', state }));
+  const otherOwner = fixture.mount(() => fixture.api.SessionInboxAutoSettle({ agentId: 'other', state }));
+  inbox.render(); thread.render(); owner.render(); otherOwner.render();
+  await flushInbox();
+  await thread.render().markRead('thread');
+  inbox.render(); owner.render(); otherOwner.render();
+  assert.equal(fixture.timers.size, 2);
+  fixture.setNow(101_000);
+  await thread.render().markRead('thread');
+  fixture.setNow(100_000 + AUTO_SETTLE_DELAY_SECONDS + 1);
+  fixture.tick();
+  assert.equal(fixture.writes.length, 0);
+  fixture.setNow(101_000 + AUTO_SETTLE_DELAY_SECONDS);
+  fixture.tick();
+  assert.equal(fixture.writes.length, 0);
+  fixture.setNow(101_000 + AUTO_SETTLE_DELAY_SECONDS + 1);
+  fixture.tick();
+  assert.equal(fixture.writes.length, 1);
+  assert.equal(fixture.writes[0].agentId, 'agent');
+  assert.equal(fixture.writes[0].settled.thread, 20);
+  state = { ...state };
+  owner.render();
+  fixture.tick();
+  assert.equal(fixture.writes.length, 1);
+  owner.unmount(); otherOwner.unmount();
+  assert.equal(fixture.timers.size, 0);
+  fixture.releaseSave();
+  await flushInbox();
 });

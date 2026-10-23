@@ -1,13 +1,14 @@
 import { posthog } from '@/config/posthog';
 import { useOutbox } from '../../lib/outbox-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 
 import { useApollo, type InboxConfig, type InboxSettledState } from '@/lib';
 
 import {
   canSettleSession,
   createSessionInboxProjector,
+  deriveSessionInbox,
   isAutoSettleDue,
   isSessionSnoozed,
   pruneSnoozedLedger,
@@ -209,14 +210,16 @@ export function useSessionInbox(agentId: string, state: SessionInboxState | unde
     }).catch(reportError).finally(() => { entry.migrating = false; });
   }, [agentId, state?.sessions, store.loaded, store.settled, saveInbox, reportError]);
 
+  // Read writes must not change this callback and re-trigger the focused screen's read effect.
   const markRead = useCallback(async (sessionId: string): Promise<void> => {
     if (!store.loaded) return;
-    const session = sessions.find((candidate) => candidate.id === sessionId);
-    if (!session || session.running || session.pendingApproval) return;
     const current = entryFor(agentId);
-    if ((current.read[sessionId] ?? -1) >= session.activityAt) return;
-    await update(agentId, current.settled, { ...current.read, [sessionId]: session.activityAt });
-  }, [agentId, sessions, store.loaded]);
+    const session = deriveSessionInbox(agentId, state, current.settled, current.read, current.autoSettleDisabled).find((candidate) => candidate.id === sessionId);
+    if (!session || session.running || session.pendingApproval) return;
+    const readAt = Math.max(session.activityAt, Math.floor(Date.now() / 1000));
+    if (current.read[sessionId] === readAt) return;
+    await update(agentId, current.settled, { ...current.read, [sessionId]: readAt });
+  }, [agentId, state, store.loaded]);
 
   const settle = useCallback(async (sessionId: string): Promise<boolean> => {
     if (!store.loaded) return false;
@@ -256,22 +259,29 @@ export function useSessionInbox(agentId: string, state: SessionInboxState | unde
     return toggleAutoSettle(agentId, sessionId, enabled, saveInbox);
   }, [agentId, saveInbox]);
 
-  // Auto-settle: every minute, settle non-settled threads idle past the delay. Pinned/running/
-  // pending-approval/disabled threads are skipped by isAutoSettleDue; settle re-checks eligibility.
+  return { sessions, snoozed: store.snoozed, loaded: store.loaded, error: store.error, markRead, settle, reopen, snooze, unsnooze, setAutoSettle };
+}
+
+/** Mounted once per paired agent by the root layout, independent of mounted screens. */
+export function SessionInboxAutoSettle({ agentId, state }: { agentId: string; state: SessionInboxState | undefined }) {
+  const { sessions, loaded, settle } = useSessionInbox(agentId, state);
+  const pending = useRef(new Set<string>());
   useEffect(() => {
-    if (!store.loaded) return;
+    if (!loaded) return;
     const tick = () => {
       const now = Math.floor(Date.now() / 1000);
       for (const session of sessions) {
-        if (isAutoSettleDue(session, session.autoSettleDisabled, now)) void settle(session.id);
+        if (!pending.current.has(session.id) && isAutoSettleDue(session, session.autoSettleDisabled, now, entryFor(agentId).read[session.id])) {
+          pending.current.add(session.id);
+          void settle(session.id).finally(() => pending.current.delete(session.id));
+        }
       }
     };
     tick();
     const timer = setInterval(tick, 60_000);
     return () => clearInterval(timer);
-  }, [store.loaded, sessions, settle]);
-
-  return { sessions, snoozed: store.snoozed, loaded: store.loaded, error: store.error, markRead, settle, reopen, snooze, unsnooze, setAutoSettle };
+  }, [agentId, loaded, sessions, settle]);
+  return null;
 }
 
 /** Standalone access to the local-only snooze ledger for views that receive sessions as props. */
