@@ -60,17 +60,20 @@ export function previewLine(body: string | undefined): string | undefined {
     const trimmed = raw.trim();
     if (trimmed.startsWith('```')) { fenced = !fenced; continue; }
     if (fenced || /^(?:-{3,}|\*{3,}|_{3,})$/u.test(trimmed)) continue;
+    // Code spans are set aside first so `__init__.py` or `**/*.ts` keep their markers.
+    const code: string[] = [];
     const line = trimmed
+      .replace(/`([^`]+)`/gu, (_, span: string) => `\uE000${code.push(span) - 1}\uE001`)
       .replace(/^#{1,6}\s+/u, '')
       .replace(/^>\s?/u, '')
       .replace(/^(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/u, '')
       .replace(/!\[([^\]]*)\]\([^)]*\)/gu, '$1')
       .replace(/\[([^\]]+)\]\([^)]*\)/gu, '$1')
-      .replace(/`([^`]+)`/gu, '$1')
       .replace(/(\*\*|__)(.+?)\1/gu, '$2')
       .replace(/(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])/gu, '$1')
       .replace(/(?<!\w)_(?!\s)(.+?)(?<!\s)_(?!\w)/gu, '$1')
       .replace(/<[^>]+>/gu, '')
+      .replace(/\uE000(\d+)\uE001/gu, (_, index: string) => code[Number(index)] ?? '')
       .replace(/\s+/gu, ' ')
       .trim();
     if (line) return line;

@@ -153,15 +153,19 @@ type LiveCache = {
 };
 
 const EMPTY = '';
+/** Display kinds Hermes puts on user-role rows it injects itself. */
 const SYSTEM_DISPLAY_KINDS = new Set([
   'internal_notification', 'async_delegation_complete', 'process_complete',
-  'auto_continue', 'model_switch', 'personality_switch', 'failed_turn',
+  'auto_continue', 'model_switch', 'personality_switch',
 ]);
+/** Injected user rows without a display kind: delegation results and `[System note: ...]` nudges. */
+const SYSTEM_PROMPT = /^(?:\[ASYNC DELEGATION (?:BATCH COMPLETE|COMPLETE|TASK FAILED) — deleg_|\[System\b)/u;
 
 /** One-line prose summaries drop markdown markers; tool commands and paths stay literal. */
 export function stepSummary(step: TranscriptStep): string {
   if (step.kind === 'tool') return oneLine(step.input || step.output);
-  return previewLine(step.text) ?? oneLine(step.text);
+  // A code-only thought has no prose line; show the code without its fences.
+  return previewLine(step.text) ?? oneLine(step.text.replace(/^\s*```.*$/gmu, ''));
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -334,8 +338,11 @@ function buildHistory(history: readonly HermesMessage[], previous?: HistoryCache
       pushTool(key, { identity: message.toolCallId, name: message.toolName, output: text }, index, resultFailed(message.content) ? 'failed' : 'complete');
       continue;
     }
-    const system = SYSTEM_DISPLAY_KINDS.has(message.displayKind ?? '')
-      || ((role === 'user' || role === 'system') && /^\[ASYNC DELEGATION (?:BATCH COMPLETE|COMPLETE|TASK FAILED) — deleg_/u.test(text));
+    const injectable = role === 'user' || role === 'system';
+    // Hermes hides its own `[System: ...]` nudges, such as stream-timeout retries.
+    if (injectable && message.displayKind === 'hidden') continue;
+    // Assistant rows (including Hermes's `failed_turn` notice) stay assistant text inside their turn.
+    const system = injectable && (SYSTEM_DISPLAY_KINDS.has(message.displayKind ?? '') || SYSTEM_PROMPT.test(text));
     if (role !== 'user' && role !== 'assistant' && role !== 'error' && !(role === 'system' && system)) continue;
     const reasoning = role === 'assistant' ? message.reasoningContent ?? message.reasoning : undefined;
     if (reasoning?.trim()) pushStep({ id: `history-thought-${key}`, kind: 'thought', text: reasoning });

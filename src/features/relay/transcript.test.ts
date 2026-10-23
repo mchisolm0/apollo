@@ -21,7 +21,37 @@ test('thought summaries remove inline markdown while tool targets stay literal',
 
 test('thoughts starting with fenced code keep a readable summary and remain expandable', () => {
   assert.equal(stepSummary({ id: 't', kind: 'thought', text: '```ts\nconst x = 1;\n```\n**Inspect the result.**' }), 'Inspect the result.');
-  assert.ok(stepSummary({ id: 't', kind: 'thought', text: '```ts\nconst x = 1;\n```' }));
+});
+
+test('thought summaries keep markers inside code spans and show code-only thoughts without fences', () => {
+  assert.equal(stepSummary({ id: 't', kind: 'thought', text: 'Check `__init__.py` and `**/*.ts`' }), 'Check __init__.py and **/*.ts');
+  assert.equal(stepSummary({ id: 't', kind: 'thought', text: '```ts\nconst x = 1;\n```' }), 'const x = 1;');
+});
+
+test('an assistant failed_turn notice stays inside its failed turn', () => {
+  const rows = createTranscriptProjector()({
+    history: [
+      message({ id: 'u1', role: 'user', content: 'Run the tests' }),
+      message({ id: 'a1', role: 'assistant', toolCalls: [{ id: 'call-1', type: 'function', function: { name: 'terminal', arguments: '{"command":"pnpm test"}' } }] }),
+      message({ id: 't1', role: 'tool', toolName: 'terminal', toolCallId: 'call-1', content: 'ok' }),
+      message({ id: 'a2', role: 'assistant', content: 'The turn failed.', displayKind: 'failed_turn' }),
+    ],
+    events: [], runStatus: 'failed', running: false,
+  });
+  assert.deepEqual(rows.map((row) => row.kind), ['user', 'activity', 'assistant']);
+  assert.equal(activityOf(rows).status, 'failed');
+});
+
+test('drops hidden Hermes nudges and labels legacy system notes as system', () => {
+  const rows = createTranscriptProjector()({
+    history: [
+      message({ id: 'u1', role: 'user', content: 'Hi' }),
+      message({ id: 'h1', role: 'user', content: '[System: The stream timed out. Continue.]', displayKind: 'hidden' }),
+      message({ id: 'n1', role: 'user', content: '[System note: Your previous turn was interrupted.]' }),
+    ],
+    events: [], running: false,
+  });
+  assert.deepEqual(rows.map((row) => row.kind), ['user', 'system']);
 });
 
 test('labels backend-authored user turns as system and keeps their turn boundaries', () => {

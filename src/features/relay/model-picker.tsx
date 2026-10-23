@@ -29,14 +29,16 @@ export function ModelPicker({ models, defaultModel, selected, selectedProvider, 
   const styles = useThemedStyles(createStyles);
   const colors = useColors();
   const [query, setQuery] = useState('');
-  const currentId = selected ?? defaultModel ?? models.find((model) => model.default)?.id;
-  const matches = models.filter((model) => model.id === currentId && (!selectedProvider || model.provider === selectedProvider));
+  const isDefault = (model: HermesModel) => model.default ?? model.id === defaultModel;
+  const matches = models.filter((model) => model.id === selected && (!selectedProvider || model.provider === selectedProvider));
   const currentProvider = selectedProvider ?? matches.find((model) => model.default)?.provider ?? (matches.length === 1 ? matches[0].provider : undefined);
-  const currentModel = matches.find((model) => model.provider === currentProvider) ?? { id: currentId ?? 'hermes-agent' };
+  // Only an explicit selection missing from the list gets a synthetic row; with none, the default row is current.
+  const missing = selected && !models.some((model) => model.id === selected && model.provider === currentProvider) ? { id: selected, provider: currentProvider } : undefined;
+  const isCurrent = (model: HermesModel) => selected ? model.id === selected && model.provider === currentProvider : isDefault(model);
+  const currentModel = missing ?? models.find(isCurrent);
   const search = query.trim().toLocaleLowerCase();
   const groups = new Map<string, HermesModel[]>();
-  const choices = currentId && !models.some((model) => model.id === currentId && model.provider === currentProvider)
-    ? [{ id: currentId, provider: currentProvider }, ...models] : models;
+  const choices = missing ? [missing, ...models] : models;
   for (const model of choices) {
     if (search && !`${model.id} ${modelDisplayName(model)} ${model.provider ?? ''}`.toLocaleLowerCase().includes(search)) continue;
     const group = model.provider?.trim() || 'Other';
@@ -50,7 +52,7 @@ export function ModelPicker({ models, defaultModel, selected, selectedProvider, 
 
   return (
     <View style={styles.container}>
-      {currentId ? <Text style={{ color: colors.primary, fontSize: 13, paddingHorizontal: 16, paddingTop: 12 }}>Thread model: {modelDisplayName(currentModel)}</Text> : null}
+      {currentModel ? <Text style={{ color: colors.primary, fontSize: 13, paddingHorizontal: 16, paddingTop: 12 }}>Thread model: {modelDisplayName(currentModel)}</Text> : null}
       <TextInput
         accessibilityLabel="Find a model"
         placeholder="Find a model"
@@ -75,8 +77,8 @@ export function ModelPicker({ models, defaultModel, selected, selectedProvider, 
           ? <Text style={styles.group}>{item.title}</Text>
           : <ModelRow
             model={item.model}
-            isDefault={item.model.default ?? item.model.id === defaultModel}
-            isSelected={item.model.id === currentId && item.model.provider === currentProvider}
+            isDefault={isDefault(item.model)}
+            isSelected={isCurrent(item.model)}
             disabled={disabled}
             onSelect={onSelect}
           />}
@@ -108,7 +110,7 @@ function ModelRow({ model, isDefault, isSelected, disabled, onSelect }: {
         <Text style={styles.name} numberOfLines={1}>{modelDisplayName(model)}</Text>
         {model.label && model.id !== 'hermes-agent' ? <Text style={styles.id} numberOfLines={1}>{model.id}</Text> : null}
       </View>
-      {isDefault ? <Text style={styles.badge}>Default</Text> : null}
+      {isDefault && modelDisplayName(model) !== 'Default' ? <Text style={styles.badge}>Default</Text> : null}
       {isSelected ? <Text style={styles.check}>✓</Text> : null}
     </Pressable>
   );

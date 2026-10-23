@@ -99,7 +99,7 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
   const [modelOpen, setModelOpen] = useState(false);
   const [focused, setFocused] = useState(false);
   const activeModel = selectedModel ?? defaultModel ?? models.find((model) => model.default)?.id;
-  const activeModelLabel = activeModel ? modelDisplayName(models.find((model) => model.id === activeModel && (!selectedProvider || model.provider === selectedProvider)) ?? { id: activeModel }) : 'Default';
+  const activeModelLabel = activeModel ? shortModelName(models.find((model) => model.id === activeModel && (!selectedProvider || model.provider === selectedProvider)) ?? { id: activeModel }) : 'Default';
   const selection = observedSelection?.text === draft
     ? { start: Math.min(observedSelection.start, draft.length), end: Math.min(observedSelection.end, draft.length) }
     : { start: draft.length, end: draft.length };
@@ -273,11 +273,19 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
             <Text style={styles.modelSheetTitle}>Model</Text>
             <Pressable accessibilityRole="button" accessibilityLabel="Close model picker" onPress={() => setModelOpen(false)} style={styles.modelSheetClose}><Text style={styles.modelSheetCloseText}>Close</Text></Pressable>
           </View>
-          <ModelPicker models={models} defaultModel={defaultModel} selected={activeModel} selectedProvider={selectedProvider} disabled={isActing} loading={modelsLoading} onSelect={(model) => { onSelectModel?.(model); setModelOpen(false); }} />
+          <ModelPicker models={models} defaultModel={defaultModel} selected={selectedModel} selectedProvider={selectedProvider} disabled={isActing} loading={modelsLoading} onSelect={(model) => { onSelectModel?.(model); setModelOpen(false); }} />
         </View>
       </Modal>
     </KeyboardFrame>
   );
+}
+
+/** Composer button name: labels as the picker shows them, unlabeled ids cut to their last segment. The full id stays visible inside the picker. */
+function shortModelName(model: Pick<HermesModel, 'id' | 'label'>): string {
+  const name = modelDisplayName(model);
+  if (name !== model.id) return name;
+  const tail = model.id.split('/').pop() ?? model.id;
+  return tail.split(':')[0] || model.id;
 }
 
 function ComposerIcon({ name, label, disabled = false, selected = false, onPress }: { name: 'plus' | 'shippingbox'; label: string; disabled?: boolean; selected?: boolean; onPress?: () => void }) {
