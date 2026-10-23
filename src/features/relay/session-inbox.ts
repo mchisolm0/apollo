@@ -51,10 +51,6 @@ export function pruneSnoozedLedger(ledger: InboxSnoozed, atSeconds: number = now
   return Object.fromEntries(Object.entries(ledger).filter(([, until]) => until > atSeconds));
 }
 
-export function countSnoozedSessions(sessions: readonly { id: string }[], ledger: InboxSnoozed, atSeconds: number = nowSeconds()): number {
-  return sessions.reduce((count, session) => count + (isSessionSnoozed(ledger, session.id, atSeconds) ? 1 : 0), 0);
-}
-
 export type SessionInboxState = Pick<AgentRuntimeState, 'sessions' | 'runs' | 'events'>;
 
 export type InboxEvent = Pick<HermesRunEvent, 'event' | 'runId' | 'timestamp'> & {
@@ -166,20 +162,28 @@ export function canSettleSession(session: Pick<InboxSession, 'status' | 'pending
 }
 
 /**
- * True once 3h pass with no activity on a settled-eligible thread. Only the time
- * check uses nowSeconds, so callers can probe eligibility by passing a future time.
+ * Auto-settle only after the latest activity has been read and left idle for 3h.
+ * The local read ledger also protects quiet threads that have no attention badge.
  */
 export function isAutoSettleDue(
-  session: Pick<InboxSession, 'settled' | 'running' | 'pendingApproval' | 'pinned' | 'activityAt' | 'queued'>,
+  session: Pick<InboxSession, 'settled' | 'running' | 'pendingApproval' | 'pinned' | 'activityAt' | 'queued' | 'unread' | 'failed' | 'attention'>,
   autoSettleDisabled: boolean | undefined,
   nowSeconds: number,
+  readAt: number | undefined,
 ): boolean {
   return !session.settled && !session.queued && !session.running && !session.pendingApproval
     && !session.pinned
+    && !session.unread && !session.failed && !session.attention
     && autoSettleDisabled !== true
     // activityAt 0 means the backend sent no timestamps; idle time is unknown.
     && session.activityAt > 0
-    && session.activityAt + AUTO_SETTLE_DELAY_SECONDS < nowSeconds;
+    && readAt !== undefined && readAt >= session.activityAt
+    && readAt + AUTO_SETTLE_DELAY_SECONDS < nowSeconds;
+}
+
+/** Select due threads while earlier settle writes are still in flight. */
+export function autoSettleSessionsDue(sessions: readonly InboxSession[], read: InboxSettled, nowSeconds: number, pending: ReadonlySet<string>): InboxSession[] {
+  return sessions.filter((session) => !pending.has(session.id) && isAutoSettleDue(session, session.autoSettleDisabled, nowSeconds, read[session.id]));
 }
 
 export function settleSession(session: InboxSession, settledAt = Math.floor(Date.now() / 1000)): InboxSession {

@@ -90,11 +90,16 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   }, [agentId, state?.status, loadModels]));
   const inbox = useSessionInbox(agentId, state);
   const { markRead } = inbox;
+  const readableActivityAt = inbox.sessions.find((session) => session.id === resolvedId && !session.running && !session.pendingApproval)?.activityAt;
   useFocusEffect(useCallback(() => {
-    if (resolvedId && !loading && !localError && AppState.currentState === 'active') {
-      void markRead(resolvedId);
-    }
-  }, [resolvedId, loading, localError, markRead]));
+    if (!resolvedId || readableActivityAt === undefined || loading || localError) return;
+    const readIfActive = () => {
+      if (AppState.currentState === 'active') void markRead(resolvedId);
+    };
+    readIfActive();
+    const subscription = AppState.addEventListener('change', readIfActive);
+    return () => subscription.remove();
+  }, [resolvedId, loading, localError, markRead, readableActivityAt]));
   const queuedMessages = outbox.items.filter((item) => item.agentId === agentId && item.sessionId === resolvedId);
   const awaitingCreation = queuedMessages.some((item) => item.createsSession);
   const incoming = shareId ? getShare(shareId) : undefined;
