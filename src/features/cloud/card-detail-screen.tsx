@@ -130,7 +130,7 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
     : card.acknowledged ? acknowledgedLabel(card, card.acknowledged)
     : card.pendingAction ? `${actionLabel(card, card.pendingAction)}, sending`
       : card.resolution ? `${actionLabel(card, card.resolution.actionId)} by ${card.resolution.by} · ${stamp(card.resolution.at)}`
-        : open ? undefined : 'Settled';
+        : open && swipe !== 'reopen' ? undefined : 'Settled';
   // An open approval, or a morning card not yet kept or skipped, answers from the bar; everything else gets Copy and Settle.
   // A keepOpen approval stays open after its answer, so a resolution counts as answered too.
   const unanswered = open && (card.kind === 'approval' ? !card.pendingAction && !card.resolution : card.kind === 'briefing' && !card.acknowledged);
@@ -163,7 +163,7 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
     </View>
     <ScrollView contentContainerStyle={styles.content}>
       <Text style={[styles.title, { fontSize: 24 * factor, lineHeight: 30 * factor }]} accessibilityRole="header" selectable>{card.title}</Text>
-      {outcome ? <Text style={[styles.outcome, (card.pendingAction ?? card.resolution?.actionId) === 'approve' && { color: colors.green }, { fontSize: 15 * factor }]}>{outcome}</Text> : null}
+      {outcome ? <Text accessibilityLiveRegion="polite" style={[styles.outcome, (card.pendingAction ?? card.resolution?.actionId) === 'approve' && { color: colors.green }, { fontSize: 15 * factor }]}>{outcome}</Text> : null}
       {cloud.error ? <Text style={[styles.outcome, { color: colors.red, fontSize: 15 * factor }]} accessibilityRole="alert" onPress={cloud.dismissError}>{cloud.error}</Text> : null}
       {card.progress && open ? <CardProgressBar progress={card.progress} /> : null}
       {card.replaces ? <LinkedCard label="Replaces" link={card.replaces} /> : null}
@@ -171,12 +171,15 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
       {meta.length ? <View style={styles.meta}>
         {meta.map(([label, value]) => <View key={label} style={styles.metaRow}>
           <Text style={[styles.metaLabel, { fontSize: 14 * factor, lineHeight: 20 * factor }]}>{label}</Text>
-          <Text style={[styles.metaValue, { fontSize: 14 * factor, lineHeight: 20 * factor }]} selectable>{value}</Text>
+          {!card.plainText && /https?:\/\//iu.test(value) ? <View style={styles.metaValue}><MessageContent text={value} copyable={false} /></View>
+            : <Text style={[styles.metaValue, { fontSize: 14 * factor, lineHeight: 20 * factor }]} selectable>{value}</Text>}
         </View>)}
       </View> : null}
       {card.metrics?.length ? <MetricRow metrics={card.metrics} /> : null}
       {card.picks?.length ? <CardPicks card={card} onPick={open ? pick : () => {}} /> : null}
-      {card.body && card.plainText ? <Text style={[styles.plainBody, { fontSize: 15 * factor, lineHeight: 22 * factor }]} selectable>{card.body}</Text>
+      {/* The digest producer sends a fixed-width text table, including literal home-directory paths. */}
+      {card.body && card.source === 'digest' ? <ScrollView horizontal><Text style={[styles.plainBody, styles.monospace, { fontSize: 15 * factor, lineHeight: 22 * factor }]} selectable>{card.body}</Text></ScrollView>
+        : card.body && card.plainText ? <Text style={[styles.plainBody, { fontSize: 15 * factor, lineHeight: 22 * factor }]} selectable>{card.body}</Text>
         : card.body ? <MessageContent text={card.body} copyable={false} /> : null}
     </ScrollView>
     {composing ? <Composer key={composing.id} action={composing} onSend={(text) => send(composing, text)} onCancel={() => setComposing(undefined)} /> : <View style={styles.bar}>
@@ -208,6 +211,7 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   metaValue: { color: colors.secondary, flex: 1, fontVariant: ['tabular-nums'] },
   linkValue: { color: colors.cyan, flex: 1 },
   plainBody: { color: colors.primary },
+  monospace: { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
   metrics: { flexDirection: 'row', borderTopWidth: StyleSheet.hairlineWidth, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: colors.line },
   metric: { flex: 1, minWidth: 0, paddingVertical: 10 },
   metricDivided: { paddingLeft: 12, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.line },

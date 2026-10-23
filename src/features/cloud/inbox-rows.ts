@@ -113,7 +113,7 @@ export function parseSettledCards(value: unknown): SettledCards {
  * thread keeps that history. Search hides the morning card; attention keeps open response
  * cards and threads needing attention.
  */
-export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isSnoozed, settledCards = NO_SETTLED, pendingRunIds = NO_RUNS, runStateLive = false, fresh = true, query = '', attentionOnly = false, collapsed }: {
+export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isSnoozed, settledCards = NO_SETTLED, pendingRunIds = NO_RUNS, runStateLive = false, fresh = true, query = '', attentionOnly = false, collapsed, now = Date.now() }: {
   sessions: readonly S[];
   cards: readonly InboxCard[];
   /** Runs this phone knows are waiting for approval. */
@@ -130,6 +130,8 @@ export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isS
   query?: string;
   attentionOnly?: boolean;
   collapsed: Readonly<Record<CollapsibleSectionId, boolean>>;
+  /** Current time in milliseconds, refreshed by the inbox even without new data. */
+  now?: number;
 }): InboxRow<S>[] {
   const search = query.trim().toLocaleLowerCase();
   const matches = (...parts: (string | undefined)[]) => !search || parts.join(' ').toLocaleLowerCase().includes(search);
@@ -142,9 +144,8 @@ export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isS
     const { sessionId, runId } = hermesApprovalTarget(card);
     return (sessionId !== undefined && waitingSessions.has(sessionId)) || (runId !== undefined && pendingRunIds.has(runId));
   };
-  const now = Date.now() / 1000;
   // shortcut: age-out overrides Reopen; add a local reopen override if aged updates must return to Open.
-  const settledForDisplay = (card: InboxCard) => isCardSettled(card, settledCards) || (card.kind === 'update' && now - cardTime(card) > 3 * 24 * 60 * 60);
+  const settledForDisplay = (card: InboxCard) => isCardSettled(card, settledCards) || (card.kind === 'update' && now / 1000 - cardTime(card) > 3 * 24 * 60 * 60);
   const shown = cards.filter((card) => card.source !== 'hermes');
   const hermes = cards.filter((card) => card.source === 'hermes' && card.kind === 'approval' && !isCardSettled(card, settledCards) && !knownLocally(card));
   const open = [...shown.filter((card) => !settledForDisplay(card)), ...hermes];
