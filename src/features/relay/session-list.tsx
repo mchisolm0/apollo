@@ -152,7 +152,8 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
     : { text: session.updatedAt, style: styles.date };
   const quiet = session.settled || snoozed;
   const source = runtime[session.agentId]?.sessions.find((candidate) => candidate.id === session.id)?.source?.trim();
-  const sourceLabel = source && source !== 'api_server' ? source.charAt(0).toUpperCase() + source.slice(1) : undefined;
+  // Short sources are acronyms (cli); longer ones read as words (discord).
+  const sourceLabel = source && source !== 'api_server' ? source.length <= 3 ? source.toUpperCase() : source.charAt(0).toUpperCase() + source.slice(1) : undefined;
   // Hermes previews are the first user message; skip them when the title already says the same thing.
   const preview = session.preview?.trim();
   const showPreview = !quiet && preview && !session.title.startsWith(preview.replace(/…$|\.\.\.$/u, '').slice(0, 40));
