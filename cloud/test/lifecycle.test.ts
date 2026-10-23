@@ -74,19 +74,24 @@ describe('phase', () => {
     expect(ready.push).toBe('passive');
     expect(sentPushes(expo).map(([push]) => [push?.data.cardId, push?.interruptionLevel])).toEqual([[card.id, 'active'], [card.id, 'passive']]);
   });
-  it("keeps a new phase's retry when the previous phase's send finishes after it", async () => {
+  it("keeps the newest phase's retry when an earlier phase's send finishes after it", async () => {
     let finishFirst!: () => void;
     const firstSent = new Promise<void>((resolve) => (finishFirst = resolve));
     const ok = () => Response.json({ data: [{ status: 'ok', id: 'ticket' }] });
     const expo = vi
       .spyOn(globalThis, 'fetch')
       .mockImplementationOnce(async () => (await firstSent, ok()))
+      .mockImplementationOnce(async () => new Response('unavailable', { status: 503 }))
       .mockImplementationOnce(async () => new Response('unavailable', { status: 503 }));
     const key = 'preview:601:ccccccc:1';
     const card = await postCard(producer, waiting(key));
     await vi.waitFor(() => expect(expo).toHaveBeenCalledTimes(1));
 
     await postCard(producer, { source: 'preview', key, kind: 'update', title: 'Failed', phase: 'failed', push: 'alert' });
+    await vi.waitFor(() => expect(expo).toHaveBeenCalledTimes(2));
+    // Back to the first phase's name, which is still a newer delivery than the send in flight.
+    await postCard(producer, waiting(key));
+    await vi.waitFor(() => expect(expo).toHaveBeenCalledTimes(3));
     await vi.waitFor(async () => expect(await pushState(card.id)).toEqual({ push_status: 'pending', push_attempts: 1 }));
     finishFirst();
 

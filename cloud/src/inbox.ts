@@ -139,6 +139,8 @@ const MIGRATIONS = [
   `,
   // A TokenScope as JSON, or NULL for a token that may write any source.
   `ALTER TABLE tokens ADD COLUMN scope TEXT;`,
+  // Bumped on every phase change, so a send still in flight from an earlier phase can tell it's stale.
+  `ALTER TABLE cards ADD COLUMN push_generation INTEGER NOT NULL DEFAULT 0;`,
 ];
 
 export class Inbox extends DurableObject<Env> {
@@ -189,7 +191,10 @@ export class Inbox extends DurableObject<Env> {
         : this.#commit({ ...fields, ...link, ...plain, id, push: push ?? DEFAULT_PUSH[input.kind], state: 'open', createdAt: iso() });
 
       // A new phase drops whatever the last one still owed, so an old alert can't retry after it.
-      if (rePush) this.sql.exec(`DELETE FROM push_recipients WHERE card_id = ?`, id);
+      if (rePush) {
+        this.sql.exec(`DELETE FROM push_recipients WHERE card_id = ?`, id);
+        this.sql.exec(`UPDATE cards SET push_generation = push_generation + 1 WHERE id = ?`, id);
+      }
       const pushing = (!existing || rePush) && card.push !== 'none' && this.#addRecipients(card.id) > 0;
       if (pushing) this.sql.exec(`UPDATE cards SET push_status = 'pending', push_attempts = 0, push_next_at = ? WHERE id = ?`, Date.now(), card.id);
       else if (rePush) this.sql.exec(`UPDATE cards SET push_status = 'none', push_next_at = NULL WHERE id = ?`, id);
@@ -553,8 +558,8 @@ export class Inbox extends DurableObject<Env> {
   async #deliverDuePushes() {
     const now = Date.now();
     const due = this.sql
-      .exec<{ id: string; data: string; push_attempts: number }>(
-        `UPDATE cards SET push_next_at = ? WHERE push_status = 'pending' AND push_next_at <= ? RETURNING id, data, push_attempts`,
+      .exec<{ id: string; data: string; push_attempts: number; push_generation: number }>(
+        `UPDATE cards SET push_next_at = ? WHERE push_status = 'pending' AND push_next_at <= ? RETURNING id, data, push_attempts, push_generation`,
         now + PUSH_LEASE,
         now,
       )
@@ -582,7 +587,8 @@ export class Inbox extends DurableObject<Env> {
               this.sql.exec('DELETE FROM push_recipients WHERE expo_push_token = ?', token);
             }
           // A phase change during the send reset this card's delivery; that new delivery isn't this send's to finish.
-          if (this.#cardBy('id = ?', row.id)?.phase !== card.phase) return;
+          const current = this.sql.exec<{ push_generation: number }>('SELECT push_generation FROM cards WHERE id = ?', row.id).toArray()[0];
+          if (current?.push_generation !== row.push_generation) return;
           if (outcome.status === 'failed') return done('failed');
           if (outcome.status === 'tickets')
             for (const token of outcome.delivered) this.sql.exec('DELETE FROM push_recipients WHERE card_id = ? AND expo_push_token = ?', row.id, token);
