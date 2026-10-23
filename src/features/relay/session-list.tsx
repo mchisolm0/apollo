@@ -1,5 +1,5 @@
 import { HAS_MAIL_TOOLBAR, MAIL_TOOLBAR_INSET, MailToolbar } from './mail-toolbar';
-import { memo, useCallback, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Keyboard, Pressable, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
 import { LegendList } from '@legendapp/list/react-native';
@@ -52,6 +52,11 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
   const [query, setQuery] = useState('');
   const [collapsed, setCollapsed] = useState<Record<CollapsibleSectionId, boolean>>({ snoozed: true, settled: true });
   const [attentionOnly, setAttentionOnly] = useState(false);
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
   // Sessions carry their agent; the inbox route only ever shows one agent at a time.
   const { snoozed, snooze, unsnooze } = useSnoozeLedger(sessions[0]?.agentId ?? '');
   const { loaded: autoSettleLoaded, setAutoSettle } = useAutoSettleLedger(sessions[0]?.agentId ?? '');
@@ -61,7 +66,7 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
   const handleSnooze = useCallback((sessionId: string) => { void snooze(sessionId); }, [snooze]);
   const handleUnsnooze = useCallback((sessionId: string) => { void unsnooze(sessionId); }, [unsnooze]);
   const handleAutoSettle = useCallback((sessionId: string, enabled: boolean) => { void setAutoSettle(sessionId, enabled); }, [setAutoSettle]);
-  const rows = useMemo(() => buildInboxRows({ sessions, cards, settledCards, pendingRunIds, runStateLive: connection === 'connected', fresh, query, attentionOnly, collapsed, isSnoozed: (id) => isSessionSnoozed(snoozed, id) }), [sessions, cards, settledCards, pendingRunIds, connection, fresh, query, collapsed, attentionOnly, snoozed]);
+  const rows = useMemo(() => buildInboxRows({ sessions, cards, settledCards, pendingRunIds, runStateLive: connection === 'connected', fresh, query, attentionOnly, collapsed, now, isSnoozed: (id) => isSessionSnoozed(snoozed, id) }), [sessions, cards, settledCards, pendingRunIds, connection, fresh, query, collapsed, attentionOnly, snoozed, now]);
 
   return <KeyboardFrame key={fontScale}>
     <View style={styles.container}>

@@ -204,6 +204,22 @@ test('only update cards older than three days age into Settled, using their late
   assert.equal(cards[2].state, 'open');
 });
 
+test('a clock tick ages an update into Settled without new inbox data', () => {
+  const updatedAt = at(12);
+  const expiry = Date.parse(updatedAt) + 3 * 24 * 60 * 60 * 1000;
+  const input = {
+    sessions: [],
+    cards: [card('aging', 'update', { updatedAt }), card('approval', 'approval', { updatedAt })],
+    isSnoozed: () => false,
+    collapsed: { ...collapsed, settled: false },
+  };
+  assert.deepEqual(layout(buildInboxRows({ ...input, now: expiry })), ['card:approval', 'card:aging']);
+  const rows = buildInboxRows({ ...input, now: expiry + 60_000 });
+  assert.deepEqual(layout(rows), ['card:approval', '[Settled 1]', 'card:aging']);
+  assert.ok(rows.some((row) => row.kind === 'card' && row.id === 'aging' && row.settled));
+  assert.equal(input.cards[0].state, 'open');
+});
+
 test('closed and locally settled response cards stay out of the attention filter', () => {
   const rows = buildInboxRows({
     sessions: [],
