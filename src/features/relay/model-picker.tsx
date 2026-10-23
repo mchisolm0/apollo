@@ -1,5 +1,5 @@
 import { useThemedStyles, useColors, type RelayPalette } from './relay-ui';
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { LegendList } from '@legendapp/list/react-native';
 
@@ -19,32 +19,38 @@ export interface ModelPickerProps {
 
 type Row = { kind: 'group'; id: string; title: string } | { kind: 'model'; id: string; model: HermesModel };
 
+/** Hermes's compatibility id selects the agent default, rather than a particular model. */
+export function modelDisplayName(model: Pick<HermesModel, 'id' | 'label'>): string {
+  return model.id === 'hermes-agent' ? 'Default' : model.label?.trim() || model.id;
+}
+
 /** Bottom-sheet-friendly model list. Renders only what the server returns; empty state when none. */
 export function ModelPicker({ models, defaultModel, selected, selectedProvider, disabled = false, loading = false, onSelect }: ModelPickerProps) {
   const styles = useThemedStyles(createStyles);
   const colors = useColors();
   const [query, setQuery] = useState('');
-  const matches = models.filter((model) => model.id === selected && (!selectedProvider || model.provider === selectedProvider));
-  const currentProvider = selectedProvider ?? (matches.length === 1 ? matches[0].provider : undefined);
-  const rows = useMemo<Row[]>(() => {
-    const search = query.trim().toLocaleLowerCase();
-    const groups = new Map<string, HermesModel[]>();
-    const choices = selected && !models.some((model) => model.id === selected && model.provider === currentProvider)
-      ? [{ id: selected, provider: currentProvider }, ...models] : models;
-    for (const model of choices) {
-      if (search && !`${model.id} ${model.label ?? ''} ${model.provider ?? ''}`.toLocaleLowerCase().includes(search)) continue;
-      const group = model.provider?.trim() || 'Other';
-      groups.set(group, [...(groups.get(group) ?? []), model]);
-    }
-    return [...[...groups.entries()].sort(([a], [b]) => a.localeCompare(b))].flatMap(([title, items]): Row[] => [
-      { kind: 'group', id: title, title },
-      ...items.map((model): Row => ({ kind: 'model', id: JSON.stringify([model.provider, model.id]), model })),
-    ]);
-  }, [models, query, selected, currentProvider]);
+  const currentId = selected ?? defaultModel ?? models.find((model) => model.default)?.id;
+  const matches = models.filter((model) => model.id === currentId && (!selectedProvider || model.provider === selectedProvider));
+  const currentProvider = selectedProvider ?? matches.find((model) => model.default)?.provider ?? (matches.length === 1 ? matches[0].provider : undefined);
+  const currentModel = matches.find((model) => model.provider === currentProvider) ?? { id: currentId ?? 'hermes-agent' };
+  const search = query.trim().toLocaleLowerCase();
+  const groups = new Map<string, HermesModel[]>();
+  const choices = currentId && !models.some((model) => model.id === currentId && model.provider === currentProvider)
+    ? [{ id: currentId, provider: currentProvider }, ...models] : models;
+  for (const model of choices) {
+    if (search && !`${model.id} ${modelDisplayName(model)} ${model.provider ?? ''}`.toLocaleLowerCase().includes(search)) continue;
+    const group = model.provider?.trim() || 'Other';
+    groups.set(group, [...(groups.get(group) ?? []), model]);
+  }
+  const rows = [...[...groups.entries()].sort(([a], [b]) => a.localeCompare(b))].flatMap(([title, items]): Row[] => [
+    { kind: 'group', id: title, title },
+    ...items.sort((a, b) => modelDisplayName(a).localeCompare(modelDisplayName(b), undefined, { numeric: true, sensitivity: 'base' }) || a.id.localeCompare(b.id))
+      .map((model): Row => ({ kind: 'model', id: JSON.stringify([model.provider, model.id]), model })),
+  ]);
 
   return (
     <View style={styles.container}>
-      {selected ? <Text style={{ color: colors.primary, fontSize: 13, paddingHorizontal: 16, paddingTop: 12 }}>Thread model: {selected}</Text> : null}
+      {currentId ? <Text style={{ color: colors.primary, fontSize: 13, paddingHorizontal: 16, paddingTop: 12 }}>Thread model: {modelDisplayName(currentModel)}</Text> : null}
       <TextInput
         accessibilityLabel="Find a model"
         placeholder="Find a model"
@@ -70,7 +76,7 @@ export function ModelPicker({ models, defaultModel, selected, selectedProvider, 
           : <ModelRow
             model={item.model}
             isDefault={item.model.default ?? item.model.id === defaultModel}
-            isSelected={selected ? item.model.id === selected && item.model.provider === currentProvider : (item.model.default ?? item.model.id === defaultModel)}
+            isSelected={item.model.id === currentId && item.model.provider === currentProvider}
             disabled={disabled}
             onSelect={onSelect}
           />}
@@ -92,15 +98,15 @@ function ModelRow({ model, isDefault, isSelected, disabled, onSelect }: {
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Use model ${model.label ?? model.id}${isDefault ? ', default' : ''}`}
+      accessibilityLabel={`Use model ${modelDisplayName(model)}${isDefault ? ', default' : ''}`}
       accessibilityState={{ selected: isSelected, disabled }}
       disabled={disabled}
       onPress={() => onSelect(model)}
       style={({ pressed }) => [styles.row, pressed && styles.pressed]}
     >
       <View style={styles.rowText}>
-        <Text style={styles.name} numberOfLines={1}>{model.label ?? model.id}</Text>
-        {model.label ? <Text style={styles.id} numberOfLines={1}>{model.id}</Text> : null}
+        <Text style={styles.name} numberOfLines={1}>{modelDisplayName(model)}</Text>
+        {model.label && model.id !== 'hermes-agent' ? <Text style={styles.id} numberOfLines={1}>{model.id}</Text> : null}
       </View>
       {isDefault ? <Text style={styles.badge}>Default</Text> : null}
       {isSelected ? <Text style={styles.check}>✓</Text> : null}
