@@ -576,14 +576,16 @@ export class Inbox extends DurableObject<Env> {
 
         const outcome = await sendPush(card, recipients, this.env.EXPO_ACCESS_TOKEN);
         this.ctx.storage.transactionSync(() => {
-          if (outcome.status === 'failed') return done('failed');
-          if (outcome.status === 'tickets') {
-            for (const token of outcome.delivered) this.sql.exec('DELETE FROM push_recipients WHERE card_id = ? AND expo_push_token = ?', row.id, token);
+          if (outcome.status === 'tickets')
             for (const token of outcome.unregistered) {
               this.sql.exec('DELETE FROM devices WHERE expo_push_token = ?', token);
               this.sql.exec('DELETE FROM push_recipients WHERE expo_push_token = ?', token);
             }
-          }
+          // A phase change during the send reset this card's delivery; that new delivery isn't this send's to finish.
+          if (this.#cardBy('id = ?', row.id)?.phase !== card.phase) return;
+          if (outcome.status === 'failed') return done('failed');
+          if (outcome.status === 'tickets')
+            for (const token of outcome.delivered) this.sql.exec('DELETE FROM push_recipients WHERE card_id = ? AND expo_push_token = ?', row.id, token);
           // Revocation may also have removed recipients while the send was in flight.
           const left = this.sql.exec<{ n: number }>('SELECT count(*) AS n FROM push_recipients WHERE card_id = ?', row.id).one().n;
           if (left === 0) return done('sent');

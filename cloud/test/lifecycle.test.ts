@@ -1,8 +1,9 @@
 // A card that moves through phases in place: approve, publish, ready.
+import { runInDurableObject } from 'cloudflare:test';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { CardInput, InboxEvent } from '../src/contract';
-import { call, createToken, mockExpo, openStream, postCard, respond, sentPushes } from './helpers';
+import { call, createToken, inbox, mockExpo, openStream, postCard, respond, sentPushes } from './helpers';
 
 let device: string;
 let producer: string;
@@ -16,6 +17,11 @@ beforeAll(async () => {
 afterEach(() => {
   vi.restoreAllMocks();
 });
+
+const pushState = (id: string) =>
+  runInDurableObject(inbox(), (_, state) =>
+    state.storage.sql.exec<{ push_status: string; push_attempts: number }>('SELECT push_status, push_attempts FROM cards WHERE id = ?', id).one(),
+  );
 
 const waiting = (key: string): CardInput => ({
   source: 'preview',
@@ -67,6 +73,26 @@ describe('phase', () => {
 
     expect(ready.push).toBe('passive');
     expect(sentPushes(expo).map(([push]) => [push?.data.cardId, push?.interruptionLevel])).toEqual([[card.id, 'active'], [card.id, 'passive']]);
+  });
+  it("keeps a new phase's retry when the previous phase's send finishes after it", async () => {
+    let finishFirst!: () => void;
+    const firstSent = new Promise<void>((resolve) => (finishFirst = resolve));
+    const ok = () => Response.json({ data: [{ status: 'ok', id: 'ticket' }] });
+    const expo = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(async () => (await firstSent, ok()))
+      .mockImplementationOnce(async () => new Response('unavailable', { status: 503 }));
+    const key = 'preview:601:ccccccc:1';
+    const card = await postCard(producer, waiting(key));
+    await vi.waitFor(() => expect(expo).toHaveBeenCalledTimes(1));
+
+    await postCard(producer, { source: 'preview', key, kind: 'update', title: 'Failed', phase: 'failed', push: 'alert' });
+    await vi.waitFor(async () => expect(await pushState(card.id)).toEqual({ push_status: 'pending', push_attempts: 1 }));
+    finishFirst();
+
+    await vi.waitFor(() => expect(expo.mock.results[0]?.type).toBe('return'));
+    await expo.mock.results[0]?.value;
+    expect(await pushState(card.id)).toEqual({ push_status: 'pending', push_attempts: 1 });
   });
 });
 
