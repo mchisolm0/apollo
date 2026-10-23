@@ -4,6 +4,11 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "observability": { "enabled": true },
+  // Store reviews (src/reviews.ts) pull every 15 minutes. Play allows 200 reads an hour per app.
+  "triggers": { "crons": ["*/15 * * * *"] },
+  "vars": {
+    "REVIEW_APPS": "[{\"name\":\"Scryve\",\"appStore\":\"6798955244\",\"play\":\"com.sowinghope.count\"}]"
+  },
   // Set with `wrangler secret put`. EXPO_ACCESS_TOKEN is optional and only
   // needed when the Expo project enforces push security (see src/env.d.ts).
   "secrets": { "required": ["ADMIN_SECRET"] },

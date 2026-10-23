@@ -6,6 +6,7 @@ import { type } from 'arktype';
 import type { ApiError, CardResponse } from './contract';
 import { secretsMatch, sha256Hex } from './crypto';
 import { Inbox, TOKEN_HASH_HEADER, type Reply } from './inbox';
+import { pullReviews, reviewsConfig, sendReviewReplies } from './reviews';
 import * as schema from './schema';
 
 export { Inbox };
@@ -18,6 +19,8 @@ interface Base {
   request: Request;
   url: URL;
   inbox: DurableObjectStub<Inbox>;
+  env: Env;
+  ctx: ExecutionContext;
 }
 interface Authed extends Base {
   /** SHA-256 of the caller's bearer token. */
@@ -86,7 +89,7 @@ const v1 = router<Authed>()
     const patch = await readBody(request, schema.CardPatch);
     return patch instanceof Response ? patch : send(await inbox.patchCard(auth, id, patch));
   })
-  .on('POST', '/v1/cards/:id/respond', async ({ request, inbox, auth }, { id }) => {
+  .on('POST', '/v1/cards/:id/respond', async ({ request, inbox, auth, env, ctx }, { id }) => {
     const key = schema.IdempotencyKey(request.headers.get('idempotency-key'));
     if (key instanceof type.errors) return error(400, 'idempotency_key_required', 'send an Idempotency-Key header');
     const response = await readBody(request, schema.CardResponse);
@@ -97,7 +100,10 @@ const v1 = router<Authed>()
         ? { actionId: response.actionId, ...(response.text === undefined ? {} : { text: response.text }) }
         : { pick: response.pick, done: response.done };
     const bodyHash = await sha256Hex(JSON.stringify(canonical));
-    return send(await inbox.respond(auth, id, canonical, { key, bodyHash }));
+    const reply = await inbox.respond(auth, id, canonical, { key, bodyHash });
+    // A reply to a store review goes out now rather than on the next cron.
+    if (reply.status === 200 && reply.body.source === 'reviews') ctx.waitUntil(syncReviews(env, inbox, { pull: false }));
+    return send(reply);
   })
   .on('GET', '/v1/events', async ({ url, inbox, auth }) => {
     const query = schema.EventsQuery(Object.fromEntries(url.searchParams));
@@ -135,8 +141,19 @@ async function isAdmin(request: Request, env: Env) {
   return secretsMatch(presented, env.ADMIN_SECRET);
 }
 
+async function syncReviews(env: Env, inbox: DurableObjectStub<Inbox>, { pull }: { pull: boolean }) {
+  const config = await reviewsConfig(env);
+  if (!config) return;
+  if (pull) await pullReviews(inbox, config);
+  await sendReviewReplies(inbox, config);
+}
+
 export default {
-  async fetch(request, env) {
+  async scheduled(_controller, env, ctx) {
+    ctx.waitUntil(syncReviews(env, env.INBOX.getByName(INBOX_NAME), { pull: true }));
+  },
+
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (request.method === 'GET' && url.pathname === '/v1/health') return Response.json({ ok: true });
 
@@ -144,13 +161,13 @@ export default {
       const inbox = env.INBOX.getByName(INBOX_NAME);
       const adminRoute = admin.match(request.method, url);
       if (adminRoute) {
-        return (await isAdmin(request, env)) ? await adminRoute({ request, url, inbox }) : error(401, 'unauthorized', 'admin secret required');
+        return (await isAdmin(request, env)) ? await adminRoute({ request, url, inbox, env, ctx }) : error(401, 'unauthorized', 'admin secret required');
       }
       const route = v1.match(request.method, url);
       if (!route) return error(404, 'not_found', 'no such route');
       const token = bearer(request);
       if (!token) return error(401, 'unauthorized', 'bearer token required');
-      return await route({ request, url, inbox, auth: await sha256Hex(token) });
+      return await route({ request, url, inbox, env, ctx, auth: await sha256Hex(token) });
     } catch (cause) {
       console.error(cause);
       return error(500, 'internal', 'internal error');

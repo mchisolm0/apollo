@@ -18,6 +18,7 @@ export const SOURCE_STYLES = {
   jobs: { label: 'Jobs', symbol: { ios: 'briefcase.fill', android: 'work' }, hue: '#ff8a95' },
   hermes: { label: 'Hermes', symbol: { ios: 'bolt.fill', android: 'bolt' } },
   feedback: { label: 'Feedback', symbol: { ios: 'bubble.left.and.text.bubble.right.fill', android: 'forum' }, hue: '#5fd4d0' },
+  reviews: { label: 'Reviews', symbol: { ios: 'star.bubble.fill', android: 'reviews' }, hue: '#f7c948' },
 } as const satisfies Record<Source, SourceStyle>;
 
 function channels(hex: string): [number, number, number] {
