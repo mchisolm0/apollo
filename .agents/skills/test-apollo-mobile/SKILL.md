@@ -102,21 +102,23 @@ existing Tailscale Serve route for port `8643` (read it with
   worktree under test. Connector changes in a PR are not live. Test the app's
   behavior against the live connector, including how it degrades when a new
   route is missing, and report the connector side as skipped.
-- If the simulator needs pairing, create a short-lived local pairing without
-  printing the secret:
-  `node ~/code/apollo/connector/cli.mjs pair --name "Apollo QA simulator" > "$TMPDIR/apollo-pair.txt"`
+- If the simulator needs pairing, create a short-lived pairing without
+  printing the secret. Write it to a unique file,
+  `pair_file=$(mktemp "$TMPDIR/apollo-pair.XXXXXX")`, then run
+  `node ~/code/apollo/connector/cli.mjs pair --name "Apollo QA simulator" > "$pair_file"`.
+  From another Mac, run it as
+  `ssh mini 'node ~/code/apollo/connector/cli.mjs pair --name "Apollo QA simulator" --public-base-url <serve-url>' > "$pair_file"`
+  so the link points at the Serve route instead of loopback. Stop if either
+  command fails or the file has no `apollo://pair` line.
   The output includes a QR code that encodes the token, so never print or
   filter the file in a way that echoes it. Put only the link on the simulator
   clipboard with
-  `agent-device clipboard write "$(grep -m1 '^apollo://pair' "$TMPDIR/apollo-pair.txt")" --session apollo-mobile-check`
-  (`xcrun simctl pbcopy` leaves the iOS 27 clipboard empty), long-press the
-  connect screen's field and choose Paste, then delete the file. The simulator
-  clipboard syncs to the Mac's, so overwrite it afterward. From another Mac,
-  run the same command as
-  `ssh mini 'node ~/code/apollo/connector/cli.mjs pair --name "Apollo QA simulator" --public-base-url <serve-url>' > "$TMPDIR/apollo-pair.txt"`
-  so the link points at the Serve route instead of loopback. Keep an existing
-  pairing whenever it still works, and leave QA pairings in place for the user
-  to revoke.
+  `agent-device clipboard write "$(grep -m1 '^apollo://pair' "$pair_file")" --session apollo-mobile-check`
+  (`xcrun simctl pbcopy` leaves the iOS 27 clipboard empty), then long-press
+  the connect screen's field and choose Paste. Whether pairing succeeds or
+  fails, delete `$pair_file` and overwrite the clipboard with a non-secret
+  value (it syncs to the Mac's). Keep an existing pairing whenever it still
+  works, and leave QA pairings in place for the user to revoke.
 - Cloud cards are the user's real inbox on Cloudflare. Never approve, reject,
   pick, or otherwise respond to a card the pass did not create, and never
   post cards with producer tokens.
