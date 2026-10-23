@@ -113,7 +113,7 @@ existing Tailscale Serve route for port `8643` (read it with
   connect screen's field and choose Paste, then delete the file. The simulator
   clipboard syncs to the Mac's, so overwrite it afterward. From another Mac,
   run the same command as
-  `ssh mini 'node ~/code/apollo/connector/cli.mjs pair --name "Apollo QA simulator" --public-base-url <serve-url>'`
+  `ssh mini 'node ~/code/apollo/connector/cli.mjs pair --name "Apollo QA simulator" --public-base-url <serve-url>' > "$TMPDIR/apollo-pair.txt"`
   so the link points at the Serve route instead of loopback. Keep an existing
   pairing whenever it still works, and leave QA pairings in place for the user
   to revoke.
