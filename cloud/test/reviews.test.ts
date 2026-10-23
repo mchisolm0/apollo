@@ -158,6 +158,38 @@ describe('store reviews', () => {
     expect((await byKey('play:com.example.app:p1')).meta?.problem).toBe('Not sent: Google Play replies are at most 350 characters.');
   });
 
+  it('sends only the newest reply, once, even when two runs overlap', async () => {
+    const posted: string[] = [];
+    stores(
+      (url, init) => (url.pathname.endsWith('/reviews/p1:reply') ? (posted.push(JSON.parse(String(init?.body)).replyText), Response.json({ result: {} })) : undefined),
+      (url) => (url.pathname.endsWith('/reviews/p1') ? Response.json(playReview('p1')) : undefined),
+    );
+    const card = await byKey('play:com.example.app:p1');
+    await respond(device, card.id, { actionId: 'reply', text: 'First try' });
+    await respond(device, card.id, { actionId: 'reply', text: 'Better wording' });
+    await Promise.all([sendReviewReplies(inbox(), config, NOW), sendReviewReplies(inbox(), config, NOW)]);
+    expect(posted).toEqual(['Better wording']);
+  });
+
+  it('keeps a refusal on the card through later pulls, and a bad key does not block other replies', async () => {
+    const broken = { ...config, appStore: { ...config.appStore!, keyId: 'BROKEN', privateKey: 'not a key' } };
+    let playReplies = 0;
+    stores(
+      appleList,
+      playList,
+      (url) => (url.pathname.endsWith('/reviews/p1:reply') ? (playReplies++, Response.json({ result: {} })) : undefined),
+      (url) => (url.pathname.endsWith('/reviews/p1') ? Response.json(playReview('p1')) : undefined),
+      (url) => (url.pathname === '/v1/customerReviews/a1' ? Response.json({ data: { id: 'a1', type: 'customerReviews', attributes: { rating: 2, createdDate: at(HOUR) } } }) : undefined),
+    );
+    await respond(device, (await byKey('appstore:111:a1')).id, { actionId: 'reply', text: 'Thanks' });
+    await respond(device, (await byKey('play:com.example.app:p1')).id, { actionId: 'reply', text: 'Thanks' });
+    await sendReviewReplies(inbox(), broken, NOW);
+    expect(playReplies).toBe(1);
+
+    await pullReviews(inbox(), config, NOW);
+    expect((await byKey('appstore:111:a1')).meta?.problem).toMatch(/^Not sent: /);
+  });
+
   it("pushes an edited review again, but not a reply or an old review's first sighting", () => {
     const review: StoreReview = { store: 'play', appId: 'pkg', id: 'x', rating: 4, text: 'ok', updatedAt: at(HOUR) };
     expect(reviewCard(review, 'Scryve', NOW)).toMatchObject({ phase: `review:${at(HOUR)}`, push: 'passive' });

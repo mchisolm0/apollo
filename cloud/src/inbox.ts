@@ -350,13 +350,33 @@ export class Inbox extends DurableObject<Env> {
     return ok(rows.toArray().map((row): InboxEvent => ({ seq: row.seq, ...JSON.parse(row.data) })));
   }
 
-  /** Where a job run by the Worker itself, like store reviews, got to in the event log. */
-  jobCursor(name: string): number {
-    return this.ctx.storage.kv.get<number>(`cursor.${name}`) ?? 0;
+  // --- State for jobs the Worker runs itself, like store reviews ---------
+
+  jobNumber(name: string): number | undefined {
+    return this.ctx.storage.kv.get<number>(`job.${name}`);
   }
 
-  setJobCursor(name: string, seq: number) {
-    this.ctx.storage.kv.put(`cursor.${name}`, seq);
+  jobText(name: string): string | undefined {
+    return this.ctx.storage.kv.get<string>(`job.${name}`);
+  }
+
+  /** `undefined` deletes it. */
+  setJobValue(name: string, value: string | number | undefined) {
+    if (value === undefined) this.ctx.storage.kv.delete(`job.${name}`);
+    else this.ctx.storage.kv.put(`job.${name}`, value);
+  }
+
+  /** True if the caller now holds `name` for `ms`. One holder at a time; a holder that dies lets go when the lease runs out. */
+  takeJobLease(name: string, ms: number) {
+    const key = `job.lease.${name}`;
+    const now = Date.now();
+    if ((this.ctx.storage.kv.get<number>(key) ?? 0) > now) return false;
+    this.ctx.storage.kv.put(key, now + ms);
+    return true;
+  }
+
+  releaseJobLease(name: string) {
+    this.ctx.storage.kv.delete(`job.lease.${name}`);
   }
 
   // --- Devices and tokens -------------------------------------------------

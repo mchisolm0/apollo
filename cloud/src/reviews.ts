@@ -94,6 +94,8 @@ async function upsert(inbox: InboxStub, config: ReviewsConfig, card: CardInput) 
   if (reply.status >= 300) console.warn(`reviews: card ${card.key} refused with ${reply.status}`, JSON.stringify(reply.body));
 }
 
+const problemKey = (key: string) => `reviews.problem.${key}`;
+
 /** Pulls every configured store and upserts a card per recent review. One failing store doesn't stop the others. */
 export async function pullReviews(inbox: InboxStub, config: ReviewsConfig, now = Date.now()) {
   for (const app of config.apps) {
@@ -104,8 +106,11 @@ export async function pullReviews(inbox: InboxStub, config: ReviewsConfig, now =
     for (const [store, appId, list] of pulls) {
       if (!appId) continue;
       try {
-        for (const review of await list(appId))
-          if (now - Date.parse(review.updatedAt) <= KEEP_FOR) await upsert(inbox, config, reviewCard(review, app.name, now));
+        for (const review of await list(appId)) {
+          if (now - Date.parse(review.updatedAt) > KEEP_FOR) continue;
+          const problem = await inbox.jobText(problemKey(reviewKey(review)));
+          await upsert(inbox, config, reviewCard(review, app.name, now, problem));
+        }
       } catch (cause) {
         console.error(`reviews: ${store} ${appId} pull failed`, cause);
       }
@@ -113,44 +118,73 @@ export async function pullReviews(inbox: InboxStub, config: ReviewsConfig, now =
   }
 }
 
-const transient = (cause: unknown) => !(cause instanceof StoreError) || cause.status === 429 || cause.status >= 500;
+/** Store outages and dropped connections. Anything else, like a refused reply or a bad key, won't fix itself by waiting. */
+const transient = (cause: unknown) => cause instanceof TypeError || (cause instanceof StoreError && (cause.status === 429 || cause.status >= 500));
 
 async function fetchReview(config: ReviewsConfig, store: Store, appId: string, id: string) {
   return store === 'appstore' ? await getAppStoreReview(config.appStore!, appId, id) : await getPlayReview(config.play!, appId, id);
 }
 
+const LEASE = 'reviews.replies';
+const LEASE_MS = 2 * 60 * 1000;
+
+/** Posts one reply and refreshes its card. False means a store outage: try again later. */
+type ReplyEvent = Extract<InboxEvent, { type: 'action' }>;
+
+async function sendReply(inbox: InboxStub, config: ReviewsConfig, event: ReplyEvent, now: number) {
+  const target = parseKey(event.key);
+  const app = target && config.apps.find((candidate) => (target.store === 'appstore' ? candidate.appStore : candidate.play) === target.appId);
+  const text = event.text?.trim();
+  if (!target || !app || !text) return true;
+  const connected = target.store === 'appstore' ? config.appStore : config.play;
+  let problem: string | undefined;
+  try {
+    if (!connected) problem = `Not sent: ${STORE_NAMES[target.store]} isn't connected to Apollo.`;
+    else if (text.length > REPLY_LIMIT[target.store]) problem = `Not sent: ${STORE_NAMES[target.store]} replies are at most ${REPLY_LIMIT[target.store]} characters.`;
+    else if (target.store === 'appstore') await replyOnAppStore(config.appStore!, target.id, text);
+    else await replyOnPlay(config.play!, target.appId, target.id, text);
+  } catch (cause) {
+    if (transient(cause)) {
+      console.error(`reviews: reply to ${event.key} will retry`, cause);
+      return false;
+    }
+    problem = `Not sent: ${clip(cause instanceof Error ? cause.message : String(cause), 150)}`;
+  }
+  await inbox.setJobValue(problemKey(event.key), problem);
+  if (!connected) return true;
+  try {
+    const review = await fetchReview(config, target.store, target.appId, target.id);
+    if (review) await upsert(inbox, config, reviewCard(review, app.name, now, problem));
+  } catch (cause) {
+    console.error(`reviews: refreshing ${event.key} failed`, cause);
+  }
+  return true;
+}
+
 /**
- * Posts the replies typed on cards since the last run, oldest first, and
- * refreshes each card from the store. A refused reply is shown on its card; a
- * network or store outage stops here so the next run retries it.
+ * Posts the replies typed on cards since the last run and refreshes each card
+ * from the store. Only a card's newest reply is sent, since a store keeps one.
+ * A refused reply is shown on its card; a store outage stops the run so the
+ * next one retries it. One run at a time, so the cron and a reply's own run
+ * can't post the same reply twice or an older one last.
  */
 export async function sendReviewReplies(inbox: InboxStub, config: ReviewsConfig, now = Date.now()) {
-  let after = await inbox.jobCursor(CURSOR);
-  const page = await inbox.listEvents(config.tokenHash, { after, source: 'reviews' });
-  if (page.status !== 200) return console.warn(`reviews: events refused with ${page.status}`);
-  for (const event of page.body as InboxEvent[]) {
-    const target = parseKey(event.key);
-    const app = target && config.apps.find((candidate) => (target.store === 'appstore' ? candidate.appStore : candidate.play) === target.appId);
-    const text = event.type === 'action' && event.actionId === 'reply' ? event.text?.trim() : undefined;
-    const ready = target && app && text && (target.store === 'appstore' ? config.appStore : config.play);
-    if (ready) {
-      let problem: string | undefined;
-      try {
-        if (text.length > REPLY_LIMIT[target.store]) problem = `Not sent: ${STORE_NAMES[target.store]} replies are at most ${REPLY_LIMIT[target.store]} characters.`;
-        else if (target.store === 'appstore') await replyOnAppStore(config.appStore!, target.id, text);
-        else await replyOnPlay(config.play!, target.appId, target.id, text);
-      } catch (cause) {
-        if (transient(cause)) return console.error(`reviews: reply to ${event.key} will retry`, cause);
-        problem = `Not sent: ${clip(cause instanceof Error ? cause.message : String(cause), 150)}`;
+  if (!(await inbox.takeJobLease(LEASE, LEASE_MS))) return;
+  try {
+    for (;;) {
+      const after = (await inbox.jobNumber(CURSOR)) ?? 0;
+      const page = await inbox.listEvents(config.tokenHash, { after, source: 'reviews' });
+      if (page.status !== 200) return console.warn(`reviews: events refused with ${page.status}`);
+      const events = page.body as InboxEvent[];
+      if (events.length === 0) return;
+      const newest = new Map<string, ReplyEvent>();
+      for (const event of events) if (event.type === 'action' && event.actionId === 'reply') newest.set(event.key, event);
+      for (const event of [...newest.values()].sort((a, b) => a.seq - b.seq)) {
+        if (!(await sendReply(inbox, config, event, now))) return await inbox.setJobValue(CURSOR, event.seq - 1);
       }
-      try {
-        const review = await fetchReview(config, target.store, target.appId, target.id);
-        if (review) await upsert(inbox, config, reviewCard(review, app.name, now, problem));
-      } catch (cause) {
-        console.error(`reviews: refreshing ${event.key} failed`, cause);
-      }
+      await inbox.setJobValue(CURSOR, events.at(-1)!.seq);
     }
-    after = event.seq;
-    await inbox.setJobCursor(CURSOR, after);
+  } finally {
+    await inbox.releaseJobLease(LEASE);
   }
 }
