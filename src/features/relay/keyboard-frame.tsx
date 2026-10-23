@@ -4,8 +4,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useRelayStyles } from './relay-ui';
 
-// How far a bottom dock sits inside the home indicator area, like iOS 26 system toolbars.
-const HOME_INDICATOR_OVERLAP = 18;
+// Docks clear the home indicator by this much instead of the whole safe area, like iOS 26 system toolbars.
+const HOME_INDICATOR_CLEARANCE = 16;
 
 /**
  * Owns the bottom edge: docks rest just above the home indicator and ride the keyboard. Parents skip the bottom safe area.
@@ -29,7 +29,7 @@ export function KeyboardFrame({ edgeToEdge = false, children }: { edgeToEdge?: b
     return () => { move.remove(); hide.remove(); };
   }, []);
   const keyboardHeight = keyboardTop === undefined ? 0 : height - keyboardTop;
-  const resting = edgeToEdge ? 0 : Platform.OS === 'ios' ? Math.max(bottom - HOME_INDICATOR_OVERLAP, 0) : bottom;
+  const resting = edgeToEdge ? 0 : Platform.OS === 'ios' ? Math.min(bottom, HOME_INDICATOR_CLEARANCE) : bottom;
   const paddingBottom = Math.max(keyboardHeight, resting);
   return <View style={[styles.screen, { paddingBottom }]}>{children}</View>;
 }
