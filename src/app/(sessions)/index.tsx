@@ -95,7 +95,7 @@ export default function SessionsRoute() {
     onSelect={(agentId) => router.setParams({ agentId })}
     onDetails={(agentId) => router.push({ pathname: '/settings/[agentId]', params: { agentId } })}
     onPair={() => router.push('/connect')} />;
-  return <SafeAreaView style={styles.screen} edges={HAS_MAIL_TOOLBAR ? ['bottom'] : ['top', 'bottom']}>
+  return <SafeAreaView style={styles.screen} edges={HAS_MAIL_TOOLBAR ? [] : ['top']}>
     {HAS_MAIL_TOOLBAR ? <Stack.Screen options={{
       headerShown: true,
       headerTitle: () => picker,

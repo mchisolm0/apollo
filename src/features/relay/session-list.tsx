@@ -2,6 +2,7 @@ import { HAS_MAIL_TOOLBAR, MAIL_TOOLBAR_INSET, MailToolbar } from './mail-toolba
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Keyboard, Pressable, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LegendList } from '@legendapp/list/react-native';
 import Swipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 
@@ -49,6 +50,7 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
   const styles = useThemedStyles(createStyles);
   const colors = useColors();
   const { fontScale } = useWindowDimensions();
+  const { bottom } = useSafeAreaInsets();
   const [query, setQuery] = useState('');
   const [collapsed, setCollapsed] = useState<Record<CollapsibleSectionId, boolean>>({ snoozed: true, settled: true });
   const [attentionOnly, setAttentionOnly] = useState(false);
@@ -68,7 +70,7 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
   const handleAutoSettle = useCallback((sessionId: string, enabled: boolean) => { void setAutoSettle(sessionId, enabled); }, [setAutoSettle]);
   const rows = useMemo(() => buildInboxRows({ sessions, cards, settledCards, pendingRunIds, runStateLive: connection === 'connected', fresh, query, attentionOnly, collapsed, now, isSnoozed: (id) => isSessionSnoozed(snoozed, id) }), [sessions, cards, settledCards, pendingRunIds, connection, fresh, query, collapsed, attentionOnly, snoozed, now]);
 
-  return <KeyboardFrame key={fontScale}>
+  return <KeyboardFrame key={fontScale} edgeToEdge={HAS_MAIL_TOOLBAR}>
     <View style={styles.container}>
     <LegendList
       style={styles.list}
@@ -79,7 +81,8 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
       estimatedItemSize={48}
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode="on-drag"
-      contentContainerStyle={styles.content}
+      // Under the native toolbar the list reaches the screen edge, so it clears the home indicator itself.
+      contentContainerStyle={HAS_MAIL_TOOLBAR ? [styles.content, { paddingBottom: bottom + MAIL_TOOLBAR_INSET + 20 }] : styles.content}
       refreshing={refreshing}
       onRefresh={onRefresh}
       renderItem={({ item }) => {
@@ -184,7 +187,7 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
 });
 
 const createStyles = (colors: RelayPalette) => StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background }, list: { flex: 1 }, content: { paddingBottom: HAS_MAIL_TOOLBAR ? MAIL_TOOLBAR_INSET + 20 : 20 },
+  container: { flex: 1, backgroundColor: colors.background }, list: { flex: 1 }, content: { paddingBottom: 20 },
   search: { flex: 1, minWidth: 0, height: 44, borderRadius: 8, backgroundColor: colors.surface, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 10 },
   searchInput: { color: colors.primary, fontSize: 16, flex: 1, height: 44, paddingVertical: 8 },
   section: { marginHorizontal: 12, paddingHorizontal: 8, minHeight: 48, borderRadius: 6, flexDirection: 'row', alignItems: 'center', gap: 12 },
