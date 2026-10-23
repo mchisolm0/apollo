@@ -350,6 +350,15 @@ export class Inbox extends DurableObject<Env> {
     return ok(rows.toArray().map((row): InboxEvent => ({ seq: row.seq, ...JSON.parse(row.data) })));
   }
 
+  /** Where a job run by the Worker itself, like store reviews, got to in the event log. */
+  jobCursor(name: string): number {
+    return this.ctx.storage.kv.get<number>(`cursor.${name}`) ?? 0;
+  }
+
+  setJobCursor(name: string, seq: number) {
+    this.ctx.storage.kv.put(`cursor.${name}`, seq);
+  }
+
   // --- Devices and tokens -------------------------------------------------
 
   registerDevice(tokenHash: string, registration: DeviceRegistration): Reply<null> {

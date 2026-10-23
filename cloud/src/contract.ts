@@ -3,7 +3,7 @@
 // producers in dotfiles all build against this file. It has no imports so
 // any of them can depend on it. See docs/cloud-inbox.md.
 
-export const SOURCES = ['morning', 'preview', 'fleet', 'digest', 'jobs', 'hermes', 'feedback'] as const;
+export const SOURCES = ['morning', 'preview', 'fleet', 'digest', 'jobs', 'hermes', 'feedback', 'reviews'] as const;
 export type Source = (typeof SOURCES)[number];
 
 /**
