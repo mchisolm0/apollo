@@ -51,7 +51,7 @@ try {
       allowPositionals: true,
       options: { source: { type: 'string' }, allow: { type: 'string', multiple: true } },
     });
-    if (!role || !ROLES.includes(role) || !name || (values.allow && !values.source)) {
+    if (!role || !ROLES.includes(role) || !name || values.source === '' || (values.allow && !values.source)) {
       usage();
       process.exit(1);
     }
