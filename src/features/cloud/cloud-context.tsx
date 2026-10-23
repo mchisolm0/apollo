@@ -30,6 +30,7 @@ type CloudContextValue = {
   /** A response that could not be saved or that the server rejected. Connection trouble shows in `status` instead. */
   error?: string;
   dismissError(): void;
+  refresh(): Promise<void>;
   /** Resolves false when the response couldn't be saved on the phone; `error` says why. */
   respond(cardId: string, response: CardResponse): Promise<boolean>;
   /** Cards settled on this phone (id -> rev when settled); they sit in Settled until a newer rev arrives. */
@@ -61,6 +62,11 @@ export function CloudProvider({ children }: PropsWithChildren) {
   const [connection, setConnection] = useState<{ url: string; status: Exclude<CloudStatus, 'off' | 'connecting'> }>();
   const [active, setActive] = useState(AppState.currentState === 'active');
   const [pushRevision, setPushRevision] = useState(0);
+  const syncSnapshot = useRef<(() => Promise<{ error: unknown } | undefined>) | undefined>(undefined);
+  const refresh = useCallback(async () => {
+    const failure = await syncSnapshot.current?.();
+    if (failure) throw failure.error;
+  }, []);
   const registered = useRef<string>(undefined);
   const granting = useRef(new Set<string>());
   const [saveError, setSaveError] = useState<string>();
@@ -148,7 +154,7 @@ export function CloudProvider({ children }: PropsWithChildren) {
       setConnection({ url: credential.url, status: 'revoked' });
       socket?.close();
     };
-    const sync = async () => {
+    const fetchSnapshot = async () => {
       const removed = new Set<string>();
       removedDuringSync = removed;
       try {
@@ -168,10 +174,17 @@ export function CloudProvider({ children }: PropsWithChildren) {
           clearTimeout(snapshotRetry);
           snapshotRetry = setTimeout(() => void sync(), Math.min(2000 * 2 ** snapshotFailures++, 30_000));
         }
+        return { error: cause };
       } finally {
         if (removedDuringSync === removed) removedDuringSync = undefined;
       }
     };
+    let syncing: ReturnType<typeof fetchSnapshot> | undefined;
+    const sync = () => {
+      syncing ??= fetchSnapshot().finally(() => { syncing = undefined; });
+      return syncing;
+    };
+    syncSnapshot.current = sync;
     // Stream first, then the snapshot (docs/cloud-inbox.md, Reconciling).
     const open = () => {
       if (closed || revoked) return;
@@ -213,6 +226,7 @@ export function CloudProvider({ children }: PropsWithChildren) {
     const fallback = setTimeout(() => { if (!synced && !revoked) void sync(); }, 5_000);
     return () => {
       closed = true;
+      if (syncSnapshot.current === sync) syncSnapshot.current = undefined;
       setConnection(undefined);
       clearTimeout(fallback);
       clearTimeout(retry);
@@ -301,12 +315,13 @@ export function CloudProvider({ children }: PropsWithChildren) {
     fresh: current?.fresh ?? false,
     error: saveError ?? queue.error,
     dismissError,
+    refresh,
     respond,
     settled,
     settle,
     reopen,
     connect,
-  }), [settled, settle, reopen, credential, status, inboxCards, current, saveError, queue.error, dismissError, respond, connect]);
+  }), [settled, settle, reopen, credential, status, inboxCards, current, saveError, queue.error, dismissError, refresh, respond, connect]);
   return <CloudContext.Provider value={value}>{children}</CloudContext.Provider>;
 }
 

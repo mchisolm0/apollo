@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { afterEach, beforeEach, mock } from 'node:test';
 
 import type { Card } from '../../../cloud/src/contract.ts';
 import { buildInboxRows, cardOpenPlan, hermesApprovalTarget, settleAction, settleOnFirstSight, updateSettledCards, withPendingResponses, type InboxRowSession } from './inbox-rows.ts';
@@ -16,9 +16,12 @@ const collapsed = { snoozed: true, settled: true };
 const layout = (rows: ReturnType<typeof buildInboxRows>) => rows.map((row) => row.kind === 'section' ? `[${row.title} ${row.count}]` : `${row.kind}:${row.id}`);
 const at = (hour: number) => `2026-10-10T${String(hour).padStart(2, '0')}:00:00Z`;
 
-test('cards come first: morning card, approvals, waiting threads, updates newest first, then other threads', () => {
+beforeEach(() => mock.timers.enable({ apis: ['Date'], now: Date.parse(at(12)) }));
+afterEach(() => mock.timers.reset());
+
+test('morning and approvals stay first; open updates and threads interleave by activity', () => {
   const rows = buildInboxRows({
-    sessions: [session('thread', { status: 'attention' }), session('waiting', { pendingApproval: true, status: 'attention' }), session('later'), session('done', { settled: true, activityAt: Date.parse(at(9)) / 1000 })],
+    sessions: [session('thread', { status: 'attention', activityAt: Date.parse(at(9)) / 1000 }), session('middle', { activityAt: Date.parse(at(7)) / 1000 + 1 }), session('waiting', { pendingApproval: true, status: 'attention' }), session('later'), session('done', { settled: true, activityAt: Date.parse(at(9)) / 1000 })],
     cards: [
       card('morning', 'briefing', { source: 'morning' }),
       card('preview', 'approval'),
@@ -29,7 +32,7 @@ test('cards come first: morning card, approvals, waiting threads, updates newest
     isSnoozed: (id) => id === 'later',
     collapsed,
   });
-  assert.deepEqual(layout(rows), ['briefing:morning', 'card:preview', 'card:hermes-approval', 'session:waiting', 'card:jobs', 'card:build', 'session:thread', '[Snoozed 1]', '[Settled 1]']);
+  assert.deepEqual(layout(rows), ['briefing:morning', 'card:preview', 'card:hermes-approval', 'session:waiting', 'session:thread', 'card:jobs', 'session:middle', 'card:build', '[Snoozed 1]', '[Settled 1]']);
 });
 
 test('Settled mixes settled threads with closed and locally settled cards, newest first', () => {
@@ -74,15 +77,15 @@ test('without cards the inbox is the plain thread list', () => {
   assert.deepEqual(layout(rows), ['session:a', 'session:b']);
 });
 
-test('search and the attention filter hide the morning card and narrow cards', () => {
+test('attention keeps the open morning card, approvals and waiting threads; search narrows cards', () => {
   const input = {
-    sessions: [session('quiet'), session('new result', { status: 'attention' as const })],
+    sessions: [session('quiet'), session('new result', { status: 'attention' as const }), session('waiting', { pendingApproval: true })],
     cards: [card('morning', 'briefing'), card('Scryve preview', 'approval'), card('disk', 'update', { body: 'mini low on disk' })],
     isSnoozed: () => false,
     collapsed,
   };
-  assert.deepEqual(layout(buildInboxRows({ ...input, attentionOnly: true })), ['card:Scryve preview', 'session:new result']);
-  assert.deepEqual(layout(buildInboxRows(input)), ['briefing:morning', 'card:Scryve preview', 'card:disk', 'session:quiet', 'session:new result']);
+  assert.deepEqual(layout(buildInboxRows({ ...input, attentionOnly: true })), ['briefing:morning', 'card:Scryve preview', 'session:waiting', 'session:new result']);
+  assert.deepEqual(layout(buildInboxRows(input)), ['briefing:morning', 'card:Scryve preview', 'session:waiting', 'card:disk', 'session:quiet', 'session:new result']);
   assert.deepEqual(layout(buildInboxRows({ ...input, query: 'disk' })), ['card:disk']);
 });
 
@@ -181,4 +184,34 @@ test('until live data lands, sections show no count and nothing claims the inbox
   assert.deepEqual(layout(buildInboxRows({ ...input, sessions: [...input.sessions, session('open')] })), ['session:open', '[Settled 1]']);
   assert.deepEqual(layout(buildInboxRows({ ...input, query: 'old' })), ['[Settled 1]', 'session:old']);
   assert.deepEqual(layout(buildInboxRows({ sessions: [], cards: [], isSnoozed: () => false, collapsed })), []);
+});
+
+test('only update cards older than three days age into Settled, using their latest activity', () => {
+  const now = Date.parse(at(12));
+  const date = (age: number) => new Date(now - age * 1000).toISOString();
+  const threeDays = 3 * 24 * 60 * 60;
+  const old = date(threeDays + 1);
+  const cards = [
+    card('morning', 'briefing', { createdAt: old, updatedAt: old }),
+    card('approval', 'approval', { createdAt: old, updatedAt: old }),
+    card('stale', 'update', { createdAt: old, updatedAt: old }),
+    card('boundary', 'update', { updatedAt: date(threeDays) }),
+    card('reposted', 'update', { createdAt: old, updatedAt: date(60) }),
+  ];
+  const rows = buildInboxRows({ sessions: [], cards, isSnoozed: () => false, collapsed: { ...collapsed, settled: false } });
+  assert.deepEqual(layout(rows), ['briefing:morning', 'card:approval', 'card:reposted', 'card:boundary', '[Settled 1]', 'card:stale']);
+  assert.ok(rows.some((row) => row.kind === 'card' && row.id === 'stale' && row.settled));
+  assert.equal(cards[2].state, 'open');
+});
+
+test('closed and locally settled response cards stay out of the attention filter', () => {
+  const rows = buildInboxRows({
+    sessions: [],
+    cards: [card('morning', 'briefing', { state: 'settled' }), card('approval', 'approval', { state: 'resolved' }), card('swiped', 'briefing'), card('update', 'update')],
+    settledCards: new Map([['swiped', 1]]),
+    attentionOnly: true,
+    isSnoozed: () => false,
+    collapsed,
+  });
+  assert.deepEqual(layout(rows), []);
 });

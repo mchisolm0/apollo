@@ -14,7 +14,7 @@ import type { ConnectionState } from './types';
 import { showThreadMenu } from './session-actions';
 import { useApollo } from '@/lib';
 import { BriefingCard, CardRow } from '@/features/cloud/card-ui';
-import { buildInboxRows, NO_SETTLED, settleAction, type CollapsibleSectionId, type InboxCard, type SettledCards } from '@/features/cloud/inbox-rows';
+import { buildInboxRows, isCardSettled, NO_SETTLED, settleAction, type CollapsibleSectionId, type InboxCard, type SettledCards } from '@/features/cloud/inbox-rows';
 import type { CardAction, CardPick } from '../../../cloud/src/contract';
 
 type Props = {
@@ -55,6 +55,8 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
   // Sessions carry their agent; the inbox route only ever shows one agent at a time.
   const { snoozed, snooze, unsnooze } = useSnoozeLedger(sessions[0]?.agentId ?? '');
   const { loaded: autoSettleLoaded, setAutoSettle } = useAutoSettleLedger(sessions[0]?.agentId ?? '');
+  const handleFilter = useCallback(() => setAttentionOnly((current) => !current), []);
+  const handleCompose = useCallback(() => { Keyboard.dismiss(); onNewSession?.(); }, [onNewSession]);
   const toggle = useCallback((id: CollapsibleSectionId) => setCollapsed((previous) => ({ ...previous, [id]: !previous[id] })), []);
   const handleSnooze = useCallback((sessionId: string) => { void snooze(sessionId); }, [snooze]);
   const handleUnsnooze = useCallback((sessionId: string) => { void unsnooze(sessionId); }, [unsnooze]);
@@ -77,7 +79,7 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
       onRefresh={onRefresh}
       renderItem={({ item }) => {
         if (item.kind === 'briefing') return <BriefingCard card={item.card} onOpen={onCardPress} onPick={onPick} onAction={onCardAction} onSettle={onSettleCard} />;
-        if (item.kind === 'card') return <CardRow card={item.card} settled={item.settled} swipe={settleAction(item.card, settledCards)} onPress={onCardPress} onAction={onCardAction} onSettle={onSettleCard} onReopen={onReopenCard} />;
+        if (item.kind === 'card') return <CardRow card={item.card} settled={item.settled} swipe={item.settled && !isCardSettled(item.card, settledCards) ? undefined : settleAction(item.card, settledCards)} onPress={onCardPress} onAction={onCardAction} onSettle={onSettleCard} onReopen={onReopenCard} />;
         if (item.kind === 'session') return <SessionRow session={item.session} snoozed={isSessionSnoozed(snoozed, item.session.id)} onPress={onSessionPress} onSettle={onSettle} onReopen={onReopen} onAutoSettle={autoSettleLoaded ? handleAutoSettle : undefined} onSnooze={handleSnooze} onUnsnooze={handleUnsnooze} onForked={onForked} />;
         if (item.kind === 'caughtUp') return <Text accessibilityRole="header" style={styles.caughtUp}>All caught up</Text>;
         const sectionId = item.id;
@@ -88,18 +90,18 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
           <SymbolView name={{ ios: expanded ? 'chevron.up' : 'chevron.down', android: expanded ? 'expand_less' : 'expand_more', web: expanded ? 'expand_less' : 'expand_more' }} size={12} tintColor={colors.secondary} />
         </Pressable>;
       }}
-      ListEmptyComponent={<View style={styles.empty}><Text style={styles.emptyTitle}>{connection !== 'connected' && !sessions.length ? 'Threads are unavailable' : query ? 'No matching threads' : attentionOnly ? 'All caught up' : 'Start a thread'}</Text><Text style={styles.emptyText}>{connection !== 'connected' && !sessions.length ? 'Reconnect to load your threads.' : query ? 'Try a different search.' : attentionOnly ? 'No threads need your attention.' : 'Choose New thread to get started.'}</Text></View>}
+      ListEmptyComponent={<View style={styles.empty}><Text style={styles.emptyTitle}>{connection !== 'connected' && !sessions.length ? 'Threads are unavailable' : query ? 'No matches' : attentionOnly ? 'All caught up' : 'Start a thread'}</Text><Text style={styles.emptyText}>{connection !== 'connected' && !sessions.length ? 'Reconnect to load your threads.' : query ? 'Try a different search.' : attentionOnly ? 'Nothing needs your attention.' : 'Choose New thread to get started.'}</Text></View>}
     />
     </View>
-    {HAS_MAIL_TOOLBAR ? <MailToolbar searchText={query} attentionOnly={attentionOnly} onFilter={() => setAttentionOnly((current) => !current)} onCompose={() => { Keyboard.dismiss(); onNewSession?.(); }} onSearch={setQuery} /> : <View style={styles.dock} pointerEvents="box-none">
+    {HAS_MAIL_TOOLBAR ? <MailToolbar attentionOnly={attentionOnly} onFilter={handleFilter} onCompose={handleCompose} onSearch={setQuery} /> : <View style={styles.dock} pointerEvents="box-none">
       <View style={styles.dockCircle}>
-        <Pressable accessibilityRole="button" accessibilityLabel={attentionOnly ? 'Show all threads' : 'Show threads needing attention'} accessibilityState={{ selected: attentionOnly }} onPress={() => setAttentionOnly(!attentionOnly)} style={styles.dockButton}>
+        <Pressable accessibilityRole="button" accessibilityLabel={attentionOnly ? 'Show all items' : 'Show items needing attention'} accessibilityState={{ selected: attentionOnly }} onPress={() => setAttentionOnly(!attentionOnly)} style={styles.dockButton}>
           <SymbolView name={{ ios: attentionOnly ? 'line.3.horizontal.decrease.circle.fill' : 'line.3.horizontal.decrease', android: 'filter_list', web: 'filter_list' }} size={24} tintColor={attentionOnly ? colors.cyan : colors.primary} />
         </Pressable>
       </View>
       <View style={styles.search}>
         <SymbolView name={{ ios: 'magnifyingglass', android: 'search', web: 'search' }} size={22} tintColor={colors.primary} />
-        <TextInput accessibilityLabel="Search threads" placeholder="Search" placeholderTextColor={colors.secondary} selectionColor={colors.cyan} value={query} onChangeText={setQuery} style={styles.searchInput} maxFontSizeMultiplier={1.5} autoCorrect={false} clearButtonMode="while-editing" returnKeyType="search" onSubmitEditing={Keyboard.dismiss} />
+        <TextInput accessibilityLabel="Search threads" placeholder="Search" placeholderTextColor={colors.secondary} selectionColor={colors.cyan} defaultValue={query} onChangeText={setQuery} style={styles.searchInput} maxFontSizeMultiplier={1.5} autoCorrect={false} clearButtonMode="while-editing" returnKeyType="search" onSubmitEditing={Keyboard.dismiss} />
       </View>
       <View style={styles.dockCircle}>
         <Pressable accessibilityRole="button" accessibilityLabel="New thread" onPress={() => { Keyboard.dismiss(); onNewSession?.(); }} style={styles.dockButton}>
@@ -149,6 +151,8 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
     : session.attention ? { text: 'New result', style: styles.activity }
     : { text: session.updatedAt, style: styles.date };
   const quiet = session.settled || snoozed;
+  const source = runtime[session.agentId]?.sessions.find((candidate) => candidate.id === session.id)?.source?.trim();
+  const sourceLabel = source && source !== 'api_server' ? source.charAt(0).toUpperCase() + source.slice(1) : undefined;
   // Hermes previews are the first user message; skip them when the title already says the same thing.
   const preview = session.preview?.trim();
   const showPreview = !quiet && preview && !session.title.startsWith(preview.replace(/…$|\.\.\.$/u, '').slice(0, 40));
@@ -167,7 +171,7 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
         <Text numberOfLines={largeText ? undefined : quiet ? 1 : 2} style={[styles.title, quiet && styles.quietTitle, { fontSize: 17 * factor, lineHeight: 23 * factor }]}>{session.title}</Text>
         <Text numberOfLines={1} style={[status.style, { fontSize: 15 * factor, lineHeight: 23 * factor }]}>{status.text}</Text>
       </View>
-      {showPreview ? <Text numberOfLines={1} style={[styles.preview, { fontSize: 15 * factor, lineHeight: 20 * factor }]}>{preview}</Text> : null}
+      {sourceLabel || showPreview ? <Text numberOfLines={1} style={[styles.preview, { fontSize: 15 * factor, lineHeight: 20 * factor }]}>{[sourceLabel, showPreview ? preview : undefined].filter(Boolean).join(' · ')}</Text> : null}
     </Pressable>
     </View>
   </Swipeable>;

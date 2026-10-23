@@ -50,6 +50,7 @@ export interface ApolloContextValue {
   pair(link: string, deviceName?: string): Promise<AgentRecord>;
   saveInbox(agentId: string, settled: InboxSettledState, importOnly?: boolean, config?: InboxConfig): Promise<void>;
   refreshAgent(agentId: string): Promise<void>;
+  refreshSessions(agentId: string): Promise<void>;
   retryAgent(agentId: string): Promise<void>;
   startRun(agentId: string, input: string, options?: StartRunOptions): Promise<HermesRunStatus>;
   createSession(agentId: string, title?: string, sessionId?: string, signal?: AbortSignal): Promise<string>;
@@ -340,6 +341,22 @@ export function ApolloProvider({
       });
     }
   }, [catalog, closeSubscription, subscribe, updateRuntime, updateRun]);
+
+  // Inbox refreshes only the list, without reconnecting active run subscriptions.
+  const refreshSessions = useCallback(async (agentId: string): Promise<void> => {
+    const client = clients.current.get(agentId);
+    if (!client) return refreshAgent(agentId);
+    try {
+      const sessions = await client.sessions();
+      if (clients.current.get(agentId) === client) updateRuntime(agentId, { sessions, status: 'connected', error: undefined });
+    } catch (error) {
+      if (clients.current.get(agentId) === client) updateRuntime(agentId, {
+        status: error instanceof HermesRequestError && error.status === 401 ? 'revoked' : 'offline',
+        error: errorText(error),
+      });
+      throw error;
+    }
+  }, [refreshAgent, updateRuntime]);
 
   useEffect(() => {
     let cancelled = false;
@@ -752,6 +769,7 @@ export function ApolloProvider({
     error,
     pair,
     refreshAgent,
+    refreshSessions,
     retryAgent,
     startRun,
     createSession,
@@ -777,7 +795,7 @@ export function ApolloProvider({
     notificationClient,
     cloudGrant,
     hasSession,
-  }), [cloudGrant, toolsets, sessionDetail, resolveThreadModel, setSessionModel, saveModelSelection, steerRun, notificationClient, hasSession, saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, deleteSession, setPinned, forkSession, regenerateTitle, models, error, loading, messages, pair, refreshAgent, removeAgent, retryAgent, runtime, sessionMessages, skills, startRun, stopRun]);
+  }), [cloudGrant, toolsets, sessionDetail, resolveThreadModel, setSessionModel, saveModelSelection, steerRun, notificationClient, hasSession, saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, deleteSession, setPinned, forkSession, regenerateTitle, models, error, loading, messages, pair, refreshAgent, refreshSessions, removeAgent, retryAgent, runtime, sessionMessages, skills, startRun, stopRun]);
 
   return <ApolloContext.Provider value={value}>{children}</ApolloContext.Provider>;
 }

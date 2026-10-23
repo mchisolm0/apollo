@@ -1,10 +1,10 @@
-import { useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { HAS_MAIL_TOOLBAR } from '@/features/relay/mail-toolbar';
 import { useOutbox } from '@/lib/outbox-context';
 import { useIncomingShares } from '@/features/sharing';
 import type { InboxSession } from '@/features/relay/session-inbox';
-import { Redirect, Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Redirect, Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { ActivityIndicator, Alert, AppState, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -27,11 +27,48 @@ export default function SessionsRoute() {
   const { pendingShares } = useIncomingShares();
   const { agentId } = useLocalSearchParams<{ agentId?: string }>();
   const router = useRouter();
-  const { agents, runtime, messages, loading, retryAgent } = useApollo();
+  const { agents, runtime, messages, loading, retryAgent, refreshSessions } = useApollo();
   const agent = agents.find((candidate) => candidate.id === agentId) ?? agents[0];
   const state = agent ? runtime[agent.id] : undefined;
   const inbox = useSessionInbox(agent?.id ?? '', state);
   const cloud = useCloud();
+  const refreshCards = cloud.refresh;
+  const selectedAgentId = agent?.id;
+  const [refreshing, setRefreshing] = useState(false);
+  const refresh = useCallback(async () => {
+    if (!selectedAgentId || refreshing) return;
+    setRefreshing(true);
+    try {
+      await Promise.all([refreshSessions(selectedAgentId), refreshCards()]);
+    } catch (error) {
+      Alert.alert('Could not refresh inbox', error instanceof Error ? error.message : 'Try again.');
+    } finally {
+      setRefreshing(false);
+    }
+  }, [selectedAgentId, refreshing, refreshSessions, refreshCards]);
+  useFocusEffect(useCallback(() => {
+    if (!selectedAgentId) return;
+    let polling = false;
+    let interval: ReturnType<typeof setInterval> | undefined;
+    const poll = async () => {
+      if (polling || AppState.currentState !== 'active') return;
+      polling = true;
+      try { await refreshSessions(selectedAgentId); }
+      catch { /* The connection controls remain available for a failed background refresh. */ }
+      finally { polling = false; }
+    };
+    const schedule = () => {
+      clearInterval(interval);
+      if (AppState.currentState === 'active') interval = setInterval(() => void poll(), 30_000);
+    };
+    schedule();
+    void poll();
+    const subscription = AppState.addEventListener('change', schedule);
+    return () => { clearInterval(interval); subscription.remove(); };
+  }, [selectedAgentId, refreshSessions]));
+  const newSession = useCallback(() => {
+    if (selectedAgentId) router.push({ pathname: '/session/[id]', params: { id: 'new', agentId: selectedAgentId } });
+  }, [selectedAgentId, router]);
   const runs = state?.runs;
   const settledLaunch = useLaunchGrace();
   const pendingRunIds = useMemo(() => new Set(Object.values(runs ?? {}).filter((run) => run.status === 'waiting_for_approval').map((run) => run.runId)), [runs]);
@@ -85,7 +122,9 @@ export default function SessionsRoute() {
     {pendingShares.length > 0 ? <Pressable accessibilityRole="button" onPress={() => router.push("/share")} style={{ minHeight: 44, paddingHorizontal: 20, justifyContent: "center" }}><Text style={{ color: colors.cyan }}>Open shared content ({pendingShares.length})</Text></Pressable> : null}
     {inbox.error ? <Text style={styles.error} accessibilityRole="alert">{inbox.error}</Text> : null}
     {cloud.error ? <Text style={styles.error} accessibilityRole="alert" onPress={cloud.dismissError}>{cloud.error}</Text> : null}
-    <SessionList connection={connection} sessions={sessions} onSessionPress={(session) => open(session.id)} onSettle={(id) => { void inbox.settle(id); }} onReopen={(id) => { void inbox.reopen(id); }} onNewSession={() => open('new')} onForked={(id) => open(id)}
+    <SessionList connection={connection} sessions={sessions} onSessionPress={(session) => open(session.id)} onSettle={(id) => { void inbox.settle(id); }} onReopen={(id) => { void inbox.reopen(id); }} onNewSession={newSession} onForked={(id) => open(id)}
+      refreshing={refreshing}
+      onRefresh={() => { void refresh(); }}
       cards={cloud.cards}
       onCardPress={(card) => {
         const plan = cardOpenPlan(card);
