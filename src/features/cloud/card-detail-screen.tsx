@@ -126,11 +126,15 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
   const respond = (id: string, actionId: string) => { void cloud.respond(id, { actionId }); };
   const pick = (_: InboxCard, value: CardPick) => { void cloud.respond(card.id, { pick: value.n, done: !value.done }); };
   const host = agents.find((agent) => agent.id === cloud.credential?.agentId)?.label;
-  const outcome = card.sending ? 'Sending' : sent ? 'Sent'
+  const answer = card.sending ? 'Sending' : sent ? 'Sent'
     : card.acknowledged ? acknowledgedLabel(card, card.acknowledged)
     : card.pendingAction ? `${actionLabel(card, card.pendingAction)}, sending`
       : card.resolution ? `${actionLabel(card, card.resolution.actionId)} by ${card.resolution.by} · ${stamp(card.resolution.at)}`
-        : open && swipe !== 'reopen' ? undefined : 'Settled';
+        : undefined;
+  // A card settled on this phone says so even after an answer; a closed card with no answer reads Settled.
+  const settledHere = swipe === 'reopen';
+  const outcome = answer ? settledHere && !card.sending ? `${answer} · Settled` : answer
+    : open && !settledHere ? undefined : 'Settled';
   // An open approval, or a morning card not yet kept or skipped, answers from the bar; everything else gets Copy and Settle.
   // A keepOpen approval stays open after its answer, so a resolution counts as answered too.
   const unanswered = open && (card.kind === 'approval' ? !card.pendingAction && !card.resolution : card.kind === 'briefing' && !card.acknowledged);
