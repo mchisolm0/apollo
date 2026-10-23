@@ -78,6 +78,7 @@ export interface ApolloContextValue {
     options?: ApprovalOptions,
   ): Promise<HermesApprovalResponse>;
   removeAgent(agentId: string): Promise<void>;
+  renameAgent(agentId: string, label: string): Promise<void>;
   hasSession(agentId: string, sessionId: string): boolean;
   notificationClient(agentId: string): Promise<NotificationRegistrationClient>;
   /** Asks this agent's connector for a cloud inbox token. Undefined when the connector has no cloud configured. */
@@ -703,6 +704,13 @@ export function ApolloProvider({
 
   const retryAgent = useCallback((agentId: string) => refreshAgent(agentId), [refreshAgent]);
 
+  const renameAgent = useCallback(async (agentId: string, label: string) => {
+    const name = label.trim();
+    if (!name) throw new Error('Enter an agent name.');
+    await catalog.update(agentId, { label: name });
+    setAgents(catalog.list());
+  }, [catalog]);
+
   const notificationClient = useCallback(async (agentId: string) => {
     const agent = catalog.get(agentId);
     if (!agent) throw new Error('Agent is no longer paired.');
@@ -792,10 +800,11 @@ export function ApolloProvider({
     stopRun,
     approveRun,
     removeAgent,
+    renameAgent,
     notificationClient,
     cloudGrant,
     hasSession,
-  }), [cloudGrant, toolsets, sessionDetail, resolveThreadModel, setSessionModel, saveModelSelection, steerRun, notificationClient, hasSession, saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, deleteSession, setPinned, forkSession, regenerateTitle, models, error, loading, messages, pair, refreshAgent, refreshSessions, removeAgent, retryAgent, runtime, sessionMessages, skills, startRun, stopRun]);
+  }), [cloudGrant, toolsets, sessionDetail, resolveThreadModel, setSessionModel, saveModelSelection, steerRun, notificationClient, hasSession, saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, deleteSession, setPinned, forkSession, regenerateTitle, models, error, loading, messages, pair, refreshAgent, refreshSessions, removeAgent, renameAgent, retryAgent, runtime, sessionMessages, skills, startRun, stopRun]);
 
   return <ApolloContext.Provider value={value}>{children}</ApolloContext.Provider>;
 }

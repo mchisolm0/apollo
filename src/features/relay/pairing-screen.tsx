@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import * as Clipboard from 'expo-clipboard';
 import { Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { RelayButton, RelayHeader, RelayInput, useRelayStyles, useThemedStyles, type RelayPalette } from './relay-ui';
@@ -34,6 +35,11 @@ export function PairingScreen({ pairing, initialMode = 'qr', state = 'ready', is
   const changeMode = (next: PairingMode) => { setMode(next); onModeChange?.(next); };
   const confirming = state === 'confirm' && pairing;
   const submit = () => { if (manualValue.trim() && !isBusy) onManualSubmit(manualValue.trim()); };
+  const pasteLink = async () => {
+    const value = await Clipboard.getStringAsync().catch(() => '');
+    setManualValue(value.trim());
+    changeMode('manual');
+  };
   return <KeyboardAvoidingView style={uiStyles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
     <RelayHeader title={confirming ? 'Confirm agent' : 'Add agent'} onBack={isBusy ? undefined : confirming ? onCancel ?? onBack : onBack} />
     <ScrollView ref={scroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
@@ -57,7 +63,7 @@ export function PairingScreen({ pairing, initialMode = 'qr', state = 'ready', is
         <Text style={styles.intro}>{mode === 'qr' ? 'Open the connector on your computer, then scan its pairing code.' : 'Paste the one-time pairing link from your connector.'}</Text>
         {mode === 'qr' ? <>
           <View style={styles.camera} accessibilityLabel={qrContent ? 'Pairing camera preview' : 'Camera unavailable'}>{qrContent ?? <Text style={styles.cameraHelp}>Camera unavailable here.{ '\n' }Use a pairing link.</Text>}</View>
-          <RelayButton tone="primary" disabled={isBusy} onPress={() => changeMode('manual')}>{isBusy ? 'Checking agent…' : 'Paste pairing link'}</RelayButton>
+          <RelayButton tone="primary" disabled={isBusy} onPress={() => void pasteLink()}>{isBusy ? 'Checking agent…' : 'Paste pairing link'}</RelayButton>
         </> : <View style={styles.manual}>
           <Text style={styles.fieldLabel}>Pairing link</Text>
           <RelayInput autoCapitalize="none" autoCorrect={false} autoFocus={!failed} editable={!isBusy} value={manualValue} onChangeText={setManualValue} placeholder="apollo://pair…" accessibilityLabel="Pairing link" onSubmitEditing={submit} returnKeyType="go" />

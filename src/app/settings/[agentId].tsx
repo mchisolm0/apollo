@@ -15,7 +15,7 @@ export default function SettingsRoute() {
   const styles = useThemedStyles(createStyles);
   const { agentId } = useLocalSearchParams<{ agentId: string }>();
   const router = useRouter();
-  const { agents, runtime, refreshAgent, removeAgent } = useApollo();
+  const { agents, runtime, refreshAgent, removeAgent, renameAgent } = useApollo();
   const cloud = useCloud();
   const agent = agents.find((candidate) => candidate.id === agentId);
   if (!agent) return <Redirect href="/" />;
@@ -56,13 +56,16 @@ export default function SettingsRoute() {
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
       <AgentSettingsScreen
+        key={agent.id}
         agent={relayAgent}
         defaultModel={(runtime[agentId]?.capabilities ?? agent.capabilities)?.model}
         platform={(runtime[agentId]?.capabilities ?? agent.capabilities)?.platform}
         deviceName={agent.deviceName ?? Device.deviceName ?? 'Apollo mobile'}
         pairedAt={new Date(agent.createdAt).toLocaleDateString()}
         onBack={() => router.back()}
-        onTestConnection={() => void refreshAgent(agent.id)}
+        onTestConnection={() => refreshAgent(agent.id)}
+        connectionError={runtime[agent.id]?.error}
+        onRename={(label) => renameAgent(agent.id, label)}
         onForgetAgent={confirmForget}
         onNotifications={() => router.push({ pathname: "/notifications/[agentId]", params: { agentId } })}
         onToolsets={() => router.push({ pathname: '/toolsets/[agentId]', params: { agentId } })}

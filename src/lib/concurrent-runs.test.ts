@@ -22,7 +22,7 @@ function providerFixture(sessions: readonly HermesSession[] = []) {
   const statuses = new Map<string, HermesRunStatus>();
   const stopped: string[] = [];
   const approved: string[] = [];
-  let record = { id: 'agent', endpoint: { url: 'http://localhost' }, activeRunIds: [] as readonly string[] };
+  let record = { id: 'agent', label: 'Agent', endpoint: { url: 'http://localhost' }, activeRunIds: [] as readonly string[] };
   let count = 0;
   const removal: string[] = [];
   let registrationError: Error | undefined;
@@ -137,6 +137,16 @@ function providerFixture(sessions: readonly HermesSession[] = []) {
     setStorageError: (error?: Error) => { storageError = error; },
   };
 }
+
+test('renaming trims the label, preserves connection details, and rejects empty names', async () => {
+  const setup = providerFixture();
+  const api = setup.mount();
+  await api.renameAgent('agent', '  Studio  ');
+  assert.equal(setup.record.label, 'Studio');
+  assert.equal(setup.record.endpoint.url, 'http://localhost');
+  await assert.rejects(api.renameAgent('agent', '   '), /Enter an agent name/);
+  assert.equal(setup.record.label, 'Studio');
+});
 
 test('concurrent threads retain independent streams, controls, and saved run IDs', async () => {
   const setup = providerFixture();

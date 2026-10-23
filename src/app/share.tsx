@@ -19,9 +19,10 @@ export default function ShareRoute() {
   const sessions = agent ? runtime[agent.id]?.sessions ?? [] : [];
   const open = (id: string) => { if (agent && share) router.replace({ pathname: '/(sessions)/session/[id]', params: { agentId: agent.id, id, shareId: share.id } }); };
   useFocusEffect(useCallback(() => { void refresh().catch(() => {}); }, [refresh]));
-  const discard = () => { if (share) void discardShare(share.id).catch(() => {}); };
+  const close = () => router.dismissTo('/');
+  const discard = () => { if (share) void discardShare(share.id).then(close).catch(() => {}); };
   return <SafeAreaView style={[styles.safe, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
-    <View style={[styles.header, { borderBottomColor: colors.line }]}><Pressable accessibilityRole="button" accessibilityLabel="Go back" onPress={() => router.back()}><Text style={[styles.back, { color: colors.primary }]}>‹</Text></Pressable><Text style={[styles.title, { color: colors.primary }]}>Share to Apollo</Text><View style={styles.spacer} /></View>
+    <View style={[styles.header, { borderBottomColor: colors.line }]}><Pressable accessibilityRole="button" accessibilityLabel="Go back" onPress={close}><Text style={[styles.back, { color: colors.primary }]}>‹</Text></Pressable><Text style={[styles.title, { color: colors.primary }]}>Share to Apollo</Text><View style={styles.spacer} /></View>
     <ScrollView contentContainerStyle={styles.content}>
       {error ? <Text accessibilityRole="alert" style={[styles.error, { color: colors.red }]}>{error}</Text> : null}
       {!pendingShares.length ? <Text style={[styles.empty, { color: colors.secondary }]}>No pending share.</Text> : <>
