@@ -225,7 +225,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   const connection = state?.status === 'connected' ? 'connected' : state?.status === 'connecting' ? 'connecting' : state?.status === 'revoked' ? 'revoked' : 'offline';
   const statusLabel = run?.status === 'unknown' ? 'Lost run' : approval ? 'Needs approval' : running ? 'Working' : run?.status === 'failed' ? 'Failed' : run?.status === 'completed' ? 'Complete' : undefined;
   return (
-    <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
       <RunScreen
         session={{ id: resolvedId ?? 'new', agentId, title: session?.title?.trim() || 'New thread', updatedAt: '' }}
         agentName={agent.label}

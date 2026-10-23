@@ -208,6 +208,8 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
             <TextInputWrapper style={expanded ? undefined : { flex: 1 }} onPaste={(payload) => { if (payload.type === 'images' && !isActing && !isPicking && !sendDisabled) onPasteImages?.(payload.uris); }}>
             <TextInput
               ref={input}
+              // A new thread opens ready to type.
+              autoFocus={session.id === 'new'}
               // Grows from one line to five before scrolling while expanded.
               style={[expanded ? styles.input : styles.pillInput, { fontSize: 17 * factor, lineHeight: 23 * factor }, expanded ? { maxHeight: 23 * factor * 5 + 12 } : { height: pillHeight, paddingVertical: (pillHeight - 23 * factor) / 2 }]}
               onFocus={() => setFocused(true)}
@@ -499,7 +501,8 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   composer: { paddingHorizontal: 12, paddingVertical: 8, gap: 8 },
   composerField: { backgroundColor: colors.composer, borderRadius: COMPOSER_RADIUS, paddingHorizontal: FIELD_INSET, paddingTop: 10, paddingBottom: FIELD_INSET },
   composerPill: { backgroundColor: colors.composer, borderRadius: COMPOSER_RADIUS, padding: PILL_INSET, paddingLeft: 14, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  pillInput: { color: colors.primary, flex: 1, paddingHorizontal: 0 },
+  // Its wrapper is a column, so flex would stretch the height its centering padding assumes.
+  pillInput: { color: colors.primary, paddingHorizontal: 0 },
   composerAction: { alignItems: 'center', justifyContent: 'center' },
   input: { color: colors.primary, fontSize: 17, lineHeight: 23, minHeight: 44, paddingVertical: 6, paddingHorizontal: 8, textAlignVertical: 'top' },
   toolbar: { minHeight: EXPANDED_ACTION, flexDirection: 'row', alignItems: 'center', gap: 2 },
