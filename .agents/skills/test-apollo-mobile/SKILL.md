@@ -1,6 +1,6 @@
 ---
 name: test-apollo-mobile
-description: Use AFTER implementing user-visible Apollo (Apollo) mobile changes, when asked for an integrated pass or to verify a change in the real app. Covers UI, theming, settings, pairing, runs, updates, and notifications. Not for unit tests or connector-only changes.
+description: Use AFTER implementing user-visible Apollo mobile changes, when asked for an integrated pass, to verify a change in the real app, or for an exploratory UX pass with screenshots. Covers UI, theming, settings, pairing, runs, cloud cards, updates, and notifications. Not for unit tests or connector-only changes.
 ---
 
 # Test Apollo mobile
@@ -17,6 +17,17 @@ affected surface or explicitly requested.
    change concerns platform, OS version, or screen size.
 3. If a prerequisite is missing, report it rather than working around it. Never
    claim verification you did not observe.
+
+### Exploratory pass
+
+When asked to explore rather than verify a change, visit every route under
+`src/app/` reachable from the UI (inbox, session, card detail, agents,
+settings, agent settings, toolsets, notifications, connect, share). For each,
+capture a screenshot per state you can reach and note friction: dead ends,
+slow or janky transitions, unclear copy, missing affordances, unreadable
+content. Read-only by default: open things, scroll, and switch tabs, but send
+at most one labeled `[QA]` run and never act on real cards (see below).
+Report findings ranked by how much they would cost the user day to day.
 
 ## Identity
 
@@ -47,6 +58,7 @@ rather than guessing.
 
 ## Setup
 
+0. A fresh worktree has no `node_modules`. Run `pnpm install` first.
 1. `agent-device devices --platform ios`. Boot `Apollo QA` if it is not
    running. If it does not exist, create it with
    `xcrun simctl create "Apollo QA" "iPhone 17 Pro"` (or the newest available
@@ -75,9 +87,13 @@ Native rebuilds install only into the worktree's own simulator.
 
 ## Agent and backend
 
-The only Hermes on this machine is the user's daily driver. launchd runs it
+The only Hermes is the user's daily driver on `mini`. launchd runs it
 (`ai.hermes.gateway`) with the connector from `~/code/apollo`
-(`com.matthewchisolm.apollo-connector`, `127.0.0.1:8643`).
+(`com.matthewchisolm.apollo-connector`, `127.0.0.1:8643`). Check `hostname`
+first. On any other Mac (for example `macbook`), run connector commands over
+`ssh mini '...'`, and the simulator reaches the connector through mini's
+existing Tailscale Serve route for port `8643` (read it with
+`ssh mini tailscale serve status`; do not change it).
 
 - Never restart, stop, reconfigure, or redeploy Hermes or the connector. Never
   edit `~/.hermes/*` or `~/.config/apollo/*`. Never run `pair --tailscale` or
@@ -86,13 +102,26 @@ The only Hermes on this machine is the user's daily driver. launchd runs it
   worktree under test. Connector changes in a PR are not live. Test the app's
   behavior against the live connector, including how it degrades when a new
   route is missing, and report the connector side as skipped.
-- If the simulator needs pairing, create a short-lived local pairing without
-  printing the secret:
-  `node ~/code/apollo/connector/cli.mjs pair --name "Apollo QA simulator" > "$TMPDIR/apollo-pair.txt"`
-  then extract the `apollo://pair?...` line into the simulator pasteboard
-  (`grep -m1 '^apollo://pair' "$TMPDIR/apollo-pair.txt" | xcrun simctl pbcopy booted`),
-  paste it on the app's connect screen, and delete the file. Keep an existing
-  pairing whenever it still works.
+- If the simulator needs pairing, create a short-lived pairing without
+  printing the secret. Write it to a unique file,
+  `pair_file=$(mktemp "$TMPDIR/apollo-pair.XXXXXX")`, then run
+  `node ~/code/apollo/connector/cli.mjs pair --name "Apollo QA simulator" > "$pair_file"`.
+  From another Mac, run it as
+  `ssh mini 'node ~/code/apollo/connector/cli.mjs pair --name "Apollo QA simulator" --public-base-url <serve-url>' > "$pair_file"`
+  so the link points at the Serve route instead of loopback. Stop if either
+  command fails or the file has no `apollo://pair` line.
+  The output includes a QR code that encodes the token, so never print or
+  filter the file in a way that echoes it. Put only the link on the simulator
+  clipboard with
+  `agent-device clipboard write "$(grep -m1 '^apollo://pair' "$pair_file")" --session apollo-mobile-check`
+  (`xcrun simctl pbcopy` leaves the iOS 27 clipboard empty), then long-press
+  the connect screen's field and choose Paste. Whether pairing succeeds or
+  fails, delete `$pair_file` and overwrite the clipboard with a non-secret
+  value (it syncs to the Mac's). Keep an existing pairing whenever it still
+  works, and leave QA pairings in place for the user to revoke.
+- Cloud cards are the user's real inbox on Cloudflare. Never approve, reject,
+  pick, or otherwise respond to a card the pass did not create, and never
+  post cards with producer tokens.
 - Runs: keep prompts tiny and clearly labeled, for example
   `[QA] Reply with OK.` Do not delete, rename, settle, or fork threads the pass
   did not create. Never answer an approval request with `always`.
@@ -164,7 +193,8 @@ logs or source when the flow was not observed.
   `com.matthewchisolm.apollo.dev`. Preview and production builds ignore Metro.
 - **Native module missing at runtime:** the dev client predates a native
   change. Rebuild the simulator client.
-- **Agent shows offline:** check `curl -s 127.0.0.1:8643/.well-known/apollo/agent`
-  without credentials. If the connector is down, report it. Do not restart it.
+- **Agent shows offline:** check `curl -s <serve-url>/.well-known/apollo/agent`
+  (or `127.0.0.1:8643` on mini) without credentials. If the connector is down,
+  report it. Do not restart it.
 - **New connector route returns 404:** expected until the user updates the
   running connector. Record as skipped and confirm the app degrades cleanly.
