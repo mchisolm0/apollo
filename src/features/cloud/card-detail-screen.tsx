@@ -1,13 +1,14 @@
 import * as Clipboard from 'expo-clipboard';
+import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { MessageContent } from '@/features/relay/message-content';
 import { IconButton, useColors, useRelayStyles, useTextScale, useThemedStyles, type RelayPalette } from '@/features/relay/relay-ui';
 import { useApollo } from '@/lib';
 
-import type { CardAction, CardMetric, CardPick } from '../../../cloud/src/contract';
-import { acknowledgedLabel, actionLabel, CardButton, cardActions, CardGlyph, CardPicks, openCardLink, runAction } from './card-ui';
+import type { CardAction, CardLink, CardMetric, CardPick } from '../../../cloud/src/contract';
+import { acknowledgedLabel, actionLabel, CardButton, cardActions, CardGlyph, CardPicks, CardProgressBar, openCardLink, runAction } from './card-ui';
 import { useCloud } from './cloud-context';
 import { settleAction, settleOnFirstSight, type InboxCard } from './inbox-rows';
 import { parseApolloLink } from './card-text';
@@ -39,6 +40,16 @@ function MetricRow({ metrics }: { metrics: readonly CardMetric[] }) {
       {metric.delta ? <Text style={[styles.metricDelta, { color: metric.trend === 'good' ? colors.green : metric.trend === 'bad' ? colors.red : colors.muted, fontSize: 12 * factor, lineHeight: 16 * factor }]} numberOfLines={1}>{metric.delta}</Text> : null}
     </View>)}
   </View>;
+}
+
+/** A tappable "Replaces <title>" line that opens the other card. */
+function LinkedCard({ label, link }: { label: string; link: CardLink }) {
+  const styles = useThemedStyles(createStyles);
+  const { factor } = useTextScale();
+  return <Pressable accessibilityRole="link" accessibilityLabel={`${label} ${link.title}`} onPress={() => router.push({ pathname: '/card/[id]', params: { id: link.id } })} style={({ pressed }) => [styles.metaRow, pressed && { opacity: 0.65 }]}>
+    <Text style={[styles.metaLabel, { fontSize: 14 * factor, lineHeight: 20 * factor }]}>{label}</Text>
+    <Text style={[styles.linkValue, { fontSize: 14 * factor, lineHeight: 20 * factor }]} numberOfLines={1}>{link.title}</Text>
+  </Pressable>;
 }
 
 /** Full card: source header, title, meta, metrics, picks, markdown body and a bottom action bar. */
@@ -78,7 +89,8 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
       : card.resolution ? `${actionLabel(card, card.resolution.actionId)} by ${card.resolution.by} · ${stamp(card.resolution.at)}`
         : open ? undefined : 'Settled';
   // An open approval, or a morning card not yet kept or skipped, answers from the bar; everything else gets Copy and Settle.
-  const unanswered = open && (card.kind === 'approval' ? !card.pendingAction : card.kind === 'briefing' && !card.acknowledged);
+  // A keepOpen approval stays open after its answer, so a resolution counts as answered too.
+  const unanswered = open && (card.kind === 'approval' ? !card.pendingAction && !card.resolution : card.kind === 'briefing' && !card.acknowledged);
   const decide = unanswered ? cardActions(card) : [];
   const link = card.url && !decide.some((action) => action.url === card.url) ? card.url : undefined;
   const copy = () => void Clipboard.setStringAsync(copyText(card)).then(() => {
@@ -99,6 +111,9 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
     <ScrollView contentContainerStyle={styles.content}>
       <Text style={[styles.title, { fontSize: 24 * factor, lineHeight: 30 * factor }]} accessibilityRole="header" selectable>{card.title}</Text>
       {outcome ? <Text style={[styles.outcome, (card.pendingAction ?? card.resolution?.actionId) === 'approve' && { color: colors.green }, { fontSize: 15 * factor }]}>{outcome}</Text> : null}
+      {card.progress && open ? <CardProgressBar progress={card.progress} /> : null}
+      {card.replaces ? <LinkedCard label="Replaces" link={card.replaces} /> : null}
+      {card.replacedBy ? <LinkedCard label="Replaced by" link={card.replacedBy} /> : null}
       {meta.length ? <View style={styles.meta}>
         {meta.map(([label, value]) => <View key={label} style={styles.metaRow}>
           <Text style={[styles.metaLabel, { fontSize: 14 * factor, lineHeight: 20 * factor }]}>{label}</Text>
@@ -107,7 +122,8 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
       </View> : null}
       {card.metrics?.length ? <MetricRow metrics={card.metrics} /> : null}
       {card.picks?.length ? <CardPicks card={card} onPick={open ? pick : () => {}} /> : null}
-      {card.body ? <MessageContent text={card.body} copyable={false} /> : null}
+      {card.body && card.plainText ? <Text style={[styles.plainBody, { fontSize: 15 * factor, lineHeight: 22 * factor }]} selectable>{card.body}</Text>
+        : card.body ? <MessageContent text={card.body} copyable={false} /> : null}
     </ScrollView>
     <View style={styles.bar}>
       {decide.length ? <>
@@ -135,6 +151,8 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   metaRow: { flexDirection: 'row', gap: 14 },
   metaLabel: { color: colors.muted, minWidth: 64 },
   metaValue: { color: colors.secondary, flex: 1, fontVariant: ['tabular-nums'] },
+  linkValue: { color: colors.cyan, flex: 1 },
+  plainBody: { color: colors.primary },
   metrics: { flexDirection: 'row', borderTopWidth: StyleSheet.hairlineWidth, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: colors.line },
   metric: { flex: 1, minWidth: 0, paddingVertical: 10 },
   metricDivided: { paddingLeft: 12, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.line },

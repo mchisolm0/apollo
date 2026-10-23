@@ -101,3 +101,49 @@ describe('rev', () => {
     expect(snapshot.rev).toBe(Math.max(...snapshot.cards.map((c) => c.rev)));
   });
 });
+
+describe('scoped tokens', () => {
+  const scope = { source: 'preview', urls: ['scryve-preview://', 'https://github.com/HashingSeeds/'] };
+  const ready = (extra: Record<string, unknown> = {}) => ({ source: 'preview', key: 'scoped:1', kind: 'update', title: 'Preview ready', push: 'none', ...extra });
+  let scoped: string;
+
+  beforeAll(async () => {
+    const response = await call('/admin/tokens', { token: ADMIN_SECRET, body: { role: 'producer', name: 'scryve-ci', scope } });
+    scoped = (await response.json<{ token: string }>()).token;
+  });
+
+  it('writes only its source, with links under its prefixes', async () => {
+    const status = async (body: unknown) => (await call('/v1/cards', { token: scoped, body })).status;
+
+    expect(await status(ready({ url: 'scryve-preview://preview/pr-541', actions: [{ id: 'run', label: 'Run', url: 'https://github.com/HashingSeeds/scryve/actions/runs/1' }] }))).toBe(201);
+    expect(await status({ ...approval('scoped:2') })).toBe(403);
+    expect(await status(ready({ url: 'https://github.com/HashingSeedsEvil/x' }))).toBe(403);
+    expect(await status(ready({ url: 'https://github.com/HashingSeeds/../elsewhere' }))).toBe(403);
+    // Body links aren't checked: the card is plain text, so none can be opened.
+    const plain = await (await call('/v1/cards', { token: scoped, body: ready({ key: 'scoped:3', body: 'See [this](javascript:alert(1)) or //evil.example' }) })).json<Card>();
+    expect(plain.plainText).toBe(true);
+  });
+
+  it('keeps a card plain once a scoped token wrote it', async () => {
+    const byMini = await (await call('/v1/cards', { token: producer, body: ready({ key: 'scoped:5', body: '[run](https://example.test)' }) })).json<Card>();
+    expect(byMini.plainText).toBeUndefined();
+    const patched = await (await call(`/v1/cards/${byMini.id}`, { method: 'PATCH', token: scoped, body: { body: 'Publishing' } })).json<Card>();
+    expect(patched.plainText).toBe(true);
+    const again = await (await call('/v1/cards', { token: producer, body: ready({ key: 'scoped:5', body: 'Ready' }) })).json<Card>();
+    expect(again.plainText).toBe(true);
+  });
+
+  it('cannot patch or read another source', async () => {
+    const other = await (await call('/v1/cards', { token: producer, body: approval('scoped:hermes') })).json<Card>();
+    expect((await call(`/v1/cards/${other.id}`, { method: 'PATCH', token: scoped, body: { state: 'settled' } })).status).toBe(403);
+    expect((await call('/v1/events?source=hermes', { token: scoped })).status).toBe(403);
+    expect((await call('/v1/events', { token: scoped })).status).toBe(200);
+  });
+
+  it('is only for producers, and the admin list shows it', async () => {
+    expect((await call('/admin/tokens', { token: ADMIN_SECRET, body: { role: 'device', name: 'x', scope } })).status).toBe(400);
+    expect((await call('/admin/tokens', { token: ADMIN_SECRET, body: { role: 'producer', name: 'x', scope: { ...scope, urls: ['https://github.com'] } } })).status).toBe(400);
+    const tokens = await (await call('/admin/tokens', { token: ADMIN_SECRET })).json<TokenInfo[]>();
+    expect(tokens.find((t) => t.name === 'scryve-ci')?.scope).toEqual(scope);
+  });
+});

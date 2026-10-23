@@ -1,4 +1,4 @@
-import { CATEGORY, KINDS, SOURCES, type Card, type CardAction, type CardMetric, type CardSnapshot, type CardPick, type CardState, type PushLevel, type StreamMessage } from '../../../cloud/src/contract.ts';
+import { CATEGORY, KINDS, SOURCES, type Card, type CardAction, type CardLink, type CardMetric, type CardProgress, type CardSnapshot, type CardPick, type CardState, type PushLevel, type StreamMessage } from '../../../cloud/src/contract.ts';
 
 const STATES = ['open', 'resolved', 'settled'] as const satisfies readonly CardState[];
 const PUSH_LEVELS = ['alert', 'passive', 'none'] as const satisfies readonly PushLevel[];
@@ -60,6 +60,21 @@ function parseResolution(value: unknown): Card['resolution'] {
   return actionId && by && at ? { actionId, by, at } : undefined;
 }
 
+function parseProgress(value: unknown): CardProgress | undefined {
+  if (!isObject(value)) return undefined;
+  const label = text(value.label);
+  const { step, of } = value;
+  if (!label || typeof step !== 'number' || typeof of !== 'number' || !Number.isInteger(step) || !Number.isInteger(of) || of < 1 || step < 0 || step > of) return undefined;
+  return { label, step, of };
+}
+
+function parseLink(value: unknown): CardLink | undefined {
+  if (!isObject(value)) return undefined;
+  const id = text(value.id);
+  const title = text(value.title);
+  return id && ID.test(id) && title !== undefined ? { id, title } : undefined;
+}
+
 function parseMeta(value: unknown): Record<string, string> | undefined {
   if (!isObject(value)) return undefined;
   return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
@@ -83,10 +98,18 @@ export function parseCard(value: unknown): Card | undefined {
   const meta = parseMeta(value.meta);
   const metrics = Array.isArray(value.metrics) ? value.metrics.map(parseMetric).filter((metric) => metric !== undefined).slice(0, MAX_METRICS) : undefined;
   const resolution = parseResolution(value.resolution);
+  const phase = text(value.phase);
+  const progress = parseProgress(value.progress);
+  const keepOpen = value.keepOpen === true;
+  const replaces = parseLink(value.replaces);
+  const replacedBy = parseLink(value.replacedBy);
+  const plainText = value.plainText === true;
   return {
     id, rev, source, key, kind, title, state, push, createdAt, updatedAt,
     ...(body ? { body } : {}), ...(url ? { url } : {}), ...(expiresAt ? { expiresAt } : {}),
     ...(actions ? { actions } : {}), ...(picks ? { picks } : {}), ...(meta ? { meta } : {}), ...(metrics?.length ? { metrics } : {}), ...(resolution ? { resolution } : {}),
+    ...(phase ? { phase } : {}), ...(progress ? { progress } : {}), ...(keepOpen ? { keepOpen } : {}),
+    ...(replaces ? { replaces } : {}), ...(replacedBy ? { replacedBy } : {}), ...(plainText ? { plainText } : {}),
   };
 }
 

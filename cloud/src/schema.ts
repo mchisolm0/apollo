@@ -39,6 +39,13 @@ const metric = type({
 
 const meta = type.Record('0 < string <= 40', 'string <= 200');
 
+const progress = type({
+  label: '0 < string <= 80',
+  step: 'number.integer >= 0',
+  of: '0 < number.integer <= 100',
+  '+': 'delete',
+}).narrow((p, ctx) => p.step <= p.of || ctx.reject({ path: ['step'], description: 'at most `of`' }));
+
 export const CardInput = type({
   source,
   key: '0 < string <= 200',
@@ -51,6 +58,10 @@ export const CardInput = type({
   'meta?': meta,
   'metrics?': metric.array().atMostLength(4),
   'push?': "'alert' | 'passive' | 'none'",
+  'phase?': '0 < string <= 40',
+  'progress?': progress,
+  'keepOpen?': 'boolean',
+  'replaces?': '0 < string <= 200',
   'expiresAt?': isoTime,
   '+': 'delete',
 }).narrow((card, ctx) => card.picks === undefined || card.kind === 'briefing' || ctx.reject({ path: ['picks'], description: 'only on briefing cards' }));
@@ -80,7 +91,14 @@ export const DeviceRegistration = type({
 
 export const DeviceTokenRequest = type({ name, '+': 'delete' });
 
-export const TokenRequest = type({ role, name, '+': 'delete' });
+const scope = type({
+  source,
+  urls: type('0 < string <= 200').narrow((url, ctx) => url.endsWith('/') || ctx.mustBe('a prefix ending in /')).array().atMostLength(8),
+  '+': 'delete',
+});
+
+export const TokenRequest = type({ role, name, 'scope?': scope, '+': 'delete' })
+  .narrow((t, ctx) => t.scope === undefined || t.role === 'producer' || ctx.reject({ path: ['scope'], description: 'only on producer tokens' }));
 
 export const EventsQuery = type({
   'after?': type('string.integer.parse').to('number.integer >= 0'),

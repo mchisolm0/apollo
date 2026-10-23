@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // Token CLI for the cloud inbox. Dependency-free; Node runs it directly.
 // It calls /admin/* with the admin secret, which never leaves this machine.
-import type { ApiError, TokenRole } from './src/contract.ts';
+import { parseArgs } from 'node:util';
 
-type TokenInfo = { id: string; role: TokenRole; name: string; createdAt: string };
+import type { ApiError, TokenRole, TokenScope } from './src/contract.ts';
+
+type TokenInfo = { id: string; role: TokenRole; name: string; createdAt: string; scope?: TokenScope };
 
 const ROLES: readonly string[] = ['device', 'producer', 'connector'] satisfies TokenRole[];
 
@@ -11,8 +13,12 @@ function usage() {
   console.log(`Apollo cloud tokens
 
   node cloud/cli.ts create <device|producer|connector> <name>
+  node cloud/cli.ts create producer <name> --source <source> --allow <prefix>...
   node cloud/cli.ts list
   node cloud/cli.ts revoke <id>
+
+--source limits a producer to one source's cards and events. Each --allow is a
+link prefix ending in /, e.g. scryve-preview:// or https://github.com/HashingSeeds/.
 
 Reads APOLLO_CLOUD_URL and APOLLO_CLOUD_ADMIN_SECRET from the environment.`);
 }
@@ -40,18 +46,23 @@ const [command = 'help', ...args] = process.argv.slice(2);
 
 try {
   if (command === 'create') {
-    const [role, name] = args;
-    if (!role || !ROLES.includes(role) || !name) {
+    const { positionals: [role, name], values } = parseArgs({
+      args,
+      allowPositionals: true,
+      options: { source: { type: 'string' }, allow: { type: 'string', multiple: true } },
+    });
+    if (!role || !ROLES.includes(role) || !name || values.source === '' || (values.allow && !values.source)) {
       usage();
       process.exit(1);
     }
-    const created: TokenInfo & { token: string } = await (await admin('POST', '/admin/tokens', { role, name })).json();
-    console.log(`Created ${created.role} token "${created.name}" (${created.id}).`);
+    const scope = values.source ? { source: values.source, urls: values.allow ?? [] } : undefined;
+    const created: TokenInfo & { token: string } = await (await admin('POST', '/admin/tokens', { role, name, scope })).json();
+    console.log(`Created ${created.role} token "${created.name}" (${created.id})${created.scope ? `, limited to ${created.scope.source}` : ''}.`);
     console.log(`\n${created.token}\n`);
     console.log('This is the only time the token is shown.');
   } else if (command === 'list') {
     const tokens: TokenInfo[] = await (await admin('GET', '/admin/tokens')).json();
-    for (const t of tokens) console.log(`${t.id}  ${t.role.padEnd(9)}  ${t.createdAt}  ${t.name}`);
+    for (const t of tokens) console.log(`${t.id}  ${t.role.padEnd(9)}  ${t.createdAt}  ${t.name}${t.scope ? `  (${t.scope.source}: ${t.scope.urls.join(' ') || 'no links'})` : ''}`);
     if (tokens.length === 0) console.log('No tokens.');
   } else if (command === 'revoke') {
     const [id] = args;
