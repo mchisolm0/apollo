@@ -55,12 +55,24 @@ function LinkedCard({ label, link }: { label: string; link: CardLink }) {
 const MAX_TEXT = 4000;
 
 /** Inline text for an `input` action: Send records it, Cancel drops it. */
-function Composer({ action, onSend, onCancel }: { action: CardAction; onSend: (text: string) => void; onCancel: () => void }) {
+function Composer({ action, onSend, onCancel }: { action: CardAction; onSend: (text: string) => Promise<void>; onCancel: () => void }) {
   const styles = useThemedStyles(createStyles);
   const colors = useColors();
   const { factor } = useTextScale();
   const [draft, setDraft] = useState(action.prefill ?? '');
+  const [saving, setSaving] = useState(false);
+  // A ref, not state, so a second tap in the same frame can't send the reply twice.
+  const savingNow = useRef(false);
   const text = draft.trim();
+  const submit = () => {
+    if (!text || savingNow.current) return;
+    savingNow.current = true;
+    setSaving(true);
+    void onSend(text).finally(() => {
+      savingNow.current = false;
+      setSaving(false);
+    });
+  };
   return <View style={styles.composer}>
     <TextInput
       autoFocus
@@ -75,7 +87,7 @@ function Composer({ action, onSend, onCancel }: { action: CardAction; onSend: (t
     />
     <View style={styles.composerBar}>
       <CardButton wide action={{ label: 'Cancel' }} onPress={onCancel} />
-      <CardButton wide action={{ label: 'Send', style: text ? 'primary' : 'default' }} onPress={() => { if (text) onSend(text); }} />
+      <CardButton wide action={{ label: saving ? 'Saving' : 'Send', style: text && !saving ? 'primary' : 'default' }} onPress={submit} />
     </View>
   </View>;
 }
@@ -167,7 +179,7 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
       {card.body && card.plainText ? <Text style={[styles.plainBody, { fontSize: 15 * factor, lineHeight: 22 * factor }]} selectable>{card.body}</Text>
         : card.body ? <MessageContent text={card.body} copyable={false} /> : null}
     </ScrollView>
-    {composing ? <Composer key={composing.id} action={composing} onSend={(text) => void send(composing, text)} onCancel={() => setComposing(undefined)} /> : <View style={styles.bar}>
+    {composing ? <Composer key={composing.id} action={composing} onSend={(text) => send(composing, text)} onCancel={() => setComposing(undefined)} /> : <View style={styles.bar}>
       {decide.length ? <>
         {decide.map((action: CardAction) => <CardButton key={action.id} wide action={action} onPress={() => run(action)} />)}
         {link ? <CardButton wide action={{ label: parseApolloLink(link)?.kind === 'session' ? 'Open thread' : 'Open link' }} onPress={() => void openCardLink(link)} /> : null}
