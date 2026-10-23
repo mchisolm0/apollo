@@ -64,7 +64,7 @@ export function AgentSettingsScreen({ agent, deviceName, pairedAt, onBack, onTes
   return (
     <View style={uiStyles.screen}>
       <SettingsHeader title="Agent" onBack={onBack} />
-      <ScrollView contentContainerStyle={uiStyles.content}>
+      <ScrollView contentContainerStyle={uiStyles.content} keyboardShouldPersistTaps="handled">
         <View style={styles.identity}>
           <ConnectionMark state={agent.connection} label />
           {onRename ? <View style={styles.nameEditor}>

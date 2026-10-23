@@ -26,7 +26,7 @@ export function ToolsetsScreen({ toolsets, loading, error, onRetry, onBack }: {
       {toolsets.map((toolset) => {
         const open = expanded.has(toolset.name);
         return <View key={toolset.name} style={[styles.toolset, { borderBottomColor: colors.line }]}>
-          <Pressable accessibilityRole="button" accessibilityLabel={`${toolset.label ?? toolset.name}, ${toolset.enabled ? 'On' : 'Off'}, ${toolset.tools.length} tools`}
+          <Pressable accessibilityRole="button" accessibilityLabel={`${toolset.label ?? toolset.name}, ${toolset.enabled ? 'On' : 'Off'}, ${toolset.tools.length} ${toolset.tools.length === 1 ? 'tool' : 'tools'}`}
             accessibilityState={{ expanded: open }} style={styles.row} onPress={() => setExpanded((current) => {
               const next = new Set(current);
               if (next.has(toolset.name)) next.delete(toolset.name); else next.add(toolset.name);
