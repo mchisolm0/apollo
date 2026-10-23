@@ -181,6 +181,11 @@ export function isAutoSettleDue(
     && readAt + AUTO_SETTLE_DELAY_SECONDS < nowSeconds;
 }
 
+/** Select due threads while earlier settle writes are still in flight. */
+export function autoSettleSessionsDue(sessions: readonly InboxSession[], read: InboxSettled, nowSeconds: number, pending: ReadonlySet<string>): InboxSession[] {
+  return sessions.filter((session) => !pending.has(session.id) && isAutoSettleDue(session, session.autoSettleDisabled, nowSeconds, read[session.id]));
+}
+
 export function settleSession(session: InboxSession, settledAt = Math.floor(Date.now() / 1000)): InboxSession {
   if (!canSettleSession(session)) return session;
   return { ...session, status: 'settled', settled: true, attention: false, unread: false, settledAt };
