@@ -326,11 +326,9 @@ export class Inbox extends DurableObject<Env> {
     });
 
     if ('status' in result) return result;
-    if (result.changed) {
-      this.#broadcast({ type: 'card', card: result.card });
-      // A resolved card now waits on retention.
-      await this.#scheduleAlarm();
-    }
+    if (result.changed) this.#broadcast({ type: 'card', card: result.card });
+    // A resolved card waits on retention, and every answer leaves an idempotency record to sweep.
+    await this.#scheduleAlarm();
     return ok(result.card);
   }
 
