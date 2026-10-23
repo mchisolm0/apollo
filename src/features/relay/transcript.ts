@@ -159,7 +159,7 @@ const SYSTEM_DISPLAY_KINDS = new Set([
   'auto_continue', 'model_switch', 'personality_switch',
 ]);
 /** Injected user rows without a display kind: delegation results and `[System note: ...]` nudges. */
-const SYSTEM_PROMPT = /^(?:\[ASYNC DELEGATION (?:BATCH COMPLETE|COMPLETE|TASK FAILED) — deleg_|\[System\b)/u;
+const SYSTEM_PROMPT = /^\s*(?:\[ASYNC DELEGATION (?:BATCH COMPLETE|COMPLETE|TASK FAILED) — deleg_|\[System(?: note)?:)/u;
 
 /** One-line prose summaries drop markdown markers; tool commands and paths stay literal. */
 export function stepSummary(step: TranscriptStep): string {

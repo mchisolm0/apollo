@@ -426,3 +426,11 @@ test('terminal output dedupes against equal fresh history', () => {
   const live = projector({ history, events, runId: 'run-1', running: false });
   assert.deepEqual(live.map((row) => row.kind), ['user', 'assistant']);
 });
+
+test('a user message that only starts with a bracketed System word stays the user', () => {
+  const rows = createTranscriptProjector()({
+    history: [message({ id: 'u1', role: 'user', content: '[System design] review please', timestamp: 10 })],
+    events: [], running: false,
+  });
+  assert.equal(rows.find((row) => row.id.includes('u1'))?.kind, 'user');
+});
