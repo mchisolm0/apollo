@@ -1,7 +1,7 @@
 import type { HermesApprovalRequest, HermesRunEvent, HermesRunStatus } from './types.ts';
 
 export function isRunActive(status?: HermesRunStatus['status']): boolean {
-  return status !== undefined && !['completed', 'failed', 'cancelled', 'interrupted'].includes(status);
+  return status !== undefined && ['queued', 'started', 'running', 'waiting_for_approval', 'stopping'].includes(status);
 }
 
 /** The latest decision wins over a stale approval carried by a status response. */

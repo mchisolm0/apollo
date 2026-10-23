@@ -186,15 +186,14 @@ function parseMessage(value: unknown): HermesMessage {
 
 const runStates = new Set<HermesRunState>([
   'queued', 'started', 'running', 'waiting_for_approval', 'stopping',
-  'completed', 'failed', 'cancelled', 'interrupted',
+  'completed', 'failed', 'cancelled', 'interrupted', 'unknown',
 ]);
 
 function parseRun(value: unknown): HermesRunStatus {
   if (!isJsonObject(value) || typeof value.run_id !== 'string' || typeof value.status !== 'string') {
     throw new Error('Hermes run response was invalid');
   }
-  if (!runStates.has(value.status as HermesRunState)) throw new Error(`Unknown Hermes run status: ${value.status}`);
-  const status = value.status as HermesRunState;
+  const status = runStates.has(value.status as HermesRunState) ? value.status as HermesRunState : 'unknown';
   const approval = isJsonObject(value.approval) ? value.approval as HermesApprovalRequest : undefined;
   const usage = isJsonObject(value.usage)
     ? Object.fromEntries(Object.entries(value.usage).flatMap(([key, item]) => typeof item === 'number' ? [[key, item]] : []))
@@ -205,7 +204,9 @@ function parseRun(value: unknown): HermesRunStatus {
     sessionId: stringValue(value.session_id),
     model: stringValue(value.model),
     output: stringValue(value.output),
-    error: stringValue(value.error),
+    error: stringValue(value.error) ?? (status === 'unknown'
+      ? value.status === 'unknown' ? 'Hermes lost track of this run.' : `Unrecognized Hermes run status: ${value.status}`
+      : undefined),
     lastEvent: stringValue(value.last_event),
     createdAt: numberValue(value.created_at),
     updatedAt: numberValue(value.updated_at),

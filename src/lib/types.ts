@@ -129,6 +129,7 @@ export type HermesRunState =
   | 'running'
   | 'waiting_for_approval'
   | 'stopping'
+  | 'unknown'
   | 'completed'
   | 'failed'
   | 'cancelled'
