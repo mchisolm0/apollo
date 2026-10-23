@@ -101,19 +101,17 @@ export function parseSettledCards(value: unknown): SettledCards {
 }
 
 /**
- * Lays out the home inbox (design A): no labels between cards. Cards are for urgent items
- * that leave once handled, so they sit above ordinary threads: the open morning card, then
- * approval cards, threads waiting on approval, update cards newest first, the remaining
- * threads, and the collapsible Snoozed and Settled sections. Settled holds
- * settled threads and closed or locally settled cards, newest first.
+ * The open morning card leads, then approvals and waiting threads. Other open threads and
+ * update cards interleave by activity. Updates older than three days display as settled.
+ * Snoozed and Settled collapse; Settled mixes threads and cards by activity.
  *
  * Hermes cards are approvals the connector posts for any run, including ones started on
  * Discord, by cron or on another device. An open one shows as an approval unless the phone's
  * run state is live (`runStateLive`, the agent is connected) and already shows that thread
  * waiting in the open list or that run in `pendingRunIds`; then the thread row stands for it.
  * Stale run state from an offline agent never hides a card, since its Approve can't land. Closed Hermes cards stay out of Settled; the
- * thread keeps that history. Search and the attention filter hide the morning card; the
- * attention filter also hides updates.
+ * thread keeps that history. Search hides the morning card; attention keeps open response
+ * cards and threads needing attention.
  */
 export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isSnoozed, settledCards = NO_SETTLED, pendingRunIds = NO_RUNS, runStateLive = false, fresh = true, query = '', attentionOnly = false, collapsed }: {
   sessions: readonly S[];
@@ -144,16 +142,19 @@ export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isS
     const { sessionId, runId } = hermesApprovalTarget(card);
     return (sessionId !== undefined && waitingSessions.has(sessionId)) || (runId !== undefined && pendingRunIds.has(runId));
   };
+  const now = Date.now() / 1000;
+  // shortcut: age-out overrides Reopen; add a local reopen override if aged updates must return to Open.
+  const settledForDisplay = (card: InboxCard) => isCardSettled(card, settledCards) || (card.kind === 'update' && now - cardTime(card) > 3 * 24 * 60 * 60);
   const shown = cards.filter((card) => card.source !== 'hermes');
   const hermes = cards.filter((card) => card.source === 'hermes' && card.kind === 'approval' && !isCardSettled(card, settledCards) && !knownLocally(card));
-  const open = [...shown.filter((card) => !isCardSettled(card, settledCards)), ...hermes];
+  const open = [...shown.filter((card) => !settledForDisplay(card)), ...hermes];
   const inBucket = (id: 'open' | 'snoozed' | 'settled') => sessions.filter((session) => bucket(session) === id && matches(session.title, session.preview));
 
-  const briefing = search || attentionOnly ? undefined : open.filter((card) => card.kind === 'briefing').sort(newestFirst('createdAt'))[0];
+  const briefing = search ? undefined : open.filter((card) => card.kind === 'briefing').sort(newestFirst('createdAt'))[0];
   const approvals = open.filter((card) => card.kind === 'approval' && matches(card.title, card.body)).sort(newestFirst('createdAt'));
   const threads = inBucket('open').filter((session) => !attentionOnly || session.status === 'attention' || session.pendingApproval);
   const waiting = threads.filter((session) => session.pendingApproval);
-  const updates = attentionOnly ? [] : open.filter((card) => card.kind === 'update' && matches(card.title, card.body)).sort(newestFirst('updatedAt'));
+  const updates = attentionOnly ? [] : open.filter((card) => card.kind === 'update' && matches(card.title, card.body));
 
   const sessionRow = (session: S): InboxRow<S> => ({ kind: 'session', id: session.id, session });
   const cardRow = (settled: boolean) => (card: InboxCard): InboxRow<S> => ({ kind: 'card', id: card.id, card, settled });
@@ -161,8 +162,10 @@ export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isS
     ...(briefing ? [{ kind: 'briefing' as const, id: briefing.id, card: briefing }] : []),
     ...approvals.map(cardRow(false)),
     ...waiting.map(sessionRow),
-    ...updates.map(cardRow(false)),
-    ...threads.filter((session) => !session.pendingApproval).map(sessionRow),
+    ...[
+      ...updates.map((card) => ({ at: cardTime(card), row: cardRow(false)(card) })),
+      ...threads.filter((session) => !session.pendingApproval).map((session) => ({ at: session.activityAt, row: sessionRow(session) })),
+    ].sort((a, b) => b.at - a.at).map((entry) => entry.row),
   ];
   if (attentionOnly) return rows;
   // Nothing open but something snoozed or settled: say so above those sections.
@@ -175,7 +178,7 @@ export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isS
   }
   const settled = [
     ...inBucket('settled').map((session) => ({ at: session.activityAt, row: sessionRow(session) })),
-    ...shown.filter((card) => isCardSettled(card, settledCards) && matches(card.title, card.body)).map((card) => ({ at: cardTime(card), row: cardRow(true)(card) })),
+    ...shown.filter((card) => settledForDisplay(card) && matches(card.title, card.body)).map((card) => ({ at: cardTime(card), row: cardRow(true)(card) })),
   ].sort((a, b) => b.at - a.at);
   if (settled.length) {
     rows.push({ kind: 'section', id: 'settled', title: 'Settled', ...(fresh ? { count: settled.length } : {}) });

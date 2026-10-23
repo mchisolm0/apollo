@@ -8,16 +8,15 @@ export const HAS_MAIL_TOOLBAR = Platform.OS === 'ios' && isLiquidGlassAvailable(
 export const MAIL_TOOLBAR_INSET = 56;
 
 /** Expo Router 57 passes these typed props directly to the patched native header. */
-export function MailToolbar({ searchText, attentionOnly, onFilter, onCompose, onSearch }: {
-  searchText: string;
+export function MailToolbar({ attentionOnly, onFilter, onCompose, onSearch }: {
   attentionOnly: boolean;
   onFilter: () => void;
   onCompose: () => void;
   onSearch: (query: string) => void;
 }) {
+  // Native owns the text; a delayed JS echo can overwrite newer keystrokes.
   const item = useMemo<HeaderBarButtonMailSearchToolbarItem>(() => ({
     type: 'mailSearchToolbar',
-    searchText,
     placeholder: 'Search',
     useFallbackSearchField: true,
     showsSearchDismissButton: true,
@@ -28,6 +27,6 @@ export function MailToolbar({ searchText, attentionOnly, onFilter, onCompose, on
     onFilterPress: onFilter,
     onComposePress: onCompose,
     onSearchTextChange: onSearch,
-  }), [searchText, attentionOnly, onFilter, onCompose, onSearch]);
+  }), [attentionOnly, onFilter, onCompose, onSearch]);
   return HAS_MAIL_TOOLBAR ? <Stack.Screen options={{ unstable_nativeProps: { headerConfig: { headerToolbarItems: [item] } } }} /> : null;
 }
