@@ -17,6 +17,16 @@ export type DeliveredReply = Readonly<{ key: string; cardId: string; text: strin
 // A producer may clip a long reply, so only its start has to appear.
 const absorbed = (card: Card, reply: DeliveredReply) => card.body !== reply.body && (card.body ?? '').includes(reply.text.slice(0, 100));
 
+/** The replies no card has absorbed yet. Dropping absorbed ones for good keeps a reply that later scrolls out of the body from coming back. */
+export function unabsorbedReplies(cards: readonly Card[], delivered: readonly DeliveredReply[]): readonly DeliveredReply[] {
+  const byId = new Map(cards.map((card) => [card.id, card]));
+  const left = delivered.filter((reply) => {
+    const card = byId.get(reply.cardId);
+    return !card || !absorbed(card, reply);
+  });
+  return left.length === delivered.length ? delivered : left;
+}
+
 /** Overlays responses that have not reached the server yet, so taps show immediately and survive offline. */
 export function withPendingResponses(cards: readonly Card[], pending: readonly { key?: string; cardId: string; response: CardResponse }[], delivered: readonly DeliveredReply[] = []): InboxCard[] {
   const deliveredKeys = new Set(delivered.map((reply) => reply.key));

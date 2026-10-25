@@ -82,6 +82,10 @@ export function createRespondQueue(dependencies: RespondQueueDependencies) {
     lock = next.then(() => undefined, () => undefined);
     return next;
   };
+  /** A listener's failure is not a delivery failure: the server already has the response. */
+  const notify = (card: Card, delivered?: QueuedResponse) => cardListeners.forEach((listener) => {
+    try { listener(card, delivered); } catch { /* the screen catches up on the next snapshot */ }
+  });
   const persist = (items: readonly QueuedResponse[]) => dependencies.storage.setItem(STORAGE_KEY, JSON.stringify(items));
   /** Removing or rescheduling a delivered item is best effort: a replay is safe under its idempotency key. */
   const update = (change: (items: readonly QueuedResponse[]) => readonly QueuedResponse[], error?: string) => exclusive(async () => {
@@ -116,14 +120,14 @@ export function createRespondQueue(dependencies: RespondQueueDependencies) {
     try {
       const card = await dependencies.send(item);
       // Listeners first, so the delivered reply is on screen before its queued copy leaves.
-      cardListeners.forEach((listener) => listener(card, item));
+      notify(card, item);
       await update(without(item.key));
     } catch (error) {
       const failure = failureOf(error);
       if (failure.status === 409 && failure.code === 'card_closed') {
         await update(without(item.key));
         const { card } = failure;
-        if (card) cardListeners.forEach((listener) => listener(card));
+        if (card) notify(card);
       } else if (failure.status === 401 || failure.status === 403) {
         // Revoked or wrong credentials: keep every intent and wait for new ones.
         paused = true;

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test, { afterEach, beforeEach, mock } from 'node:test';
 
 import type { Card } from '../../../cloud/src/contract.ts';
-import { buildInboxRows, cardOpenPlan, hermesApprovalTarget, settleAction, settleOnFirstSight, updateSettledCards, withPendingResponses, type InboxRowSession } from './inbox-rows.ts';
+import { buildInboxRows, cardOpenPlan, hermesApprovalTarget, settleAction, settleOnFirstSight, unabsorbedReplies, updateSettledCards, withPendingResponses, type InboxRowSession } from './inbox-rows.ts';
 
 function card(id: string, kind: Card['kind'], patch: Partial<Card> = {}): Card {
   return { id, rev: 1, source: 'preview', key: id, kind, title: id, push: 'alert', state: 'open', createdAt: '2026-10-09T08:00:00Z', updatedAt: '2026-10-09T08:00:00Z', ...patch };
@@ -118,7 +118,11 @@ test('a reply shows on its card until the producer writes it into the body', () 
   // Delivered: shown once even while its queued copy is still leaving, though the body already has an older "Thanks".
   const delivered = [{ key: 'k', cardId: 'f', text: 'Thanks', body: feedback.body }];
   assert.deepEqual(withPendingResponses([feedback], [{ key: 'k', cardId: 'f', response: { actionId: 'reply', text: 'Thanks' } }], delivered)[0].replies, ['Thanks']);
-  assert.equal(withPendingResponses([{ ...feedback, body: `${feedback.body}\n\nYou: Thanks` }], [], delivered)[0].replies, undefined);
+  const absorbedCard = { ...feedback, body: `${feedback.body}\n\nYou: Thanks` };
+  assert.equal(withPendingResponses([absorbedCard], [], delivered)[0].replies, undefined);
+  // Once absorbed it's gone for good, even after it scrolls out of the producer's window.
+  assert.deepEqual(unabsorbedReplies([absorbedCard], delivered), []);
+  assert.equal(unabsorbedReplies([feedback], delivered), delivered);
 });
 
 test('opening an update settles it and a link-only update opens its link; approvals and morning cards stay', () => {
