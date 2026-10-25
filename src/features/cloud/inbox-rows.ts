@@ -6,21 +6,33 @@ import { parseApolloLink } from './card-text.ts';
  * A card as the inbox shows it: queued responses applied on top of the server's copy.
  * `pendingAction` is an action still on its way. A morning card stays open after Keep or
  * Skip so its picks stay tappable; `acknowledged` is its `resolution`, or a queued action.
- * A `repeat` action never answers the card, so on its way it only sets `sending`.
+ * A `repeat` action never answers the card, so on its way it only sets `sending`. A text
+ * reply instead joins `replies` until the producer writes it into the body.
  */
-export type InboxCard = Card & { pendingAction?: string; acknowledged?: string; sending?: boolean };
+export type InboxCard = Card & { pendingAction?: string; acknowledged?: string; sending?: boolean; replies?: readonly string[] };
+
+/** A reply the server took, with the body it was taken against, shown until the producer re-posts the card with it. */
+export type DeliveredReply = Readonly<{ key: string; cardId: string; text: string; body?: string }>;
+
+// A producer may clip a long reply, so only its start has to appear.
+const absorbed = (card: Card, reply: DeliveredReply) => card.body !== reply.body && (card.body ?? '').includes(reply.text.slice(0, 100));
 
 /** Overlays responses that have not reached the server yet, so taps show immediately and survive offline. */
-export function withPendingResponses(cards: readonly Card[], pending: readonly { cardId: string; response: CardResponse }[]): InboxCard[] {
+export function withPendingResponses(cards: readonly Card[], pending: readonly { key?: string; cardId: string; response: CardResponse }[], delivered: readonly DeliveredReply[] = []): InboxCard[] {
+  const deliveredKeys = new Set(delivered.map((reply) => reply.key));
   return cards.map((card) => {
-    const overlaid = pending.reduce<InboxCard>((current, { cardId, response }) => {
-      if (cardId !== current.id) return current;
+    const waiting = delivered.filter((reply) => reply.cardId === card.id && !absorbed(card, reply)).map((reply) => reply.text);
+    const base: InboxCard = waiting.length ? { ...card, replies: waiting } : card;
+    const overlaid = pending.reduce<InboxCard>((current, { key, cardId, response }) => {
+      if (cardId !== current.id || (key !== undefined && deliveredKeys.has(key))) return current;
       if (response.actionId !== undefined) {
-        if (current.actions?.some((action) => action.id === response.actionId && action.repeat)) return { ...current, sending: true };
+        if (current.actions?.some((action) => action.id === response.actionId && action.repeat)) {
+          return response.text ? { ...current, replies: [...current.replies ?? [], response.text] } : { ...current, sending: true };
+        }
         return current.kind === 'briefing' ? { ...current, acknowledged: response.actionId } : { ...current, pendingAction: response.actionId };
       }
       return { ...current, picks: current.picks?.map((pick) => pick.n === response.pick ? { ...pick, done: response.done } : pick) };
-    }, card);
+    }, base);
     // The server's first answer wins over a queued one; the queued one shows until it lands.
     const ack = card.resolution?.actionId ?? overlaid.acknowledged;
     return card.kind === 'briefing' && ack ? { ...overlaid, acknowledged: ack } : overlaid;

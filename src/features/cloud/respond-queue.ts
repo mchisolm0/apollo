@@ -63,7 +63,7 @@ function samePick(a: CardResponse, b: CardResponse) {
 export function createRespondQueue(dependencies: RespondQueueDependencies) {
   const now = dependencies.now ?? Date.now;
   const listeners = new Set<() => void>();
-  const cardListeners = new Set<(card: Card) => void>();
+  const cardListeners = new Set<(card: Card, delivered?: QueuedResponse) => void>();
   let snapshot: RespondQueueSnapshot = { items: [] };
   let loading: Promise<void> | undefined;
   let flushing: Promise<void> | undefined;
@@ -115,8 +115,9 @@ export function createRespondQueue(dependencies: RespondQueueDependencies) {
     inFlight = item.key;
     try {
       const card = await dependencies.send(item);
+      // Listeners first, so the delivered reply is on screen before its queued copy leaves.
+      cardListeners.forEach((listener) => listener(card, item));
       await update(without(item.key));
-      cardListeners.forEach((listener) => listener(card));
     } catch (error) {
       const failure = failureOf(error);
       if (failure.status === 409 && failure.code === 'card_closed') {
@@ -162,8 +163,8 @@ export function createRespondQueue(dependencies: RespondQueueDependencies) {
       listeners.add(listener);
       return () => { listeners.delete(listener); };
     },
-    /** Called with the server's current card after each delivered or already-closed response. */
-    onCard(listener: (card: Card) => void) {
+    /** Called with the server's current card after each delivered or already-closed response; `delivered` is set only when the server took it. */
+    onCard(listener: (card: Card, delivered?: QueuedResponse) => void) {
       cardListeners.add(listener);
       return () => { cardListeners.delete(listener); };
     },
