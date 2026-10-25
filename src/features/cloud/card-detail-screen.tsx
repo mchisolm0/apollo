@@ -102,7 +102,6 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
   const { agents } = useApollo();
   const [copied, setCopied] = useState(false);
   const [composing, setComposing] = useState<CardAction>();
-  const [sent, setSent] = useState(false);
   const card = cloud.cards.find((candidate) => candidate.id === cardId);
   // Opening an update settles it, from a row or a notification alike, once per mount, so Reopen here sticks.
   const { settle: settleCard, settled: settledCards } = cloud;
@@ -126,7 +125,7 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
   const respond = (id: string, actionId: string) => { void cloud.respond(id, { actionId }); };
   const pick = (_: InboxCard, value: CardPick) => { void cloud.respond(card.id, { pick: value.n, done: !value.done }); };
   const host = agents.find((agent) => agent.id === cloud.credential?.agentId)?.label;
-  const answer = card.sending ? 'Sending' : sent ? 'Sent'
+  const answer = card.sending ? 'Sending'
     : card.acknowledged ? acknowledgedLabel(card, card.acknowledged)
     : card.pendingAction ? `${actionLabel(card, card.pendingAction)}, sending`
       : card.resolution ? `${actionLabel(card, card.resolution.actionId)} by ${card.resolution.by} · ${stamp(card.resolution.at)}`
@@ -144,11 +143,12 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
   const run = (action: CardAction) => action.input ? setComposing(action) : runAction(card, action, respond);
   // The composer keeps the draft until the reply is saved on the phone.
   const send = async (action: CardAction, text: string) => {
-    if (!(await cloud.respond(card.id, { actionId: action.id, text }))) return;
-    setComposing(undefined);
-    setSent(true);
-    setTimeout(() => setSent(false), 1500);
+    if (await cloud.respond(card.id, { actionId: action.id, text })) setComposing(undefined);
   };
+  // Replies the producer hasn't written into the body yet, dimmed. In a plain-text body (feedback) they sit
+  // where the producer's own "You:" line will land, so nothing moves when it does.
+  const replies = card.replies?.map((reply) => `You: ${reply}`).join('\n\n');
+  const plainBody = card.source !== 'digest' && card.plainText ? card.body : undefined;
   const link = card.url && !decide.some((action) => action.url === card.url) ? card.url : undefined;
   const copy = () => void Clipboard.setStringAsync(copyText(card)).then(() => {
     setCopied(true);
@@ -183,8 +183,9 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
       {card.picks?.length ? <CardPicks card={card} onPick={open ? pick : () => {}} /> : null}
       {/* The digest producer sends a fixed-width text table, including literal home-directory paths. */}
       {card.body && card.source === 'digest' ? <ScrollView horizontal><Text style={[styles.plainBody, styles.monospace, { fontSize: 15 * factor, lineHeight: 22 * factor }]} selectable>{card.body}</Text></ScrollView>
-        : card.body && card.plainText ? <Text style={[styles.plainBody, { fontSize: 15 * factor, lineHeight: 22 * factor }]} selectable>{card.body}</Text>
+        : plainBody ? <Text style={[styles.plainBody, { fontSize: 15 * factor, lineHeight: 22 * factor }]} selectable>{plainBody}{replies ? <Text style={styles.reply}>{`\n\n${replies}`}</Text> : null}</Text>
         : card.body ? <MessageContent text={card.body} copyable={false} /> : null}
+      {replies && !plainBody ? <Text style={[styles.plainBody, styles.reply, { fontSize: 15 * factor, lineHeight: 22 * factor }]} selectable>{replies}</Text> : null}
     </ScrollView>
     {composing ? <Composer key={composing.id} action={composing} onSend={(text) => send(composing, text)} onCancel={() => setComposing(undefined)} /> : <View style={styles.bar}>
       {decide.length ? <>
@@ -215,6 +216,7 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   metaValue: { color: colors.secondary, flex: 1, fontVariant: ['tabular-nums'] },
   linkValue: { color: colors.cyan, flex: 1 },
   plainBody: { color: colors.primary },
+  reply: { color: colors.muted },
   monospace: { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
   metrics: { flexDirection: 'row', borderTopWidth: StyleSheet.hairlineWidth, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: colors.line },
   metric: { flex: 1, minWidth: 0, paddingVertical: 10 },

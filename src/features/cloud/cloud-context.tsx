@@ -14,7 +14,7 @@ import { applyCard, applyStreamMessage, mergeSnapshot, parseCards, parseStreamMe
 import { CloudRequestError, createCloudClient, pushRegistrationKey, type CloudCredential } from './cloud-client';
 import { CARD_CACHE_KEY, SETTLED_KEY, cloudCredentialStore, loadCloudCredential, saveCloudCredential } from './cloud-credentials';
 import { ensureCloudChannels, respondQueue } from './cloud-runtime';
-import { NO_SETTLED, parseSettledCards, updateSettledCards, withPendingResponses, type InboxCard, type SettledCards } from './inbox-rows';
+import { NO_SETTLED, parseSettledCards, updateSettledCards, unabsorbedReplies, withPendingResponses, type DeliveredReply, type InboxCard, type SettledCards } from './inbox-rows';
 
 /** off: no credential. live: stream open. offline: retrying. revoked: the token was rejected. */
 export type CloudStatus = 'off' | 'connecting' | 'live' | 'offline' | 'revoked';
@@ -94,7 +94,13 @@ export function CloudProvider({ children }: PropsWithChildren) {
     return () => { appState.remove(); token?.remove(); };
   }, []);
 
-  useEffect(() => respondQueue.onCard((card) => setCards((current) => applyCard(current, card))), [setCards]);
+  // Producers poll for replies, so a sent reply stays on its card until the producer writes it in.
+  const [delivered, setDelivered] = useState<readonly DeliveredReply[]>([]);
+  useEffect(() => respondQueue.onCard((card, item) => {
+    setCards((current) => applyCard(current, card));
+    const text = item?.response.text;
+    if (item && text) setDelivered((current) => [...current, { key: item.key, cardId: card.id, text, body: card.body }]);
+  }), [setCards]);
 
   // New credentials (Reconnect, re-pair) resume a queue paused on 401/403.
   useEffect(() => { if (credential) respondQueue.resume(); }, [credential]);
@@ -305,7 +311,10 @@ export function CloudProvider({ children }: PropsWithChildren) {
   }, [cloudGrant]);
 
   const current = url && inbox?.url === url ? inbox : undefined;
-  const inboxCards = useMemo(() => withPendingResponses(current?.cards ?? [], queue.items), [current, queue.items]);
+  // Adjusted during render, not in an effect: the same array comes back when nothing was absorbed.
+  const outstanding = current ? unabsorbedReplies(current.cards, delivered) : delivered;
+  if (outstanding !== delivered) setDelivered(outstanding);
+  const inboxCards = useMemo(() => withPendingResponses(current?.cards ?? [], queue.items, delivered), [current, queue.items, delivered]);
   const status: CloudStatus = !credential ? 'off' : queue.paused ? 'revoked' : connection?.url === credential.url ? connection.status : 'connecting';
   const value = useMemo<CloudContextValue>(() => ({
     status,

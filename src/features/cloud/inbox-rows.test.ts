@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test, { afterEach, beforeEach, mock } from 'node:test';
 
 import type { Card } from '../../../cloud/src/contract.ts';
-import { buildInboxRows, cardOpenPlan, hermesApprovalTarget, settleAction, settleOnFirstSight, updateSettledCards, withPendingResponses, type InboxRowSession } from './inbox-rows.ts';
+import { buildInboxRows, cardOpenPlan, hermesApprovalTarget, settleAction, settleOnFirstSight, unabsorbedReplies, updateSettledCards, withPendingResponses, type InboxRowSession } from './inbox-rows.ts';
 
 function card(id: string, kind: Card['kind'], patch: Partial<Card> = {}): Card {
   return { id, rev: 1, source: 'preview', key: id, kind, title: id, push: 'alert', state: 'open', createdAt: '2026-10-09T08:00:00Z', updatedAt: '2026-10-09T08:00:00Z', ...patch };
@@ -108,12 +108,21 @@ test('queued responses show right away: picks flip, an approval says so, a morni
   assert.equal(withPendingResponses([resolved], [{ cardId: 'morning', response: { actionId: 'keep' } }])[0].acknowledged, 'skip');
 });
 
-test('a queued repeat action shows as sending without answering the card', () => {
-  const feedback = card('f', 'approval', { source: 'feedback', actions: [{ id: 'reply', label: 'Reply', input: 'text', repeat: true }, { id: 'publish', label: 'Publish' }] });
-  const [sending] = withPendingResponses([feedback], [{ cardId: 'f', response: { actionId: 'reply', text: 'Thanks' } }]);
-  assert.equal(sending.sending, true);
-  assert.equal(sending.pendingAction, undefined);
+test('a reply shows on its card until the producer writes it into the body', () => {
+  const feedback = card('f', 'approval', { source: 'feedback', body: 'Idea\n\nYou: Thanks', actions: [{ id: 'reply', label: 'Reply', input: 'text', repeat: true }, { id: 'publish', label: 'Publish' }] });
+  const [queued] = withPendingResponses([feedback], [{ key: 'k', cardId: 'f', response: { actionId: 'reply', text: 'Thanks' } }]);
+  assert.deepEqual(queued.replies, ['Thanks']);
+  assert.equal(queued.sending, undefined);
+  assert.equal(queued.pendingAction, undefined);
   assert.equal(withPendingResponses([feedback], [{ cardId: 'f', response: { actionId: 'publish' } }])[0].pendingAction, 'publish');
+  // Delivered: shown once even while its queued copy is still leaving, though the body already has an older "Thanks".
+  const delivered = [{ key: 'k', cardId: 'f', text: 'Thanks', body: feedback.body }];
+  assert.deepEqual(withPendingResponses([feedback], [{ key: 'k', cardId: 'f', response: { actionId: 'reply', text: 'Thanks' } }], delivered)[0].replies, ['Thanks']);
+  const absorbedCard = { ...feedback, body: `${feedback.body}\n\nYou: Thanks` };
+  assert.equal(withPendingResponses([absorbedCard], [], delivered)[0].replies, undefined);
+  // Once absorbed it's gone for good, even after it scrolls out of the producer's window.
+  assert.deepEqual(unabsorbedReplies([absorbedCard], delivered), []);
+  assert.equal(unabsorbedReplies([feedback], delivered), delivered);
 });
 
 test('opening an update settles it and a link-only update opens its link; approvals and morning cards stay', () => {
