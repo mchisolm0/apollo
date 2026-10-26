@@ -105,6 +105,11 @@ const scope = type({
 export const TokenRequest = type({ role, name, 'scope?': scope, '+': 'delete' })
   .narrow((t, ctx) => t.scope === undefined || t.role === 'producer' || ctx.reject({ path: ['scope'], description: 'only on producer tokens' }));
 
+export const HookRequest = type({
+  url: type('string.url <= 500').narrow((url, ctx) => url.startsWith('https://') || ctx.mustBe('an https URL')),
+  '+': 'delete',
+});
+
 export const EventsQuery = type({
   'after?': type('string.integer.parse').to('number.integer >= 0'),
   'source?': source,

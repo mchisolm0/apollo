@@ -43,6 +43,13 @@ node cloud/cli.ts revoke <id>
 
 Phones get `device` tokens from the connector during pairing, not from the CLI.
 
+A producer that polls `/v1/events` can also get a hook, so it hears about a reply right away:
+
+```sh
+node cloud/cli.ts hook <id> https://<deployment>.convex.site/apollo/events   # prints the secret once
+node cloud/cli.ts unhook <id>
+```
+
 ## Store reviews
 
 A cron (every 15 minutes) pulls App Store and Google Play reviews for the apps in `REVIEW_APPS` (`wrangler.jsonc`) into `reviews` cards. Replying on a card posts the reply to the store right away; a store outage retries on the next run. Play only lists reviews from the last 7 days, and caps replies at 350 characters. A review's card settles 30 days after the review was written or last edited; an edit after that doesn't reopen it.

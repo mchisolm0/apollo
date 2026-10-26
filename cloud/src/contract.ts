@@ -171,6 +171,23 @@ export interface TokenScope {
   urls: string[];
 }
 
+/**
+ * PUT /admin/tokens/:id/hook. After each phone response that logs an event the
+ * token can read, the Worker POSTs `HookNudge` to `url` with `Authorization:
+ * Bearer <secret>`, so the producer reads `GET /v1/events` now instead of on
+ * its next poll. Best effort and never retried: keep polling as a fallback.
+ */
+export interface HookRequest {
+  url: string;
+}
+export interface HookResponse {
+  /** Shown once. */
+  secret: string;
+}
+export interface HookNudge {
+  source: Source;
+}
+
 /** POST /v1/device-tokens. `name` is the connector's device id; minting again for it revokes the old token. */
 export interface DeviceTokenRequest {
   name: string;

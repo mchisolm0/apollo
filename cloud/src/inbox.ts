@@ -19,9 +19,12 @@ import type {
   DeviceRegistration,
   DeviceTokenRequest,
   DeviceTokenResponse,
+  HookNudge,
+  HookResponse,
   InboxEvent,
   Kind,
   PushLevel,
+  Source,
   StreamMessage,
   TokenRole,
   TokenScope,
@@ -35,10 +38,11 @@ export const TOKEN_HASH_HEADER = 'x-apollo-token-hash';
 export type Failure = { status: 400 | 401 | 403 | 404 | 409 | 422; body: ApiError };
 export type Reply<T> = { status: 200 | 201; body: T } | { status: 204; body: null } | Failure;
 
-export type TokenInfo = { id: string; role: TokenRole; name: string; createdAt: string; scope?: TokenScope };
+export type TokenInfo = { id: string; role: TokenRole; name: string; createdAt: string; scope?: TokenScope; hook?: string };
 
 type Principal = { id: string; role: TokenRole; name: string; scope?: TokenScope };
 type TokenRow = { id: string; role: TokenRole; name: string; scope: string | null };
+type Hook = { url: string; secret: string };
 type CardRow = { data: string };
 type EventRow = { seq: number; data: string };
 type WithoutSeq<E> = E extends unknown ? Omit<E, 'seq'> : never;
@@ -57,6 +61,7 @@ const EVENTS_PAGE = 500;
 const PUSH_LEASE = MINUTE;
 /** Five retries, about ten minutes in total. */
 const PUSH_RETRY_DELAYS = [30_000, MINUTE, 2 * MINUTE, 3 * MINUTE, 3.5 * MINUTE];
+const HOOK_TIMEOUT = 5_000;
 
 const DEFAULT_PUSH: Record<Kind, PushLevel> = { briefing: 'alert', approval: 'alert', update: 'passive' };
 
@@ -143,6 +148,8 @@ const MIGRATIONS = [
   `ALTER TABLE tokens ADD COLUMN scope TEXT;`,
   // Bumped on every phase change, so a send still in flight from an earlier phase can tell it's stale.
   `ALTER TABLE cards ADD COLUMN push_generation INTEGER NOT NULL DEFAULT 0;`,
+  // A producer's Hook as JSON, or NULL. See HookRequest.
+  `ALTER TABLE tokens ADD COLUMN hook TEXT;`,
 ];
 
 export class Inbox extends DurableObject<Env> {
@@ -267,7 +274,7 @@ export class Inbox extends DurableObject<Env> {
     const who = this.#authorize(tokenHash, DEVICE);
     if ('status' in who) return who;
 
-    const result = this.ctx.storage.transactionSync((): Failure | { card: Card; changed: boolean } => {
+    const result = this.ctx.storage.transactionSync((): Failure | { card: Card; changed: boolean; logged?: Source } => {
       const [prior] = this.sql
         .exec<{ body_hash: string; response: string }>(
           'SELECT body_hash, response FROM idempotency WHERE token_id = ? AND key = ? AND created_at > ?',
@@ -326,11 +333,12 @@ export class Inbox extends DurableObject<Env> {
         JSON.stringify(next),
         Date.now(),
       );
-      return { card: next, changed: next !== card };
+      return { card: next, changed: next !== card, ...(event ? { logged: card.source } : {}) };
     });
 
     if ('status' in result) return result;
     if (result.changed) this.#broadcast({ type: 'card', card: result.card });
+    if (result.logged) this.ctx.waitUntil(this.#nudgeHooks(result.logged));
     // A resolved card waits on retention, and every answer leaves an idempotency record to sweep.
     await this.#scheduleAlarm();
     return ok(result.card);
@@ -443,9 +451,23 @@ export class Inbox extends DurableObject<Env> {
 
   listTokens(): TokenInfo[] {
     return this.sql
-      .exec<TokenRow & { createdAt: string }>('SELECT id, role, name, scope, created_at AS createdAt FROM tokens ORDER BY created_at')
+      .exec<TokenRow & { createdAt: string; hook: string | null }>('SELECT id, role, name, scope, hook, created_at AS createdAt FROM tokens ORDER BY created_at')
       .toArray()
-      .map(({ scope, ...info }) => ({ ...info, ...parseScope(scope) }));
+      .map(({ scope, hook, ...info }) => ({ ...info, ...parseScope(scope), ...(hook ? { hook: (JSON.parse(hook) as Hook).url } : {}) }));
+  }
+
+  /** Sets a producer token's hook with a new secret, replacing any earlier one. */
+  setHook(id: string, url: string): Reply<HookResponse> {
+    const [token] = this.sql.exec<{ role: TokenRole }>('SELECT role FROM tokens WHERE id = ?', id).toArray();
+    if (!token) return fail(404, 'not_found', 'token not found');
+    if (!PRODUCER.includes(token.role)) return fail(400, 'not_producer', 'only producer and connector tokens take a hook');
+    const secret = newToken();
+    this.sql.exec('UPDATE tokens SET hook = ? WHERE id = ?', JSON.stringify({ url, secret } satisfies Hook), id);
+    return ok({ secret });
+  }
+
+  clearHook(id: string): boolean {
+    return this.sql.exec('UPDATE tokens SET hook = NULL WHERE id = ? RETURNING id', id).toArray().length > 0;
   }
 
   revokeToken(id: string): boolean {
@@ -516,6 +538,24 @@ export class Inbox extends DurableObject<Env> {
       info.id, hash, role, name, scope ? JSON.stringify(scope) : null, info.createdAt,
     );
     return info;
+  }
+
+  /** Tells each producer that can read `source` events that there's a new one. Failures only log: producers still poll. */
+  async #nudgeHooks(source: Source) {
+    const hooks = this.sql
+      .exec<{ name: string; scope: string | null; hook: string }>('SELECT name, scope, hook FROM tokens WHERE hook IS NOT NULL')
+      .toArray()
+      .filter((row) => (parseScope(row.scope).scope?.source ?? source) === source);
+    await Promise.all(hooks.map(async (row) => {
+      const hook: Hook = JSON.parse(row.hook);
+      const status = await fetch(hook.url, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${hook.secret}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ source } satisfies HookNudge),
+        signal: AbortSignal.timeout(HOOK_TIMEOUT),
+      }).then((response) => response.status, () => 0);
+      if (status < 200 || status >= 300) console.warn(`hook for ${row.name} answered ${status || 'nothing'}`);
+    }));
   }
 
   #deviceTokenIds(name: string) {

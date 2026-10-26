@@ -133,6 +133,13 @@ const admin = router<Base>()
   .on('GET', '/admin/tokens', async ({ inbox }) => Response.json(await inbox.listTokens()))
   .on('DELETE', '/admin/tokens/:id', async ({ inbox }, { id }) =>
     (await inbox.revokeToken(id)) ? new Response(null, { status: 204 }) : error(404, 'not_found', 'token not found'),
+  )
+  .on('PUT', '/admin/tokens/:id/hook', async ({ request, inbox }, { id }) => {
+    const body = await readBody(request, schema.HookRequest);
+    return body instanceof Response ? body : send(await inbox.setHook(id, body.url));
+  })
+  .on('DELETE', '/admin/tokens/:id/hook', async ({ inbox }, { id }) =>
+    (await inbox.clearHook(id)) ? new Response(null, { status: 204 }) : error(404, 'not_found', 'token not found'),
   );
 
 async function isAdmin(request: Request, env: Env) {

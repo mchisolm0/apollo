@@ -3,9 +3,9 @@
 // It calls /admin/* with the admin secret, which never leaves this machine.
 import { parseArgs } from 'node:util';
 
-import type { ApiError, TokenRole, TokenScope } from './src/contract.ts';
+import type { ApiError, HookResponse, TokenRole, TokenScope } from './src/contract.ts';
 
-type TokenInfo = { id: string; role: TokenRole; name: string; createdAt: string; scope?: TokenScope };
+type TokenInfo = { id: string; role: TokenRole; name: string; createdAt: string; scope?: TokenScope; hook?: string };
 
 const ROLES: readonly string[] = ['device', 'producer', 'connector'] satisfies TokenRole[];
 
@@ -16,9 +16,14 @@ function usage() {
   node cloud/cli.ts create producer <name> --source <source> --allow <prefix>...
   node cloud/cli.ts list
   node cloud/cli.ts revoke <id>
+  node cloud/cli.ts hook <id> <https-url>
+  node cloud/cli.ts unhook <id>
 
 --source limits a producer to one source's cards and events. Each --allow is a
 link prefix ending in /, e.g. scryve-preview:// or https://github.com/HashingSeeds/.
+
+hook makes the Worker POST to the URL whenever a phone response adds an event
+that producer can read, so it doesn't wait for its next poll.
 
 Reads APOLLO_CLOUD_URL and APOLLO_CLOUD_ADMIN_SECRET from the environment.`);
 }
@@ -62,7 +67,7 @@ try {
     console.log('This is the only time the token is shown.');
   } else if (command === 'list') {
     const tokens: TokenInfo[] = await (await admin('GET', '/admin/tokens')).json();
-    for (const t of tokens) console.log(`${t.id}  ${t.role.padEnd(9)}  ${t.createdAt}  ${t.name}${t.scope ? `  (${t.scope.source}: ${t.scope.urls.join(' ') || 'no links'})` : ''}`);
+    for (const t of tokens) console.log(`${t.id}  ${t.role.padEnd(9)}  ${t.createdAt}  ${t.name}${t.scope ? `  (${t.scope.source}: ${t.scope.urls.join(' ') || 'no links'})` : ''}${t.hook ? `  hook ${t.hook}` : ''}`);
     if (tokens.length === 0) console.log('No tokens.');
   } else if (command === 'revoke') {
     const [id] = args;
@@ -72,6 +77,24 @@ try {
     }
     await admin('DELETE', `/admin/tokens/${encodeURIComponent(id)}`);
     console.log(`Revoked ${id}.`);
+  } else if (command === 'hook') {
+    const [id, url] = args;
+    if (!id || !url) {
+      usage();
+      process.exit(1);
+    }
+    const { secret }: HookResponse = await (await admin('PUT', `/admin/tokens/${encodeURIComponent(id)}/hook`, { url })).json();
+    console.log(`Hooked ${id} to ${url}. It sends this as a bearer token:`);
+    console.log(`\n${secret}\n`);
+    console.log('This is the only time the secret is shown. Running hook again makes a new one.');
+  } else if (command === 'unhook') {
+    const [id] = args;
+    if (!id) {
+      usage();
+      process.exit(1);
+    }
+    await admin('DELETE', `/admin/tokens/${encodeURIComponent(id)}/hook`);
+    console.log(`Removed the hook from ${id}.`);
   } else {
     usage();
     process.exit(command === 'help' || command === '--help' || command === '-h' ? 0 : 1);
