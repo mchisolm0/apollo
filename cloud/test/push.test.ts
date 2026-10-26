@@ -109,3 +109,14 @@ it('drops pending pushes when a push token moves to another device token that th
   expect(retry).toContain('ExponentPushToken[a]');
   expect(retry).not.toContain('ExponentPushToken[d]');
 });
+
+it('pushes only the pushText line when a card sets one, and keeps the card as written', async () => {
+  const expo = mockExpo();
+  const card = await postCard(producer, { ...approval('private:1'), body: 'Player: my email is a@b.test', pushText: 'New bug report' });
+  await vi.waitFor(() => expect(expo).toHaveBeenCalled());
+
+  const [message] = sentPushes(expo)[0]!;
+  expect(message).toMatchObject({ title: 'New bug report' });
+  expect(message).not.toHaveProperty('body');
+  expect(card).toMatchObject({ title: 'Run rm -rf build?', body: 'Player: my email is a@b.test' });
+});

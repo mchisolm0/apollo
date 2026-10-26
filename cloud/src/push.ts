@@ -28,8 +28,8 @@ export function expoMessage(card: Card, to: string) {
   const passive = card.push === 'passive';
   return {
     to,
-    title: card.title,
-    body: card.body?.slice(0, 500),
+    title: card.pushText ?? card.title,
+    body: card.pushText ? undefined : card.body?.slice(0, 500),
     data: { cardId: card.id, source: card.source, kind: card.kind },
     threadId: card.source,
     categoryId: card.kind === 'update' ? undefined : CATEGORY[card.kind],
