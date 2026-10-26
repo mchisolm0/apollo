@@ -65,6 +65,8 @@ The Worker sends through the Expo push API. Each push carries `data: { cardId, s
 - `apollo.approval` for approval cards. Buttons: Approve (`approve`), Open (opens the app), Reject (`reject`, destructive).
 - `apollo.briefing` for the morning card. Tapping opens the inbox.
 
+A card with `pushText` pushes that line as the title with no body, so its own title and body never reach Expo or the lock screen. The inbox still shows the card as written.
+
 `passive` maps to the iOS passive interruption level and, on Android, to an `updates` channel with low importance and no sound. Alerts use the `alerts` channel. Updates default to passive.
 
 ## Flows

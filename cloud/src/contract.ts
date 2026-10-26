@@ -88,6 +88,11 @@ export interface CardInput {
    */
   push?: PushLevel;
   /**
+   * What the push shows in place of the title and body, e.g. `New bug report`,
+   * so the card's text stays off the lock screen and Expo's servers.
+   */
+  pushText?: string;
+  /**
    * Where the card's work stands, e.g. `waiting`, `publishing`, `ready`. The
    * card is pushed when created and each time a re-upsert changes this.
    */
