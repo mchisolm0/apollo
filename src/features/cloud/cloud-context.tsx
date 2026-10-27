@@ -251,12 +251,15 @@ export function CloudProvider({ children }: PropsWithChildren) {
     return () => clearTimeout(timer);
   }, [credential, active, nextAttemptAt]);
 
-  // Cloud push registration. Never prompts: permission comes from the notification settings screen.
+  // Cloud push registration. Asks for permission once this phone has an inbox credential; the OS only shows the prompt once.
   useEffect(() => {
     if (!credential || !active || !projectId || Platform.OS === 'web') return;
     void (async () => {
-      if (!allowsNotifications(await Notifications.getPermissionsAsync())) return;
+      // Android 13 only shows the prompt once a channel exists.
       await ensureCloudChannels();
+      let permission = await Notifications.getPermissionsAsync();
+      if (!allowsNotifications(permission) && permission.canAskAgain) permission = await Notifications.requestPermissionsAsync();
+      if (!allowsNotifications(permission)) return;
       const expoPushToken = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
       const key = pushRegistrationKey(credential, expoPushToken);
       if (registered.current === key) return;
