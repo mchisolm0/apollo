@@ -196,6 +196,14 @@ export interface HookNudge {
   source: Source;
 }
 
+/**
+ * PUT /admin/tokens/:id/links. Replaces a scoped token's link prefixes; its
+ * source stays the same. Cards it already posted keep their links.
+ */
+export interface LinksRequest {
+  urls: string[];
+}
+
 /** POST /v1/device-tokens. `name` is the connector's device id; minting again for it revokes the old token. */
 export interface DeviceTokenRequest {
   name: string;

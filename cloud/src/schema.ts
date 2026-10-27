@@ -97,14 +97,14 @@ export const DeviceRegistration = type({
 
 export const DeviceTokenRequest = type({ name, '+': 'delete' });
 
-const scope = type({
-  source,
-  urls: type('0 < string <= 200').narrow((url, ctx) => url.endsWith('/') || ctx.mustBe('a prefix ending in /')).array().atMostLength(8),
-  '+': 'delete',
-});
+const urls = type('0 < string <= 200').narrow((url, ctx) => url.endsWith('/') || ctx.mustBe('a prefix ending in /')).array().atMostLength(8);
+
+const scope = type({ source, urls, '+': 'delete' });
 
 export const TokenRequest = type({ role, name, 'scope?': scope, '+': 'delete' })
   .narrow((t, ctx) => t.scope === undefined || t.role === 'producer' || ctx.reject({ path: ['scope'], description: 'only on producer tokens' }));
+
+export const LinksRequest = type({ urls, '+': 'delete' });
 
 export const HookRequest = type({
   url: type('string.url <= 500').narrow((url, ctx) => url.startsWith('https://') || ctx.mustBe('an https URL')),

@@ -16,11 +16,13 @@ function usage() {
   node cloud/cli.ts create producer <name> --source <source> --allow <prefix>...
   node cloud/cli.ts list
   node cloud/cli.ts revoke <id>
+  node cloud/cli.ts links <id> [<prefix>...]
   node cloud/cli.ts hook <id> <https-url>
   node cloud/cli.ts unhook <id>
 
 --source limits a producer to one source's cards and events. Each --allow is a
 link prefix ending in /, e.g. scryve-preview:// or https://github.com/HashingSeeds/.
+links replaces a limited producer's prefixes; with none, its cards can't link.
 
 hook makes the Worker POST to the URL whenever a phone response adds an event
 that producer can read, so it doesn't wait for its next poll.
@@ -77,6 +79,14 @@ try {
     }
     await admin('DELETE', `/admin/tokens/${encodeURIComponent(id)}`);
     console.log(`Revoked ${id}.`);
+  } else if (command === 'links') {
+    const [id, ...urls] = args;
+    if (!id) {
+      usage();
+      process.exit(1);
+    }
+    const token: TokenInfo = await (await admin('PUT', `/admin/tokens/${encodeURIComponent(id)}/links`, { urls })).json();
+    console.log(`${token.name} can now link to: ${token.scope?.urls.join(' ') || 'nothing'}.`);
   } else if (command === 'hook') {
     const [id, url] = args;
     if (!id || !url) {

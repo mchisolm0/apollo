@@ -39,6 +39,7 @@ node cloud/cli.ts create producer nobara    # prints the token once
 node cloud/cli.ts create connector mini
 node cloud/cli.ts list
 node cloud/cli.ts revoke <id>
+node cloud/cli.ts links <id> https://github.com/HashingSeeds/   # replaces a limited producer's link prefixes
 ```
 
 Phones get `device` tokens from the connector during pairing, not from the CLI.

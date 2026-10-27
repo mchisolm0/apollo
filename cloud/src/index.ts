@@ -138,6 +138,10 @@ const admin = router<Base>()
     const body = await readBody(request, schema.HookRequest);
     return body instanceof Response ? body : send(await inbox.setHook(id, body.url));
   })
+  .on('PUT', '/admin/tokens/:id/links', async ({ request, inbox }, { id }) => {
+    const body = await readBody(request, schema.LinksRequest);
+    return body instanceof Response ? body : send(await inbox.setLinks(id, body.urls));
+  })
   .on('DELETE', '/admin/tokens/:id/hook', async ({ inbox }, { id }) =>
     (await inbox.clearHook(id)) ? new Response(null, { status: 204 }) : error(404, 'not_found', 'token not found'),
   );
