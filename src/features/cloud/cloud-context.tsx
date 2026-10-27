@@ -251,7 +251,7 @@ export function CloudProvider({ children }: PropsWithChildren) {
     return () => clearTimeout(timer);
   }, [credential, active, nextAttemptAt]);
 
-  // Cloud push registration. Asks for permission once the inbox is connected; the OS only shows the prompt once.
+  // Cloud push registration. Asks for permission once this phone has an inbox credential; the OS only shows the prompt once.
   useEffect(() => {
     if (!credential || !active || !projectId || Platform.OS === 'web') return;
     void (async () => {
