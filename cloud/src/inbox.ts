@@ -192,14 +192,15 @@ export class Inbox extends DurableObject<Env> {
       const link = earlier ? { replaces: { id: earlier.id, title: earlier.title } } : existing?.replaces ? { replaces: existing.replaces } : {};
       const plain = who.scope || existing?.plainText ? { plainText: true } : {};
       const rePush = existing !== undefined && fields.phase !== existing.phase;
-      const card = existing
-        // Producer fields are replaced; state, resolution and links stay, and push changes only with the phase.
-        ? this.#commit({
-          ...fields, ...link, ...plain, id, picks: keepDone(fields.picks, existing.picks),
-          push: rePush ? push ?? DEFAULT_PUSH[input.kind] : existing.push,
-          state: existing.state, resolution: existing.resolution, replacedBy: existing.replacedBy, createdAt: existing.createdAt,
-        })
-        : this.#commit({ ...fields, ...link, ...plain, id, push: push ?? DEFAULT_PUSH[input.kind], state: 'open', createdAt: iso() });
+      // Producer fields are replaced; state, resolution and links stay, and push changes only with the phase.
+      const next = existing && {
+        ...fields, ...link, ...plain, id, picks: keepDone(fields.picks, existing.picks),
+        push: rePush ? push ?? DEFAULT_PUSH[input.kind] : existing.push,
+        state: existing.state, resolution: existing.resolution, replacedBy: existing.replacedBy, createdAt: existing.createdAt,
+      };
+      // Producers re-post on every sync, and each write counts against the Durable Object row quota.
+      if (existing && next && !earlier && sameCard(next, existing)) return { card: existing, superseded: [], created: false, changed: false, pushing: false };
+      const card = next ? this.#commit(next) : this.#commit({ ...fields, ...link, ...plain, id, push: push ?? DEFAULT_PUSH[input.kind], state: 'open', createdAt: iso() });
 
       // A new phase drops whatever the last one still owed, so an old alert can't retry after it.
       if (rePush) {
@@ -720,6 +721,14 @@ export class Inbox extends DurableObject<Env> {
 
 function parseCard(row: CardRow): Card {
   return JSON.parse(row.data);
+}
+
+/** Whether a card would store the same content again, ignoring the `rev` and `updatedAt` a write stamps. */
+function sameCard(next: Omit<Card, 'rev' | 'updatedAt'>, { rev: _rev, updatedAt: _updatedAt, ...stored }: Card) {
+  // Keys sorted at every level, so property order never counts as a change.
+  const canonical = (value: unknown) => JSON.stringify(value, (_key, v: unknown) =>
+    v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : 1))) : v);
+  return canonical(next) === canonical(stored);
 }
 
 /** `{ scope }` for a scoped token's stored column, `{}` for an unscoped one. */

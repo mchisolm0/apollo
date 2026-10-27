@@ -68,6 +68,27 @@ describe('upsert', () => {
     ]);
   });
 
+  it('writes nothing when a re-upsert changes nothing', async () => {
+    mockExpo();
+    const review: CardInput = { source: 'reviews', key: 'appstore:1:r1', kind: 'update', title: '★★★★★ Scryve', body: 'Great', meta: { store: 'App Store', version: '0.2.1' }, actions: [{ id: 'reply', label: 'Reply', input: 'text', repeat: true }] };
+    const first = await postCard(producer, review);
+    const rev = async () => (await (await call('/v1/cards', { token: device })).json<CardSnapshot>()).rev;
+    const before = await rev();
+
+    // Keys in another order are the same card.
+    const again = await postCard(producer, { actions: review.actions, meta: { version: '0.2.1', store: 'App Store' }, body: 'Great', title: review.title, kind: 'update', key: review.key, source: 'reviews' });
+    expect(again).toEqual(first);
+    expect(await rev()).toBe(before);
+
+    // A pick the phone marked done, re-sent undone, is still the same card.
+    const card = await postCard(producer, briefing([{ n: 1, text: 'Ship #335', done: false }]));
+    const done = await (await respond(device, card.id, { pick: 1, done: true })).json<Card>();
+    expect((await postCard(producer, briefing([{ n: 1, text: 'Ship #335', done: false }]))).rev).toBe(done.rev);
+
+    const edited = await postCard(producer, { ...review, body: 'Great app' });
+    expect(edited.rev).toBeGreaterThan(first.rev);
+  });
+
   it('rejects picks on non-briefing cards', async () => {
     const response = await call('/v1/cards', { token: producer, body: { ...approval('bad'), picks: [{ n: 1, text: 'x', done: false }] } });
     expect(response.status).toBe(400);
