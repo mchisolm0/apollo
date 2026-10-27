@@ -22,7 +22,8 @@ interface ExpoTicket {
 
 /**
  * Builds the Expo message for one phone. Passive cards are silent: the iOS
- * passive interruption level and the Android `updates` channel.
+ * passive interruption level and the Android `updates` channel. Urgent cards
+ * use the time-sensitive level, which breaks through Focus.
  */
 export function expoMessage(card: Card, to: string) {
   const passive = card.push === 'passive';
@@ -33,7 +34,7 @@ export function expoMessage(card: Card, to: string) {
     data: { cardId: card.id, source: card.source, kind: card.kind },
     threadId: card.source,
     categoryId: card.kind === 'update' ? undefined : CATEGORY[card.kind],
-    interruptionLevel: passive ? 'passive' : 'active',
+    interruptionLevel: passive ? 'passive' : card.push === 'urgent' ? 'time-sensitive' : 'active',
     channelId: passive ? 'updates' : 'alerts',
     sound: passive ? null : 'default',
     priority: passive ? 'normal' : 'high',
