@@ -1,7 +1,7 @@
 import { LegendList } from '@legendapp/list/react-native';
 import { router } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { IconButton, useTextScale, useThemedStyles, type RelayPalette } from '@/features/relay/relay-ui';
 
@@ -22,7 +22,7 @@ export function FeedbackScreen({ onBack }: { onBack: () => void }) {
       <IconButton name="chevron.left" label="Go back" onPress={onBack} />
       <Text style={[styles.title, { fontSize: 17 * factor }]} accessibilityRole="header">Feedback</Text>
     </View>
-    <View style={styles.filters} accessibilityRole="tablist">
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filters} contentContainerStyle={styles.filterRow} accessibilityRole="tablist">
       {(Object.keys(FEEDBACK_FILTERS) as FeedbackFilter[]).map((id) => {
         const count = feedbackRows(cloud.cards, id).length;
         const selected = id === filter;
@@ -30,7 +30,7 @@ export function FeedbackScreen({ onBack }: { onBack: () => void }) {
           <Text style={[styles.filterText, selected && styles.filterSelected, { fontSize: 15 * factor }]}>{FEEDBACK_FILTERS[id]} <Text style={styles.count}>{count}</Text></Text>
         </Pressable>;
       })}
-    </View>
+    </ScrollView>
     <LegendList
       data={rows}
       recycleItems
@@ -44,7 +44,7 @@ export function FeedbackScreen({ onBack }: { onBack: () => void }) {
         onAction={(card, action) => runAction(card, action, (cardId, actionId) => { void cloud.respond(cardId, { actionId }); })}
         onSettle={(card) => cloud.settle(card.id)}
         onReopen={(card) => cloud.reopen(card.id)} />}
-      ListEmptyComponent={<Text style={[styles.empty, { fontSize: 15 * factor }]}>{filter === 'waiting' ? 'Nobody is waiting on a reply.' : 'No feedback here yet.'}</Text>}
+      ListEmptyComponent={<Text style={[styles.empty, { fontSize: 15 * factor }]}>{cloud.status !== 'off' && !cloud.ready ? 'Loading feedback' : filter === 'waiting' ? 'Nobody is waiting on a reply.' : 'No feedback here yet.'}</Text>}
     />
   </View>;
 }
@@ -53,7 +53,8 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   header: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 56, paddingLeft: 6, paddingRight: 16 },
   title: { color: colors.primary, fontWeight: '600' },
-  filters: { flexDirection: 'row', gap: 18, paddingHorizontal: 20, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  filters: { flexGrow: 0, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  filterRow: { gap: 18, paddingHorizontal: 20 },
   filter: { minHeight: 40, justifyContent: 'center' },
   filterText: { color: colors.muted, fontWeight: '500' },
   filterSelected: { color: colors.primary, fontWeight: '700' },
