@@ -146,4 +146,24 @@ describe('scoped tokens', () => {
     const tokens = await (await call('/admin/tokens', { token: ADMIN_SECRET })).json<TokenInfo[]>();
     expect(tokens.find((t) => t.name === 'scryve-ci')?.scope).toEqual(scope);
   });
+
+  it('takes new link prefixes in place, keeping its source', async () => {
+    const created = await (await call('/admin/tokens', { token: ADMIN_SECRET, body: { role: 'producer', name: 'scryve-feedback', scope: { source: 'feedback', urls: ['https://old.test/'] } } })).json<{ id: string; token: string }>();
+    const links = (urls: unknown, id = created.id) => call(`/admin/tokens/${id}/links`, { method: 'PUT', token: ADMIN_SECRET, body: { urls } });
+    const sentry = { source: 'feedback', key: 'links:1', kind: 'update', title: 'Bug', push: 'none', actions: [{ id: 'sentry', label: 'Sentry', url: 'https://sentry.test/issues/?query=1' }] };
+    const old = { ...sentry, key: 'links:old', actions: [{ id: 'old', label: 'Old', url: 'https://old.test/1' }] };
+    expect((await call('/v1/cards', { token: created.token, body: sentry })).status).toBe(403);
+    expect((await call('/v1/cards', { token: created.token, body: old })).status).toBe(201);
+
+    const updated = await links(['https://sentry.test/']);
+    expect(await updated.json<TokenInfo>()).toMatchObject({ id: created.id, scope: { source: 'feedback', urls: ['https://sentry.test/'] } });
+    expect((await call('/v1/cards', { token: created.token, body: sentry })).status).toBe(201);
+    expect((await call('/v1/cards', { token: created.token, body: { ...old, key: 'links:old-after' } })).status).toBe(403);
+
+    expect((await links(['https://sentry.test'])).status).toBe(400);
+    expect((await call(`/admin/tokens/${created.id}/links`, { method: 'PUT', token: created.token, body: { urls: [] } })).status).toBe(401);
+    const unscoped = (await (await call('/admin/tokens', { token: ADMIN_SECRET })).json<TokenInfo[]>()).find((t) => !t.scope && t.role === 'producer');
+    expect((await links([], unscoped?.id)).status).toBe(400);
+    expect((await links([], 'missing')).status).toBe(404);
+  });
 });

@@ -466,6 +466,17 @@ export class Inbox extends DurableObject<Env> {
     return ok({ secret });
   }
 
+  /** Replaces a scoped token's link prefixes. Takes effect on its next request. */
+  setLinks(id: string, urls: string[]): Reply<TokenInfo> {
+    const [token] = this.sql.exec<{ scope: string | null }>('SELECT scope FROM tokens WHERE id = ?', id).toArray();
+    if (!token) return fail(404, 'not_found', 'token not found');
+    const { scope } = parseScope(token.scope);
+    if (!scope) return fail(400, 'not_scoped', 'only a token limited to one source has link prefixes');
+    this.sql.exec('UPDATE tokens SET scope = ? WHERE id = ?', JSON.stringify({ ...scope, urls } satisfies TokenScope), id);
+    const info = this.listTokens().find((candidate) => candidate.id === id);
+    return info ? ok(info) : fail(404, 'not_found', 'token not found');
+  }
+
   clearHook(id: string): boolean {
     return this.sql.exec('UPDATE tokens SET hook = NULL WHERE id = ? RETURNING id', id).toArray().length > 0;
   }

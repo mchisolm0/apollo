@@ -39,6 +39,7 @@ Errors are `ApiError` (`{ error: { code, message } }`) with a matching HTTP stat
 | `POST` | `/admin/tokens` | admin secret | `{ role, name, scope? }` → `{ id, token, role, name, scope? }`. The only time the raw token is shown. |
 | `GET` | `/admin/tokens` | admin secret | → `{ id, role, name, createdAt, scope? }[]`. |
 | `DELETE` | `/admin/tokens/:id` | admin secret | → 204. |
+| `PUT` | `/admin/tokens/:id/links` | admin secret | `LinksRequest` (`{ urls }`) → the token's `{ id, role, name, createdAt, scope }`. Scoped tokens only. Replaces the link prefixes and keeps the source. Cards already posted keep their links. |
 | `PUT` | `/admin/tokens/:id/hook` | admin secret | `HookRequest` (`{ url }`, https) → `HookResponse` (`{ secret }`, shown once). Producer and connector tokens only. Replaces any earlier hook and secret. |
 | `DELETE` | `/admin/tokens/:id/hook` | admin secret | → 204. |
 | `GET` | `/v1/health` | none | Liveness. |
