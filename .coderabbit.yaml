@@ -1,0 +1,8 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+inheritance: true
+reviews:
+  auto_review:
+    # why: auto reviews ran on every PR and used up this repo's free OSS allowance, leaving
+    # "Review limit reached" replies instead. Request a review on the PR when one is needed.
+    enabled: false
+    auto_incremental_review: false
