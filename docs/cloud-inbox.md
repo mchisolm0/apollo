@@ -67,7 +67,7 @@ The Worker sends through the Expo push API. Each push carries `data: { cardId, s
 
 A card with `pushText` pushes that line as the title with no body, so its own title and body never reach Expo or the lock screen. The inbox still shows the card as written.
 
-`passive` maps to the iOS passive interruption level and, on Android, to an `updates` channel with low importance and no sound. Alerts use the `alerts` channel. Updates default to passive.
+`urgent` maps to the iOS time-sensitive interruption level, which breaks through Focus, and uses the `alerts` channel on Android. Store reviews of 3 stars or fewer are urgent. `passive` maps to the iOS passive interruption level and, on Android, to an `updates` channel with low importance and no sound. Alerts use the `alerts` channel. Updates default to passive.
 
 ## Flows
 

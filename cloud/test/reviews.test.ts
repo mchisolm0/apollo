@@ -98,7 +98,7 @@ describe('store reviews', () => {
     await pullReviews(inbox(), config, NOW);
 
     const apple = await byKey('appstore:111:a1');
-    expect(apple).toMatchObject({ kind: 'approval', title: '★★☆☆☆ Scryve: Timer resets', body: 'When I rotate.', push: 'alert', plainText: true, meta: { store: 'App Store', from: 'USA', by: 'ana' } });
+    expect(apple).toMatchObject({ kind: 'approval', title: '★★☆☆☆ Scryve: Timer resets', body: 'When I rotate.', push: 'urgent', plainText: true, meta: { store: 'App Store', from: 'USA', by: 'ana' } });
     expect(apple.actions).toEqual([{ id: 'reply', label: 'Reply', style: 'primary', input: 'text', repeat: true }]);
 
     expect(await byKey('appstore:111:a2')).toMatchObject({ kind: 'update', push: 'none', body: 'Great.\n\nYour reply, waiting on Apple: Thanks!' });
@@ -192,7 +192,7 @@ describe('store reviews', () => {
 
   it("pushes an edited review again, but not a reply or an old review's first sighting", () => {
     const review: StoreReview = { store: 'play', appId: 'pkg', id: 'x', rating: 4, text: 'ok', updatedAt: at(HOUR) };
-    expect(reviewCard(review, 'Scryve', NOW)).toMatchObject({ phase: `review:${at(HOUR)}`, push: 'passive' });
+    expect(reviewCard(review, 'Scryve', NOW)).toMatchObject({ phase: `review:${at(HOUR)}`, push: 'alert' });
     expect(reviewCard({ ...review, reply: { text: 'thanks' } }, 'Scryve', NOW).phase).toBe(`review:${at(HOUR)}`);
     expect(reviewCard({ ...review, updatedAt: at(3 * 24 * HOUR) }, 'Scryve', NOW).push).toBe('none');
   });

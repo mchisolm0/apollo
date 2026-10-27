@@ -14,8 +14,11 @@ export type Source = (typeof SOURCES)[number];
 export const KINDS = ['briefing', 'approval', 'update'] as const;
 export type Kind = (typeof KINDS)[number];
 
-/** alert: normal push. passive: delivered silently. none: inbox only. */
-export type PushLevel = 'alert' | 'passive' | 'none';
+/**
+ * urgent: breaks through Focus (iOS time-sensitive). alert: normal push.
+ * passive: delivered silently. none: inbox only.
+ */
+export type PushLevel = 'urgent' | 'alert' | 'passive' | 'none';
 
 export type CardState = 'open' | 'resolved' | 'settled';
 

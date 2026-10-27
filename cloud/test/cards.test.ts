@@ -49,6 +49,13 @@ describe('upsert', () => {
     expect(push).not.toHaveProperty('categoryId');
   });
 
+  it('sends urgent cards as time-sensitive alerts', async () => {
+    const expo = mockExpo();
+    await postCard(producer, { source: 'reviews', key: 'play:pkg:x', kind: 'approval', title: '★☆☆☆☆ Scryve: Crashes', push: 'urgent' });
+    await vi.waitFor(() => expect(expo).toHaveBeenCalledTimes(1));
+    expect(sentPushes(expo)[0]?.[0]).toMatchObject({ interruptionLevel: 'time-sensitive', channelId: 'alerts', sound: 'default' });
+  });
+
   it('keeps done on a re-upserted pick with the same n and text', async () => {
     mockExpo();
     const card = await postCard(producer, briefing([{ n: 1, text: 'Ship #335', done: false }, { n: 2, text: 'Reply to Theo', done: false }]));

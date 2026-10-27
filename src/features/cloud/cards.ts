@@ -1,7 +1,7 @@
 import { CATEGORY, KINDS, SOURCES, type Card, type CardAction, type CardLink, type CardMetric, type CardProgress, type CardSnapshot, type CardPick, type CardState, type PushLevel, type StreamMessage } from '../../../cloud/src/contract.ts';
 
 const STATES = ['open', 'resolved', 'settled'] as const satisfies readonly CardState[];
-const PUSH_LEVELS = ['alert', 'passive', 'none'] as const satisfies readonly PushLevel[];
+const PUSH_LEVELS = ['urgent', 'alert', 'passive', 'none'] as const satisfies readonly PushLevel[];
 const ACTION_STYLES = ['primary', 'default', 'destructive'] as const satisfies readonly NonNullable<CardAction['style']>[];
 const ACTION_INPUTS = ['text'] as const satisfies readonly NonNullable<CardAction['input']>[];
 const ID = /^[A-Za-z0-9._:~-]{1,256}$/u;

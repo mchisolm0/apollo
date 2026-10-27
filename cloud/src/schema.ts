@@ -62,7 +62,7 @@ export const CardInput = type({
   'picks?': pick.array().atMostLength(3),
   'meta?': meta,
   'metrics?': metric.array().atMostLength(4),
-  'push?': "'alert' | 'passive' | 'none'",
+  'push?': "'urgent' | 'alert' | 'passive' | 'none'",
   'pushText?': '0 < string <= 120',
   'phase?': '0 < string <= 40',
   'progress?': progress,

@@ -26,7 +26,12 @@ export default function configure({ config }: ConfigContext): ExpoConfig {
       ios: { enabled: true, extensionBundleIdentifier: `com.matthewchisolm.apollo${suffix}.sharing`, appGroupId: `group.com.matthewchisolm.apollo${suffix}`, activationRule: { supportsText: true, supportsWebUrlWithMaxCount: 1, supportsImageWithMaxCount: 4, supportsFileWithMaxCount: 4 } },
       android: { enabled: true, singleShareMimeTypes: ['*/*'], multipleShareMimeTypes: ['*/*'] },
     }]],
-    ios: { ...config.ios, bundleIdentifier: `com.matthewchisolm.apollo${suffix}` },
+    ios: {
+      ...config.ios,
+      bundleIdentifier: `com.matthewchisolm.apollo${suffix}`,
+      // Lets urgent cards (low store reviews) break through Focus.
+      entitlements: { ...config.ios?.entitlements, 'com.apple.developer.usernotifications.time-sensitive': true },
+    },
     android: { ...config.android, package: `com.matthewchisolm.apollo${suffix}` },
   };
 }

@@ -72,7 +72,7 @@ export function reviewCard(review: StoreReview, appName: string, now = Date.now(
     },
     // An edited review is a new phase, so it pushes again; a reply doesn't.
     phase: `review:${review.updatedAt}`,
-    push: age > PUSH_WITHIN ? 'none' : review.rating <= 3 ? 'alert' : 'passive',
+    push: age > PUSH_WITHIN ? 'none' : review.rating <= 3 ? 'urgent' : 'alert',
     actions: [
       {
         id: 'reply',
