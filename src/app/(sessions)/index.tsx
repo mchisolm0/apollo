@@ -91,6 +91,7 @@ export default function SessionsRoute() {
   // Hermes previews the first user message; producer-written threads have none, so use the latest assistant text already loaded.
   const withPreview = (session: InboxSession) => session.preview?.trim() ? session : { ...session, preview: latestAssistantPreview(messages[`${agent.id}:${session.id}`]) ?? session.preview };
   const sessions = [...inbox.sessions.map((session) => withPreview(queuedIds.has(session.id) ? { ...session, queued: true } : session)), ...pendingSessions.values()];
+  const hasFeedback = cloud.cards.some((card) => card.source === 'feedback');
   const picker = <AgentPicker agents={agents} selected={agent} runtime={runtime}
     onSelect={(agentId) => router.setParams({ agentId })}
     onDetails={(agentId) => router.push({ pathname: '/settings/[agentId]', params: { agentId } })}
@@ -105,6 +106,7 @@ export default function SessionsRoute() {
       // Left to right. A native bar button gets the same system glass and 44pt size as the toolbar buttons.
       unstable_headerRightItems: () => [
         ...(statusAction ? [{ type: 'custom' as const, hidesSharedBackground: true, element: statusAction }] : []),
+        ...(hasFeedback ? [{ type: 'button', label: 'Feedback', icon: { type: 'sfSymbol', name: 'bubble.left.and.text.bubble.right' }, tintColor: colors.primary, onPress: () => router.push('/feedback') }] as const : []),
         { type: 'button', label: 'Settings', icon: { type: 'sfSymbol', name: 'gearshape' }, tintColor: colors.primary, onPress: () => router.push('/settings') },
       ],
     }} /> : <View style={styles.header}>
@@ -115,6 +117,9 @@ export default function SessionsRoute() {
           onPair={() => router.push('/connect')} />
       </View>
       <View style={styles.statusSlot}>{statusAction}</View>
+      {hasFeedback ? <Pressable accessibilityRole="button" accessibilityLabel="Feedback" onPress={() => router.push('/feedback')} style={({ pressed }) => [styles.dockButton, pressed && { opacity: 0.6 }]}>
+        <SymbolView name={{ ios: 'bubble.left.and.text.bubble.right', android: 'forum', web: 'forum' }} size={22} tintColor={colors.primary} />
+      </Pressable> : null}
       <Pressable accessibilityRole="button" accessibilityLabel="Settings" onPress={() => router.push('/settings')} style={({ pressed }) => [styles.dockButton, pressed && { opacity: 0.6 }]}>
         <SymbolView name={{ ios: 'gearshape', android: 'settings', web: 'settings' }} size={22} tintColor={colors.primary} />
       </Pressable>
