@@ -25,10 +25,10 @@ export function actionLabel(card: Card, actionId: string): string {
   return actionId === 'approve' ? 'Approved' : actionId === 'reject' ? 'Rejected' : label ?? actionId;
 }
 
-/** "Kept", "Skipped", or the action's own label for anything else. */
+/** What a morning card answer did ("Working on these", "No picks today"), or the action's own label for anything else. */
 export function acknowledgedLabel(card: Card, actionId: string): string {
-  if (actionId === 'keep') return 'Kept';
-  if (actionId === 'skip') return 'Skipped';
+  if (actionId === 'keep') return 'Working on these';
+  if (actionId === 'skip') return 'No picks today';
   return cardActions(card).find((action) => action.id === actionId)?.label ?? actionId;
 }
 
@@ -161,8 +161,8 @@ export function briefingDay(card: Card): string {
 
 /**
  * The morning card as the first inbox row: glyph and day, the calendar line, picks indented
- * to the text column, then Keep and Skip. After an answer it stays open with a compact
- * "Kept · 1 of 3 done" line and live picks.
+ * to the text column, then its actions (Work on these, Clear picks). After an answer it stays
+ * open with a compact "Working on these · 1 of 3 done" line and live picks.
  */
 export const BriefingCard = memo(function BriefingCard({ card, onOpen, onPick, onAction, onSettle }: {
   card: InboxCard;
