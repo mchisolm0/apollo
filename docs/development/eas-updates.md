@@ -23,6 +23,8 @@ pnpm build:android:production
 
 For internal iOS distribution with the production identity, use `pnpm build:ios:internal`. Internal iOS devices must be provisioned. Production builds use store distribution; building does not submit them to a store.
 
+Local iOS builds (`pnpm build:ios:dev`, `build:ios:sim`, `build:ios:prod`) write to `build/`. `pnpm put:ios:dev` (or `:sim`, `:prod`) stores one on the NAS with the fleet `builds` CLI, so another machine can fetch it with `builds get --platform ios --profile <profile>` instead of rebuilding. Add `--fingerprint current` for a development build that runs your JS, or `--commit <sha>` for preview and production, which embed theirs.
+
 ## Publish an update
 
 ```sh
