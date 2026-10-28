@@ -124,7 +124,9 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
   const swipe = settleAction(card, cloud.settled);
   const respond = (id: string, actionId: string) => { void cloud.respond(id, { actionId }); };
   const pick = (_: InboxCard, value: CardPick) => { void cloud.respond(card.id, { pick: value.n, done: !value.done }); };
-  const host = agents.find((agent) => agent.id === cloud.credential?.agentId)?.label;
+  // A card that names its machine (fleet notify) came from there, so the header shows it instead of the paired host.
+  const { machine, ...fields } = card.meta ?? {};
+  const host = machine ?? agents.find((agent) => agent.id === cloud.credential?.agentId)?.label;
   const answer = card.sending ? 'Sending'
     : card.acknowledged ? acknowledgedLabel(card, card.acknowledged)
     : card.pendingAction ? `${actionLabel(card, card.pendingAction)}, sending`
@@ -148,14 +150,14 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
   // Replies the producer hasn't written into the body yet, dimmed. In a plain-text body (feedback) they sit
   // where the producer's own "You:" line will land, so nothing moves when it does.
   const replies = card.replies?.map((reply) => `You: ${reply}`).join('\n\n');
-  const plainBody = card.source !== 'digest' && card.plainText ? card.body : undefined;
+  const plainBody = card.plainText ? card.body : undefined;
   const link = card.url && !decide.some((action) => action.url === card.url) ? card.url : undefined;
   const copy = () => void Clipboard.setStringAsync(copyText(card)).then(() => {
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   }).catch(() => Alert.alert('Could not copy', 'Try selecting the text instead.'));
   const settle = () => { cloud.settle(card.id); onBack(); };
-  const meta = Object.entries(card.meta ?? {});
+  const meta = Object.entries(fields);
   return <KeyboardAvoidingView style={uiStyles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
     <View style={styles.header}>
       <IconButton name="chevron.left" label="Go back" onPress={onBack} />
@@ -181,9 +183,7 @@ export function CardDetailScreen({ cardId, onBack }: { cardId: string; onBack: (
       </View> : null}
       {card.metrics?.length ? <MetricRow metrics={card.metrics} /> : null}
       {card.picks?.length ? <CardPicks card={card} onPick={open ? pick : () => {}} /> : null}
-      {/* The digest producer sends a fixed-width text table, including literal home-directory paths. */}
-      {card.body && card.source === 'digest' ? <ScrollView horizontal><Text style={[styles.plainBody, styles.monospace, { fontSize: 15 * factor, lineHeight: 22 * factor }]} selectable>{card.body}</Text></ScrollView>
-        : plainBody ? <Text style={[styles.plainBody, { fontSize: 15 * factor, lineHeight: 22 * factor }]} selectable>{plainBody}{replies ? <Text style={styles.reply}>{`\n\n${replies}`}</Text> : null}</Text>
+      {plainBody ? <Text style={[styles.plainBody, { fontSize: 15 * factor, lineHeight: 22 * factor }]} selectable>{plainBody}{replies ? <Text style={styles.reply}>{`\n\n${replies}`}</Text> : null}</Text>
         : card.body ? <MessageContent text={card.body} copyable={false} /> : null}
       {replies && !plainBody ? <Text style={[styles.plainBody, styles.reply, { fontSize: 15 * factor, lineHeight: 22 * factor }]} selectable>{replies}</Text> : null}
     </ScrollView>
@@ -217,7 +217,6 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   linkValue: { color: colors.cyan, flex: 1 },
   plainBody: { color: colors.primary },
   reply: { color: colors.muted },
-  monospace: { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
   metrics: { flexDirection: 'row', borderTopWidth: StyleSheet.hairlineWidth, borderBottomWidth: StyleSheet.hairlineWidth, borderColor: colors.line },
   metric: { flex: 1, minWidth: 0, paddingVertical: 10 },
   metricDivided: { paddingLeft: 12, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.line },
