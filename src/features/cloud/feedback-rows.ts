@@ -1,16 +1,20 @@
 import type { Card } from '../../../cloud/src/contract.ts';
 
-export const FEEDBACK_FILTERS = { waiting: 'Waiting', bugs: 'Bugs', ideas: 'Ideas', all: 'All' } as const;
+export const FEEDBACK_FILTERS = { waiting: 'Waiting', bugs: 'Bugs', ideas: 'Ideas', fixed: 'Fixed', all: 'All' } as const;
 export type FeedbackFilter = keyof typeof FEEDBACK_FILTERS;
 
 /**
  * Waiting: the player spoke last, so the producer posted the card as an approval.
- * Bugs and ideas go by the title prefix Scryve writes ("Bug: ...", "Idea: ...").
+ * Bugs and ideas go by the title prefix Scryve writes ("Bug: ...", "Idea: ..."), leaving out
+ * reports Scryve marked fixed (a `fixed` meta line), which have their own filter.
  */
+const isFixed = (card: Card) => card.meta?.fixed !== undefined;
+
 const MATCHES = {
   waiting: (card) => card.kind === 'approval' && card.state === 'open',
-  bugs: (card) => card.title.startsWith('Bug:'),
-  ideas: (card) => card.title.startsWith('Idea:'),
+  bugs: (card) => card.title.startsWith('Bug:') && !isFixed(card),
+  ideas: (card) => card.title.startsWith('Idea:') && !isFixed(card),
+  fixed: isFixed,
   all: () => true,
 } satisfies Record<FeedbackFilter, (card: Card) => boolean>;
 
