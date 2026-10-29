@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { AccessibilityInfo, Keyboard, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { AccessibilityInfo, Keyboard, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View, type ViewInstance } from 'react-native';
 import { SymbolView } from 'expo-symbols';
 import Animated, { useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -27,7 +27,7 @@ const OPEN_SPRING = { damping: 18, stiffness: 260, mass: 0.6 };
 export function AgentPicker({ agents, selected, runtime, onSelect, onDetails, onPair }: Props) {
   const styles = useThemedStyles(createStyles);
   const colors = useColors();
-  const trigger = useRef<View>(null);
+  const trigger = useRef<ViewInstance>(null);
   const afterClose = useRef<(() => void) | undefined>(undefined);
   const closing = useRef(false);
   const [anchor, setAnchor] = useState<Anchor>();

@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Updates from 'expo-updates';
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type PropsWithChildren } from 'react';
-import { AppState, Keyboard, Platform, type AppStateStatus } from 'react-native';
+import { AppState, Keyboard, Platform } from 'react-native';
 
 import { useColors } from '@/features/relay/relay-ui';
 import { useOutbox } from '@/lib/outbox-context';
@@ -31,7 +31,7 @@ export function AppUpdateProvider({ children }: PropsWithChildren) {
   const controller = useRef<ReturnType<typeof createUpdateController>>(undefined);
   // Set the moment a notice is shown, before the async persist lands, so a quick dismiss can't resurface it.
   const shownId = useRef<string>(undefined);
-  const [appState, setAppState] = useState<AppStateStatus>(AppState.currentState);
+  const [appState, setAppState] = useState(AppState.currentState);
   const [keyboardVisible, setKeyboardVisible] = useState(() => Keyboard.isVisible());
   const [noticeTimer] = useState(createUpdateNoticeTimer);
   const [noticedId, setNoticedId] = useState<string | null>();

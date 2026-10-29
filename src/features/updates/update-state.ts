@@ -68,7 +68,7 @@ export const FOREGROUND_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 type UpdateEnvironment = {
   enabled: boolean;
   now(): number;
-  appState(): string;
+  appState(): string | null | undefined;
   state(): UpdateState;
   check(): Promise<{ isAvailable: boolean; isRollBackToEmbedded: boolean }>;
   fetch(): Promise<unknown>;

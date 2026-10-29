@@ -3,7 +3,7 @@ import type { NativeFontWeight } from "./T3MarkdownTextRunNativeComponent";
 
 export function flattenStyles(rootStyle: TextStyle, style: StyleProp<TextStyle>) {
   // Browser cursor/selection styles are not native view props.
-  const { cursor: _cursor, userSelect: _userSelect, ...flattenedStyle } = StyleSheet.flatten([rootStyle, style]);
+  const { cursor: _cursor, userSelect: _userSelect, ...flattenedStyle } = StyleSheet.flatten([rootStyle, style]) ?? {};
   return {
     ...flattenedStyle,
     fontWeight: fontWeightToNativeProp(flattenedStyle.fontWeight ?? "normal"),

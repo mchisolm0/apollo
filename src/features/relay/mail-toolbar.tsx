@@ -7,7 +7,7 @@ import type { HeaderBarButtonMailSearchToolbarItem } from 'react-native-screens'
 export const HAS_MAIL_TOOLBAR = Platform.OS === 'ios' && isLiquidGlassAvailable();
 export const MAIL_TOOLBAR_INSET = 56;
 
-/** Expo Router 57 passes these typed props directly to the patched native header. */
+/** Expo Router 58 passes these typed props directly to the patched native header. */
 export function MailToolbar({ attentionOnly, onFilter, onCompose, onSearch }: {
   attentionOnly: boolean;
   onFilter: () => void;

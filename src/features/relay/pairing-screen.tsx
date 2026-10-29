@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import * as Clipboard from 'expo-clipboard';
-import { Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View, type ScrollViewInstance } from 'react-native';
 
 import { RelayButton, RelayHeader, RelayInput, useRelayStyles, useThemedStyles, type RelayPalette } from './relay-ui';
 import type { PairingMode, PairingPayload, PairingState, QrContent } from './types';
@@ -24,7 +24,7 @@ export type PairingScreenProps = {
 export function PairingScreen({ pairing, initialMode = 'qr', state = 'ready', isBusy = false, errorMessage, qrContent, onBack, onCancel, onModeChange, onManualSubmit, onConfirm, onRetry }: PairingScreenProps) {
   const styles = useThemedStyles(createStyles);
   const uiStyles = useRelayStyles();
-  const scroll = useRef<ScrollView>(null);
+  const scroll = useRef<ScrollViewInstance>(null);
   const failed = state === 'expired' || state === 'error' || state === 'confirm' && !pairing;
   useEffect(() => {
     if (failed) { Keyboard.dismiss(); scroll.current?.scrollTo({ y: 0, animated: true }); }
