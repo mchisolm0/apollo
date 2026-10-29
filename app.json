@@ -47,6 +47,7 @@
         "expo-camera",
         {
           "cameraPermission": "Allow Apollo to scan a one-time pairing code.",
+          "microphonePermission": "Apollo uses the microphone to turn your speech into message text on this device.",
           "recordAudioAndroid": false,
           "barcodeScannerEnabled": true
         }
@@ -57,6 +58,14 @@
           "photosPermission": "Choose photos to attach to messages.",
           "cameraPermission": "Allow Apollo to scan a one-time pairing code.",
           "microphonePermission": false
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Apollo uses the microphone to turn your speech into message text on this device.",
+          "recordAudioAndroid": false,
+          "enableBackgroundPlayback": false
         }
       ]
     ],
