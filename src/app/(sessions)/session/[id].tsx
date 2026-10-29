@@ -44,7 +44,10 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   const router = useRouter();
   const openInbox = () => { Keyboard.dismiss(); router.dismissTo({ pathname: '/', params: { agentId } }); };
   const [localError, setLocalError] = useState<string>();
+  const [loadError, setLoadError] = useState<string>();
   const [loading, setLoading] = useState(id !== 'new');
+  // One history load at a time. A connect during a load that then fails runs it again.
+  const historyLoad = useRef({ opened: false, running: false, again: false });
   const [acting, setActing] = useState(false);
   const actionLock = useRef(false);
   const pickerLock = useRef(false);
@@ -92,14 +95,14 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   const { markRead } = inbox;
   const readableActivityAt = inbox.sessions.find((session) => session.id === resolvedId && !session.running && !session.pendingApproval)?.activityAt;
   useFocusEffect(useCallback(() => {
-    if (!resolvedId || readableActivityAt === undefined || loading || localError) return;
+    if (!resolvedId || readableActivityAt === undefined || loading || localError || loadError) return;
     const readIfActive = () => {
       if (AppState.currentState === 'active') void markRead(resolvedId);
     };
     readIfActive();
     const subscription = AppState.addEventListener('change', readIfActive);
     return () => subscription.remove();
-  }, [resolvedId, loading, localError, markRead, readableActivityAt]));
+  }, [resolvedId, loading, localError, loadError, markRead, readableActivityAt]));
   const queuedMessages = outbox.items.filter((item) => item.agentId === agentId && item.sessionId === resolvedId);
   const awaitingCreation = queuedMessages.some((item) => item.createsSession);
   const incoming = shareId ? getShare(shareId) : undefined;
@@ -118,14 +121,36 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   }, [incoming, draftLoaded, appendShare, acknowledgeShare, router, retryRevision]);
   const project = useMemo(() => createTranscriptProjector(), []);
 
+  // A thread loads when opened and again each time the agent connects, so one opened while
+  // reconnecting catches up instead of keeping that attempt's error. A drop never refetches.
+  const connected = state?.status === 'connected';
+  const connecting = state?.status === 'connecting';
   useEffect(() => {
-    if (!resolvedId || awaitingCreation || !outbox.loaded) return;
-    let mounted = true;
-    void sessionMessages(agentId, resolvedId).catch((error: unknown) => {
-      if (mounted) setLocalError(error instanceof Error ? error.message : 'Could not load thread');
-    }).finally(() => { if (mounted) setLoading(false); });
-    return () => { mounted = false; };
-  }, [agentId, resolvedId, sessionMessages, awaitingCreation, outbox.loaded]);
+    const load = historyLoad.current;
+    if (!resolvedId || awaitingCreation || !outbox.loaded || (load.opened && !connected)) return;
+    load.opened = true;
+    const run = () => {
+      if (load.running) {
+        load.again = true;
+        return;
+      }
+      load.running = true;
+      load.again = false;
+      setLoading(true);
+      void sessionMessages(agentId, resolvedId).then(() => {
+        setLoadError(undefined);
+        return true;
+      }, (error: unknown) => {
+        setLoadError(error instanceof Error ? error.message : 'Could not load thread');
+        return false;
+      }).then((loaded) => {
+        load.running = false;
+        if (!loaded && load.again) run();
+        else setLoading(false);
+      });
+    };
+    run();
+  }, [agentId, resolvedId, sessionMessages, awaitingCreation, outbox.loaded, connected]);
 
   useFocusEffect(useCallback(() => {
     if (!resolvedId || !state?.status) return;
@@ -273,11 +298,11 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
           if (removed) discardAttachment(removed);
         }}
         attachmentSource={fileSource}
-        isLoading={loading && !awaitingCreation}
+        isLoading={(loading || (connecting && loadError !== undefined)) && !awaitingCreation}
         isSending={running}
         isActing={acting}
         statusLabel={statusLabel}
-        error={localError ?? draftError ?? outbox.error ?? (run?.status === 'unknown' ? run.error : undefined)}
+        error={localError ?? (loading || connecting ? undefined : loadError) ?? draftError ?? outbox.error ?? (run?.status === 'unknown' ? run.error : undefined)}
         onRetryError={() => void act(async () => {
           await retryLoad();
           await outbox.reload();
@@ -286,7 +311,8 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
             await retryAgent(agentId);
             if (resolvedId && !awaitingCreation) {
               const picks = modelPicks.current;
-              const [, selected] = await Promise.all([sessionMessages(agentId, resolvedId), resolveThreadModel(agentId, resolvedId)]);
+              // Reconnecting reloads the thread through the history effect.
+              const selected = await resolveThreadModel(agentId, resolvedId);
               if (picks === modelPicks.current) setModel(selected);
             }
           }
