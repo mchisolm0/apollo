@@ -1,0 +1,9 @@
+{
+  "name": "@apollo/native-quick-look",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "react-native": "./index.ts"
+}

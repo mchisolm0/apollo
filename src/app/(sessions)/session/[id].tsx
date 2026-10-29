@@ -204,8 +204,8 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
     };
   const addAttachments = () => {
     Keyboard.dismiss();
-    if (Platform.OS === 'ios') ActionSheetIOS.showActionSheetWithOptions({ options: ['Photos', 'Files', 'Cancel'], cancelButtonIndex: 2, userInterfaceStyle: 'dark' }, (index) => { if (index < 2) void pick(index === 0 ? 'photos' : 'files'); });
-    else Alert.alert('Attach', undefined, [{ text: 'Photos', onPress: () => void pick('photos') }, { text: 'Files', onPress: () => void pick('files') }, { text: 'Cancel', style: 'cancel' }]);
+    if (Platform.OS === 'ios') ActionSheetIOS.showActionSheetWithOptions({ options: ['Photo Library', 'Choose Files', 'Cancel'], cancelButtonIndex: 2, userInterfaceStyle: 'dark' }, (index) => { if (index < 2) void pick(index === 0 ? 'photos' : 'files'); });
+    else Alert.alert('Attach', undefined, [{ text: 'Photo Library', onPress: () => void pick('photos') }, { text: 'Choose Files', onPress: () => void pick('files') }, { text: 'Cancel', style: 'cancel' }]);
   };
 
   const pasteImages = async (uris: readonly string[]) => {

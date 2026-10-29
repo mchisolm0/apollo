@@ -4,7 +4,8 @@ import { fetch as expoFetch } from 'expo/fetch';
 import { Image } from 'expo-image';
 import * as Sharing from 'expo-sharing';
 import { SymbolView } from 'expo-symbols';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { quickLook } from '@apollo/native-quick-look';
 import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { AttachmentSource } from '../../lib/attachments';
@@ -16,6 +17,7 @@ type VisibleAttachment = { id: string; name: string; mimeType: string; size: num
 
 const previewDirectory = new Directory(Paths.cache, 'attachment-previews');
 const MAX_TEXT_PREVIEW_BYTES = 512 * 1024;
+const TILE = 56;
 
 function displaySize(size: number) {
   return size < 1024 ? `${size} B` : size < 1024 * 1024 ? `${Math.ceil(size / 1024)} KB` : `${(size / 1024 / 1024).toFixed(1)} MB`;
@@ -26,6 +28,14 @@ async function cachedName(file: VisibleAttachment) {
   const identity = attachmentCacheIdentity(file.source?.uri ?? '', file.id);
   const digest = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, identity);
   return `${digest.slice(0, 32)}${extension}`;
+}
+
+function isImage(file: VisibleAttachment) {
+  return /^image\/(jpeg|png|gif|webp|heic|heif)$/.test(file.mimeType);
+}
+
+function extensionLabel(name: string) {
+  return /\.([a-z\d]{1,4})$/i.exec(name)?.[1]?.toUpperCase() ?? 'FILE';
 }
 
 function supportsTextPreview(file: VisibleAttachment) {
@@ -88,10 +98,11 @@ export function AttachmentStrip({ files, onRemove, disabled = false }: { files: 
   const [previewText, setPreviewText] = useState<string>();
   const [previewNote, setPreviewNote] = useState<string>();
   const [loading, setLoading] = useState(false);
+  const [preparing, setPreparing] = useState<string>();
   const request = useRef(0);
   useEffect(() => () => { request.current += 1; }, []);
 
-  const open = useCallback((file: VisibleAttachment) => {
+  function open(file: VisibleAttachment) {
     const current = ++request.current;
     setSelected(file);
     setLocalUri(undefined);
@@ -116,7 +127,24 @@ export function AttachmentStrip({ files, onRemove, disabled = false }: { files: 
     }).finally(() => {
       if (request.current === current) setLoading(false);
     });
-  }, []);
+  }
+
+  /** Quick Look pages through every local file; a sent message's files download one at a time. */
+  function preview(file: VisibleAttachment) {
+    if (!quickLook) return open(file);
+    const current = ++request.current;
+    const gallery = files.every((item) => item.source?.uri.startsWith('file://')) ? files : [file];
+    setPreparing(file.id);
+    void Promise.all(gallery.map(localAttachment)).then((local) => {
+      if (request.current !== current) return;
+      setPreparing(undefined);
+      return quickLook?.(local.map((item) => item.uri), gallery.map((item) => item.name), gallery.indexOf(file));
+    }).catch((error: unknown) => {
+      if (request.current !== current) return;
+      setPreparing(undefined);
+      Alert.alert('Could not open attachment', error instanceof Error ? error.message : 'Try downloading the attachment again.');
+    });
+  }
 
   const close = () => {
     request.current += 1;
@@ -146,14 +174,19 @@ export function AttachmentStrip({ files, onRemove, disabled = false }: { files: 
   if (!files.length) return null;
   return <>
     <ScrollView horizontal style={styles.strip} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" showsHorizontalScrollIndicator={false}>
-      {files.map((file) => <View key={file.id} style={[styles.file, { backgroundColor: colors.surface }]}>
-        <Pressable accessibilityRole="button" accessibilityLabel={`Preview attachment ${file.name}`} onPress={() => open(file)} style={({ pressed }) => [styles.preview, { opacity: pressed ? 0.6 : 1 }]}>
-          {/^image\/(jpeg|png|gif|webp|heic|heif)$/.test(file.mimeType) && file.source
+      {files.map((file) => <View key={file.id} style={styles.tile}>
+        <Pressable accessibilityRole="button" accessibilityLabel={`Preview attachment ${file.name}`} onPress={() => preview(file)} style={({ pressed }) => [styles.thumb, { backgroundColor: colors.elevated, borderColor: colors.line, opacity: pressed ? 0.6 : 1 }]}>
+          {isImage(file) && file.source
             ? <Image source={file.source} style={styles.image} contentFit="cover" cachePolicy="memory" accessibilityLabel={`Attached photo ${file.name}`} />
-            : <View style={styles.fileIcon}><SymbolView name={{ ios: 'doc', android: 'description', web: 'description' }} size={24} tintColor={colors.secondary} /></View>}
-          <View style={styles.details}><Text numberOfLines={1} style={[styles.name, { color: colors.primary }]}>{file.name}</Text><Text style={[styles.size, { color: colors.secondary }]}>{displaySize(file.size)}</Text></View>
+            : <>
+              <SymbolView name={{ ios: 'doc', android: 'description', web: 'description' }} size={20} tintColor={colors.secondary} />
+              <Text numberOfLines={1} style={[styles.extension, { color: colors.secondary }]}>{extensionLabel(file.name)}</Text>
+            </>}
+          {preparing === file.id ? <View style={styles.preparing}><ActivityIndicator color="#ffffff" /></View> : null}
         </Pressable>
-        {onRemove ? <Pressable accessibilityRole="button" accessibilityLabel={`Remove attachment ${file.name}`} accessibilityState={{ disabled }} disabled={disabled} onPress={() => onRemove(file.id)} style={styles.remove}><SymbolView name={{ ios: 'xmark', android: 'close', web: 'close' }} size={15} tintColor={disabled ? colors.muted : colors.primary} /></Pressable> : null}
+        {onRemove ? <Pressable accessibilityRole="button" accessibilityLabel={`Remove attachment ${file.name}`} accessibilityState={{ disabled }} disabled={disabled} hitSlop={8} onPress={() => onRemove(file.id)} style={[styles.remove, { opacity: disabled ? 0.4 : 1 }]}>
+          <SymbolView name={{ ios: 'xmark', android: 'close', web: 'close' }} size={9} weight="bold" tintColor="#ffffff" />
+        </Pressable> : null}
       </View>)}
     </ScrollView>
     <Modal visible={Boolean(selected)} transparent animationType="fade" onRequestClose={close}>
@@ -184,12 +217,13 @@ export function AttachmentStrip({ files, onRemove, disabled = false }: { files: 
 
 const styles = StyleSheet.create({
   strip: { flexGrow: 0, marginBottom: 8 }, content: { gap: 8 },
-  file: { flexDirection: 'row', alignItems: 'center', borderRadius: 8, overflow: 'hidden', maxWidth: 280 },
-  preview: { flexDirection: 'row', alignItems: 'center', flexShrink: 1 },
-  image: { width: 64, height: 64 }, fileIcon: { width: 44, height: 64, alignItems: 'center', justifyContent: 'center' },
-  details: { paddingHorizontal: 10, paddingVertical: 8, gap: 4, flexShrink: 1 },
-  name: { fontSize: 13, maxWidth: 150 }, size: { fontSize: 12 },
-  remove: { width: 44, minHeight: 64, alignItems: 'center', justifyContent: 'center' },
+  tile: { width: TILE, height: TILE },
+  thumb: { width: TILE, height: TILE, borderRadius: 10, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden', alignItems: 'center', justifyContent: 'center', gap: 3 },
+  image: { ...StyleSheet.absoluteFill },
+  extension: { fontSize: 10, fontWeight: '600', letterSpacing: 0.3 },
+  size: { fontSize: 12 },
+  preparing: { ...StyleSheet.absoluteFill, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.45)' },
+  remove: { position: 'absolute', top: 3, right: 3, width: 20, height: 20, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.6)' },
   backdrop: { flex: 1, padding: 16, alignItems: 'center', justifyContent: 'center' },
   modal: { width: '100%', maxWidth: 560, maxHeight: '82%', borderRadius: 12, borderWidth: 1, overflow: 'hidden' },
   modalHeader: { minHeight: 60, paddingLeft: 14, flexDirection: 'row', alignItems: 'center', borderBottomWidth: StyleSheet.hairlineWidth },

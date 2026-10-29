@@ -71,7 +71,8 @@ export function OutboxProvider({ children }: PropsWithChildren) {
         for (const file of attachments) {
           if (file.uploaded) continue;
           available();
-          const uploaded = await api.current.uploadAttachment(message.agentId, { name: file.name, mimeType: file.mimeType, data: await new File(file.uri).base64() }, signal);
+          // expo-file-system streams the body from disk, so large files never enter JS memory.
+          const uploaded = await api.current.uploadAttachment(message.agentId, file, (url, headers) => new File(file.uri).upload(url, { headers, signal, sessionType: 'foreground' }));
           attachments = attachments.map((entry) => entry.id === file.id ? { ...entry, uploaded } : entry);
           await checkpoint({ attachments });
         }

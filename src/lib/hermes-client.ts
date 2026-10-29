@@ -239,6 +239,8 @@ function createIdempotencyKey(): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+export type AttachmentUpload = (url: string, headers: Record<string, string>) => Promise<{ status: number; body: string }>;
+
 export class HermesClient {
   private readonly baseUrl: string;
   private readonly token: string;
@@ -325,8 +327,17 @@ export class HermesClient {
     return body.data.map(parseMessage);
   }
 
-  async uploadAttachment(file: { name: string; mimeType: string; data: string }, signal?: AbortSignal): Promise<Attachment> {
-    const body = await this.request('/v1/apollo/attachments', { signal, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(file) });
+  /** The file's raw bytes are the request body, so `send` streams them from disk natively. */
+  async uploadAttachment(file: { name: string; mimeType: string }, send: AttachmentUpload): Promise<Attachment> {
+    const response = await send(`${this.baseUrl}/v1/apollo/attachments?name=${encodeURIComponent(file.name)}`, {
+      Accept: 'application/json', Authorization: `Bearer ${this.token}`, 'Content-Type': file.mimeType,
+    });
+    let body: unknown;
+    try { body = JSON.parse(response.body); } catch { body = undefined; }
+    if (response.status < 200 || response.status >= 300) {
+      const code = isJsonObject(body) && isJsonObject(body.error) ? stringValue(body.error.code) : undefined;
+      throw new HermesRequestError(errorMessage(body, `Hermes request failed (${response.status})`), response.status, code);
+    }
     if (!isJsonObject(body) || !isAttachment(body.attachment)) throw new Error('The attachment upload response was invalid.');
     return body.attachment;
   }

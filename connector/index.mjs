@@ -1,4 +1,4 @@
-import { saveAttachment, readAttachment, MAX_UPLOAD_BODY_BYTES } from './attachments.mjs';
+import { saveAttachment, readAttachment } from './attachments.mjs';
 import { generateThreadTitle } from './thread-title.mjs';
 import { createExpoPushSender, createRunNotificationMonitor, parseNotificationRegistration } from './notifications.mjs';
 import { createApprovalBridge, createCloudClient, loadCloudConfig } from './cloud.mjs';
@@ -292,11 +292,17 @@ export function createConnectorServer(options = {}) {
     }
   }
 
-  async function attachmentRequest(req, res, id) {
+  async function attachmentRequest(req, res, url, id) {
     if (!await authenticateDevice(req)) return error(res, 401, "device authentication required", "unauthorized");
     if (req.method === "POST" && !id) {
-      const attachment = await saveAttachment(attachmentDirectory, parseJson(await readBody(req, MAX_UPLOAD_BODY_BYTES)));
-      return json(res, 201, { attachment });
+      try {
+        const attachment = await saveAttachment(attachmentDirectory, { name: url.searchParams.get("name"), contentType: req.headers["content-type"], contentLength: req.headers["content-length"], body: req });
+        return json(res, 201, { attachment });
+      } catch (cause) {
+        // A rejected upload may leave body bytes unread, so this socket cannot carry another request.
+        res.setHeader("connection", "close");
+        throw cause;
+      }
     }
     if (req.method === "GET" && id) {
       const { attachment, bytes } = await readAttachment(attachmentDirectory, id);
@@ -566,7 +572,7 @@ export function createConnectorServer(options = {}) {
       if (req.method === "POST" && url.pathname === "/v1/apollo/cloud-token") return await cloudToken(req, res);
       if (url.pathname === "/v1/apollo/notifications") return await notifications(req, res);
       const attachmentRoute = url.pathname.match(/^\/v1\/apollo\/attachments(?:\/([a-f0-9-]{36}))?$/);
-      if (attachmentRoute) return await attachmentRequest(req, res, attachmentRoute[1]);
+      if (attachmentRoute) return await attachmentRequest(req, res, url, attachmentRoute[1]);
       if (url.pathname === "/v1/inbox") return await inbox(req, res);
       return proxy(req, res, url);
     } catch (cause) {

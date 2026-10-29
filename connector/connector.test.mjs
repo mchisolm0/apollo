@@ -182,33 +182,51 @@ test("thread titles require device authentication and tolerate unavailable Codex
   assert.equal((await submit("", token)).response.status, 400);
 });
 
-test("attachments preserve bytes privately and require an active device token", async (t) => {
+test("attachments stream raw bytes privately and require an active device token", async (t) => {
   const f = await fixture();
   t.after(async () => { await f.connector.close(); await f.hermes.close(); });
   const path = "/v1/apollo/attachments";
+  const upload = `${path}?name=${encodeURIComponent("../../metadata.json")}`;
   const bytes = Buffer.from([0, 255, 127, 10, 65]);
-  const body = JSON.stringify({ name: "../../metadata.json", mimeType: "application/octet-stream", data: bytes.toString("base64") });
-  assert.equal((await req(f.base, path, { method: "POST", body })).response.status, 401);
+  assert.equal((await req(f.base, upload, { method: "POST", body: bytes })).response.status, 401);
   const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
   const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
-  const headers = { authorization: `Bearer ${exchange.body.access_token}`, "content-type": "application/json" };
-  const uploaded = await req(f.base, path, { method: "POST", headers, body });
+  const auth = { authorization: `Bearer ${exchange.body.access_token}` };
+  const headers = { ...auth, "content-type": "application/octet-stream" };
+  const uploaded = await req(f.base, upload, { method: "POST", headers, body: bytes });
   assert.equal(uploaded.response.status, 201);
   const file = uploaded.body.attachment;
   assert.equal(file.name.includes("/"), false);
+  assert.equal(file.mimeType, "application/octet-stream");
   assert.equal(file.size, bytes.length);
   assert.deepEqual(await readFile(file.path), bytes);
   assert.equal((await stat(file.path)).mode & 0o777, 0o600);
   assert.equal((await req(f.base, `${path}/${file.id}`)).response.status, 401);
-  const downloaded = await fetch(`${f.base}${path}/${file.id}`, { headers });
+  const downloaded = await fetch(`${f.base}${path}/${file.id}`, { headers: auth });
   assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), bytes);
   assert.equal(downloaded.headers.get("cache-control"), "private, no-store");
   assert.equal(downloaded.headers.get("content-disposition"), "attachment");
-  const invalid = await req(f.base, path, { method: "POST", headers, body: JSON.stringify({ name: "bad.txt", mimeType: "text/plain", data: "not base64" }) });
-  assert.equal(invalid.response.status, 400);
+  const legacy = await req(f.base, path, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ name: "a.txt", mimeType: "text/plain", data: "" }) });
+  assert.deepEqual([legacy.response.status, legacy.body.error.message], [400, "Update Apollo to send attachments."]);
   await req(f.base, `/admin/devices/${exchange.body.device_id}/revoke`, admin({ method: "POST", body: "{}" }));
-  assert.equal((await req(f.base, `${path}/${file.id}`, { headers })).response.status, 401);
-  assert.equal((await req(f.base, path, { method: "POST", headers, body })).response.status, 401);
+  assert.equal((await req(f.base, `${path}/${file.id}`, { headers: auth })).response.status, 401);
+  assert.equal((await req(f.base, upload, { method: "POST", headers, body: bytes })).response.status, 401);
+});
+
+test("an image upload keeps its type and a streamed body over the limit is refused", async (t) => {
+  const f = await fixture();
+  t.after(async () => { await f.connector.close(); await f.hermes.close(); });
+  const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
+  const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
+  const auth = { authorization: `Bearer ${exchange.body.access_token}` };
+  const photo = await req(f.base, `/v1/apollo/attachments?name=${encodeURIComponent("Café photo.jpg")}`, { method: "POST", headers: { ...auth, "content-type": "image/jpeg" }, body: Buffer.from([0xff, 0xd8, 0xff]) });
+  assert.equal(photo.response.status, 201);
+  assert.deepEqual([photo.body.attachment.name, photo.body.attachment.mimeType], ["Café photo.jpg", "image/jpeg"]);
+  // A chunked body has no Content-Length, so only the streaming byte count can stop it.
+  const chunk = Buffer.alloc(1024 * 1024);
+  const body = new ReadableStream({ start(controller) { for (let index = 0; index < 26; index += 1) controller.enqueue(chunk); controller.close(); } });
+  const large = await req(f.base, "/v1/apollo/attachments?name=large.bin", { method: "POST", headers: { ...auth, "content-type": "application/octet-stream" }, body, duplex: "half" });
+  assert.equal(large.response.status, 413);
 });
 
 test("settled threads survive a new device and restart; migration cannot undo reopen", async (t) => {
