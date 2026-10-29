@@ -24,15 +24,17 @@ export async function saveAttachment(directory, { name, contentType, contentLeng
   const folder = resolve(directory, id);
   const path = join(folder, `file-${safeName}`);
   let size = 0;
+  // Erroring here would destroy the request socket before the 413 is sent, so drain and drop instead.
   const limit = new Transform({
     transform(chunk, _encoding, done) {
       size += chunk.length;
-      done(size > MAX_ATTACHMENT_BYTES ? tooLarge() : null, chunk);
+      done(null, size > MAX_ATTACHMENT_BYTES ? undefined : chunk);
     },
   });
   try {
     await mkdir(folder, { recursive: true, mode: 0o700 });
     await pipeline(body, limit, createWriteStream(path, { mode: 0o600, flags: 'wx' }));
+    if (size > MAX_ATTACHMENT_BYTES) throw tooLarge();
     const attachment = { id, name: safeName, mimeType, size, path };
     await writeFile(join(folder, 'metadata.json'), JSON.stringify(attachment), { mode: 0o600, flag: 'wx' });
     return attachment;
