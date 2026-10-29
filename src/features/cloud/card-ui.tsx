@@ -127,7 +127,7 @@ export function CardSwipe({ card, action, onRun, children }: { card: InboxCard; 
   const swipe = useRef<SwipeableMethods>(null);
   if (!action) return children;
   const perform = () => { swipe.current?.close(); onRun(action); };
-  return <Swipeable ref={swipe} overshootRight={false} renderRightActions={() => <Pressable accessibilityRole="button" accessibilityLabel={`${swipeLabels[action]} ${card.title}`} onPress={perform} style={styles.swipeAction}><Text style={styles.swipeText}>{swipeLabels[action]}</Text></Pressable>}>
+  return <Swipeable ref={swipe} overshootRight={false} childrenContainerStyle={styles.swipeRow} renderRightActions={() => <Pressable accessibilityRole="button" accessibilityLabel={`${swipeLabels[action]} ${card.title}`} onPress={perform} style={styles.swipeAction}><Text style={styles.swipeText}>{swipeLabels[action]}</Text></Pressable>}>
     {children}
   </Swipeable>;
 }
@@ -295,6 +295,8 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   pickTitle: { color: colors.primary },
   pickTitleDone: { color: colors.muted, textDecorationLine: 'line-through' },
   pickSub: { color: colors.muted },
+  // Gesture Handler 3 keeps actions behind the row, so the row must paint over them.
+  swipeRow: { backgroundColor: colors.background },
   swipeAction: { backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center', minWidth: 84, paddingHorizontal: 16 },
   swipeText: { color: colors.background, fontWeight: '600', fontSize: 15 },
 });

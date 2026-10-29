@@ -165,7 +165,7 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
   // Hermes previews are the first user message; skip them when the title already says the same thing.
   const preview = session.preview?.trim();
   const showPreview = !quiet && preview && !session.title.startsWith(preview.replace(/…$|\.\.\.$/u, '').slice(0, 40));
-  return <Swipeable key={session.id} ref={swipe} overshootRight={false} renderRightActions={action ? () => <Pressable accessibilityRole="button" accessibilityLabel={`${action.label} thread ${session.title}`} onPress={perform} style={styles.swipeAction}><Text style={styles.swipeText}>{action.label}</Text></Pressable> : undefined}>
+  return <Swipeable key={session.id} ref={swipe} overshootRight={false} childrenContainerStyle={styles.swipeRow} renderRightActions={action ? () => <Pressable accessibilityRole="button" accessibilityLabel={`${action.label} thread ${session.title}`} onPress={perform} style={styles.swipeAction}><Text style={styles.swipeText}>{action.label}</Text></Pressable> : undefined}>
     <View style={styles.rowContainer}>
     <Pressable
       onPress={open}
@@ -201,6 +201,8 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   date: { color: colors.secondary, fontSize: 15 },
   quietTitle: { color: colors.muted, fontWeight: '400' },
   preview: { color: colors.secondary },
+  // Gesture Handler 3 keeps actions behind the row, so the row must paint over them.
+  swipeRow: { backgroundColor: colors.background },
   swipeAction: { backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center', minWidth: 84, paddingHorizontal: 16 }, swipeText: { color: colors.background, fontWeight: '600', fontSize: 15 },
 
   dock: { paddingHorizontal: 12, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 10 },
