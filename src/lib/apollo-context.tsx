@@ -21,7 +21,7 @@ import { errorMessage } from './protocol';
 import { AgentCatalog } from './catalog';
 import { eventTransportIdentity, isRunActive, statusAfterEvent } from './run-state';
 import { PairingClient, parsePairingLink } from './pairing';
-import { HermesClient, HermesRequestError, parseSelectedModel, sessionModelChoice, type RunEventSubscription } from './hermes-client';
+import { HermesClient, HermesRequestError, parseSelectedModel, sessionModelChoice, type AttachmentUpload, type RunEventSubscription } from './hermes-client';
 import type {
   AgentRecord,
   InboxConfig,
@@ -66,7 +66,7 @@ export interface ApolloContextValue {
   setSessionModel(agentId: string, sessionId: string, model: HermesModel): Promise<HermesModelLock>;
   saveModelSelection(agentId: string, sessionId: string, model: HermesModel): Promise<void>;
   steerRun(agentId: string, runId: string, input: string, signal?: AbortSignal): Promise<void>;
-  uploadAttachment(agentId: string, file: { name: string; mimeType: string; data: string }, signal?: AbortSignal): Promise<Attachment>;
+  uploadAttachment(agentId: string, file: { name: string; mimeType: string }, send: AttachmentUpload): Promise<Attachment>;
   attachmentSource(agentId: string, id: string): AttachmentSource | undefined;
   sessionMessages(agentId: string, sessionId: string): Promise<readonly HermesMessage[]>;
   skills(agentId: string): Promise<readonly HermesSkill[]>;
@@ -490,10 +490,10 @@ export function ApolloProvider({
     } finally { startingRuns.current.delete(key); }
   }, [catalog, refreshAgent, subscribe, updateRuntime, updateRun, setRuntime]);
 
-  const uploadAttachment = useCallback(async (agentId: string, file: { name: string; mimeType: string; data: string }, signal?: AbortSignal) => {
+  const uploadAttachment = useCallback(async (agentId: string, file: { name: string; mimeType: string }, send: AttachmentUpload) => {
     const client = clients.current.get(agentId);
     if (!client) throw new Error('Reconnect to upload attachments.');
-    try { return await client.uploadAttachment(file, signal); }
+    try { return await client.uploadAttachment(file, send); }
     catch (error) {
       if (error instanceof HermesRequestError && error.status === 404) throw new Error('Update the connector on this agent to send attachments.');
       throw error;

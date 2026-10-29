@@ -33,5 +33,5 @@ export function shareFingerprint(payloads: readonly RawIncomingPayload[]): strin
 }
 
 export function validateShareSize(size: number): void {
-  if (!Number.isFinite(size) || size < 0 || size > MAX_ATTACHMENT_BYTES) throw new Error('Shared files must be 10 MB or smaller.');
+  if (!Number.isFinite(size) || size < 0 || size > MAX_ATTACHMENT_BYTES) throw new Error('Shared files must be 25 MB or smaller.');
 }

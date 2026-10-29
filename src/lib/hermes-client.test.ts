@@ -288,3 +288,21 @@ test('fresh server detail wins over a selection cached before relaunch', async (
   assert.deepEqual(plain(sessionModelChoice(undefined, cached)), { id: 'A', provider: 'alpha' });
   assert.equal(sessionModelChoice(undefined, undefined), undefined);
 });
+
+test('attachment uploads send raw bytes with the name in the query and surface connector errors', async () => {
+  const client = clientWith(undefined);
+  const attachment = { id: '12345678-1234-1234-1234-123456789abc', name: 'Café.png', mimeType: 'image/png', size: 3, path: '/private/attachments/file-Café.png' };
+  const seen: { url: string; headers: Record<string, string> }[] = [];
+  const uploaded = await client.uploadAttachment({ name: 'Café.png', mimeType: 'image/png' }, async (url, headers) => {
+    seen.push({ url, headers });
+    return { status: 201, body: JSON.stringify({ attachment }) };
+  });
+  assert.deepEqual(plain(uploaded), attachment);
+  assert.equal(seen[0]?.url, 'https://agent.example.ts.net/v1/apollo/attachments?name=Caf%C3%A9.png');
+  assert.equal(seen[0]?.headers['Content-Type'], 'image/png');
+  assert.equal(seen[0]?.headers.Authorization, 'Bearer token');
+  await assert.rejects(
+    client.uploadAttachment({ name: 'big.bin', mimeType: 'application/octet-stream' }, async () => ({ status: 413, body: JSON.stringify({ error: { code: 'error', message: 'Choose a file no larger than 25 MB.' } }) })),
+    { status: 413, message: 'Choose a file no larger than 25 MB.' },
+  );
+});

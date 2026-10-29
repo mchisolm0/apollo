@@ -1,4 +1,4 @@
-import { isDraftAttachment, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, type DraftAttachment } from './attachments.ts';
+import { attachmentTooLargeMessage, isDraftAttachment, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, type DraftAttachment } from './attachments.ts';
 
 export type DraftStorage = Readonly<{
   getItem(key: string): Promise<string | null>;
@@ -53,7 +53,7 @@ function validateDraft(draft: string, attachments: readonly DraftAttachment[]): 
   if (draft.length > 8000) throw new Error('Drafts must be 8,000 characters or shorter.');
   if (attachments.length > MAX_ATTACHMENTS) throw new Error(`You can attach up to ${MAX_ATTACHMENTS} files per message.`);
   if (!attachments.every(isDraftAttachment)) throw new Error('One or more attachments are invalid.');
-  if (attachments.some((file) => file.size > MAX_ATTACHMENT_BYTES)) throw new Error('Choose files no larger than 10 MB each.');
+  if (attachments.some((file) => file.size > MAX_ATTACHMENT_BYTES)) throw new Error(attachmentTooLargeMessage);
 }
 
 function validPrepared(value: unknown): value is PreparedDraft {

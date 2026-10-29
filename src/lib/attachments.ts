@@ -1,5 +1,7 @@
-export const MAX_ATTACHMENTS = 4;
-export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+export const MAX_ATTACHMENTS = 10;
+/** Keep in sync with MAX_ATTACHMENT_BYTES in connector/attachments.mjs. */
+export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+export const attachmentTooLargeMessage = 'Choose files no larger than 25 MB each.';
 
 export type Attachment = {
   id: string;

@@ -233,8 +233,8 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
               {onPickAttachments && Platform.OS !== 'web' ? (
                 <MenuView
                   actions={[
-                    { id: 'photos', title: 'Photos', image: 'photo', attributes: { disabled: isActing || isPicking } },
-                    { id: 'files', title: 'Files', image: 'doc', attributes: { disabled: isActing || isPicking } },
+                    { id: 'photos', title: 'Photo Library', image: 'photo.on.rectangle', attributes: { disabled: isActing || isPicking } },
+                    { id: 'files', title: 'Choose Files', image: 'folder', attributes: { disabled: isActing || isPicking } },
                   ]}
                   onPressAction={(event) => onPickAttachments(event.nativeEvent.event === 'photos' ? 'photos' : 'files')}
                   style={styles.nativeMenu}

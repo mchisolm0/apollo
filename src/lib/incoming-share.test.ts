@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { MAX_ATTACHMENT_BYTES } from './attachments.ts';
 import { normalizeIncomingPayloads, shareFingerprint, validateShareSize } from '../features/sharing/incoming-share.ts';
 
 test('normalizes text, URLs, and local files without fetching URLs', () => {
@@ -11,6 +12,6 @@ test('normalizes text, URLs, and local files without fetching URLs', () => {
 });
 
 test('rejects files above the existing attachment limit', () => {
-  validateShareSize(10 * 1024 * 1024);
-  assert.throws(() => validateShareSize(10 * 1024 * 1024 + 1));
+  validateShareSize(MAX_ATTACHMENT_BYTES);
+  assert.throws(() => validateShareSize(MAX_ATTACHMENT_BYTES + 1));
 });
