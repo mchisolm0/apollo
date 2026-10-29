@@ -23,4 +23,5 @@ test('a long thread accepts its latest page once a local send is saved, though o
   assert.deepEqual(reconcileHistory(current, page), page);
   // A delayed page cannot erase a saved user message either.
   assert.deepEqual(reconcileHistory(page, current.slice(0, 4)), page);
+  assert.deepEqual(reconcileHistory(page, []), page);
 });

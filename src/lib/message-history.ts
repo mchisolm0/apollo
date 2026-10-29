@@ -9,7 +9,7 @@ export function reconcileHistory(current: readonly HermesMessage[], loaded: read
   // load too, when the optimistic IDs have already been replaced by server IDs.
   const known = newestSequence(current);
   const latest = newestSequence(loaded);
-  if (known !== undefined && latest !== undefined && latest < known) return current;
+  if (known !== undefined && (latest === undefined || latest < known)) return current;
   // Hermes returns only the latest page of a long thread, so older turns can leave a
   // newer snapshot. Past the newest saved message, count only local sends and what
   // Hermes saved since.
