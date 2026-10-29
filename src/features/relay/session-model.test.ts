@@ -120,3 +120,54 @@ test('a thread opened while connecting loads once connected, without that attemp
   assert.equal(setup.render().error, undefined);
   assert.equal(attempts, 2);
 });
+
+// History requests the test settles by hand, counting how many overlap.
+function heldLoads() {
+  const pending: { resolve(): void; reject(error: Error): void }[] = [];
+  let open = 0;
+  let mostOpen = 0;
+  const sessionMessages = () => new Promise<unknown[]>((resolve, reject) => {
+    open += 1;
+    mostOpen = Math.max(mostOpen, open);
+    const settle = () => { open -= 1; };
+    pending.push({ resolve: () => { settle(); resolve([]); }, reject: (error) => { settle(); reject(error); } });
+  });
+  return { sessionMessages, pending, mostOpen: () => mostOpen };
+}
+
+test('a drop during the first history load still settles it', async () => {
+  const loads = heldLoads();
+  const setup = routeFixture('thread', { sessionMessages: loads.sessionMessages });
+  setup.render();
+  setup.runEffects();
+  setup.setStatus('offline');
+  setup.render();
+  setup.runEffects();
+  loads.pending[0].reject(new Error('Network request failed'));
+  await flush();
+  const screen = setup.render();
+  assert.equal(screen.isLoading, false);
+  assert.ok(screen.error);
+});
+
+test('a thread opened during a connect runs one history load at a time', async () => {
+  const loads = heldLoads();
+  const setup = routeFixture('thread', { status: 'connecting', sessionMessages: loads.sessionMessages });
+  setup.render();
+  setup.runEffects();
+  setup.setStatus('connected');
+  setup.render();
+  setup.runEffects();
+  assert.equal(loads.pending.length, 1);
+  // The load that raced the connect failed, so it runs again once it settles.
+  loads.pending[0].reject(new Error('Network request failed'));
+  await flush();
+  assert.equal(loads.pending.length, 2);
+  assert.equal(setup.render().error, undefined);
+  loads.pending[1].resolve();
+  await flush();
+  const screen = setup.render();
+  assert.equal(loads.mostOpen(), 1);
+  assert.equal(screen.isLoading, false);
+  assert.equal(screen.error, undefined);
+});

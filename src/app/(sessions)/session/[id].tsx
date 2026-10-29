@@ -46,7 +46,8 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   const [localError, setLocalError] = useState<string>();
   const [loadError, setLoadError] = useState<string>();
   const [loading, setLoading] = useState(id !== 'new');
-  const historyOpened = useRef(false);
+  // One history load at a time. A connect during a load that then fails runs it again.
+  const historyLoad = useRef({ opened: false, running: false, again: false });
   const [acting, setActing] = useState(false);
   const actionLock = useRef(false);
   const pickerLock = useRef(false);
@@ -125,15 +126,30 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   const connected = state?.status === 'connected';
   const connecting = state?.status === 'connecting';
   useEffect(() => {
-    if (!resolvedId || awaitingCreation || !outbox.loaded || (historyOpened.current && !connected)) return;
-    historyOpened.current = true;
-    let mounted = true;
-    void sessionMessages(agentId, resolvedId).then(() => {
-      if (mounted) setLoadError(undefined);
-    }, (error: unknown) => {
-      if (mounted) setLoadError(error instanceof Error ? error.message : 'Could not load thread');
-    }).finally(() => { if (mounted) setLoading(false); });
-    return () => { mounted = false; };
+    const load = historyLoad.current;
+    if (!resolvedId || awaitingCreation || !outbox.loaded || (load.opened && !connected)) return;
+    load.opened = true;
+    const run = () => {
+      if (load.running) {
+        load.again = true;
+        return;
+      }
+      load.running = true;
+      load.again = false;
+      setLoading(true);
+      void sessionMessages(agentId, resolvedId).then(() => {
+        setLoadError(undefined);
+        return true;
+      }, (error: unknown) => {
+        setLoadError(error instanceof Error ? error.message : 'Could not load thread');
+        return false;
+      }).then((loaded) => {
+        load.running = false;
+        if (!loaded && load.again) run();
+        else setLoading(false);
+      });
+    };
+    run();
   }, [agentId, resolvedId, sessionMessages, awaitingCreation, outbox.loaded, connected]);
 
   useFocusEffect(useCallback(() => {
@@ -286,7 +302,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
         isSending={running}
         isActing={acting}
         statusLabel={statusLabel}
-        error={localError ?? (connecting ? undefined : loadError) ?? draftError ?? outbox.error ?? (run?.status === 'unknown' ? run.error : undefined)}
+        error={localError ?? (loading || connecting ? undefined : loadError) ?? draftError ?? outbox.error ?? (run?.status === 'unknown' ? run.error : undefined)}
         onRetryError={() => void act(async () => {
           await retryLoad();
           await outbox.reload();
