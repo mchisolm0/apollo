@@ -8,11 +8,13 @@ export type FeedbackFilter = keyof typeof FEEDBACK_FILTERS;
  * Bugs and ideas go by the title prefix Scryve writes ("Bug: ...", "Idea: ..."), leaving out
  * reports Scryve marked fixed (a `fixed` meta line), which have their own filter.
  */
+const isFixed = (card: Card) => card.meta?.fixed !== undefined;
+
 const MATCHES = {
   waiting: (card) => card.kind === 'approval' && card.state === 'open',
-  bugs: (card) => card.title.startsWith('Bug:') && !card.meta?.fixed,
-  ideas: (card) => card.title.startsWith('Idea:') && !card.meta?.fixed,
-  fixed: (card) => !!card.meta?.fixed,
+  bugs: (card) => card.title.startsWith('Bug:') && !isFixed(card),
+  ideas: (card) => card.title.startsWith('Idea:') && !isFixed(card),
+  fixed: isFixed,
   all: () => true,
 } satisfies Record<FeedbackFilter, (card: Card) => boolean>;
 
