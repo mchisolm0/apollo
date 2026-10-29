@@ -5,13 +5,13 @@ import {
   Linking,
   Platform,
   StyleSheet,
-  Text as RNText,
+  type TextInstance,
   type TextStyle,
   useColorScheme,
 } from "react-native";
 
 import { MarkdownTextPrimitive } from "./MarkdownTextPrimitive";
-import { markdownFileIconSource } from "./markdownFileIcons";
+import { markdownFileIconSource, markdownIconAssetUri } from "./markdownFileIcons";
 import { markdownLinkIconSource } from "./markdownLinkIcons";
 import { resolveMarkdownLinkIcon } from "./markdownLinks";
 import type { NativeMarkdownTextRun } from "./nativeMarkdownText";
@@ -185,12 +185,12 @@ export function NativeMarkdownSelectableText(props: {
       (run.externalHost != null && resolveMarkdownLinkIcon(run.externalHost) !== null),
   );
   const attachAndroidText = useCallback(
-    (textView: RNText | null) => {
+    (textView: TextInstance | null) => {
       if (Platform.OS !== "android" || !containsInlineIcon || textView === null) {
         return;
       }
       const reactTag = findNodeHandle(textView);
-      if (reactTag !== null) {
+      if (typeof reactTag === "number") {
         installMarkdownCopySanitizer(reactTag);
       }
     },
@@ -263,17 +263,19 @@ export function NativeMarkdownSelectableText(props: {
       {keyedRuns.map(({ key, run, text, linkIcon }) => {
         const href = run.href;
         const contextMenu = run.fileIcon && href ? menu?.fileContextMenu(href) : undefined;
+        const fileIconUri = run.fileIcon ? markdownIconAssetUri(markdownFileIconSource(run.fileIcon)) : undefined;
+        const linkIconUri = linkIcon ? markdownIconAssetUri(markdownLinkIconSource(linkIcon)) : undefined;
         return (
           <MarkdownTextPrimitive
             key={key}
             nativeID={
               Platform.OS === "ios"
-                ? run.fileIcon
-                  ? `t3-file:${Image.resolveAssetSource(markdownFileIconSource(run.fileIcon)).uri}`
+                ? fileIconUri
+                  ? `t3-file:${fileIconUri}`
                   : run.skillName
                     ? "t3-skill:sf:cube"
-                    : linkIcon
-                      ? `t3-link:${Image.resolveAssetSource(markdownLinkIconSource(linkIcon)).uri}`
+                    : linkIconUri
+                      ? `t3-link:${linkIconUri}`
                       : undefined
                 : undefined
             }

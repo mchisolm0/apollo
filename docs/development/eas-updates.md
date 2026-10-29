@@ -34,7 +34,7 @@ pnpm update:production --message "Describe the change"
 
 These commands publish both platforms. Add `--platform ios` or `--platform android` to target one. Review on preview first, then publish the same source revision to production with its own command. The app identities produce different runtimes, so publish separately for each variant.
 
-The scripts select both `APOLLO_APP_VARIANT` and the matching EAS environment. Build profiles supply the same variant. Do not set a conflicting `APOLLO_APP_VARIANT` in EAS environment variables. SDK 57 update exports use the selected EAS environment; configure any required app variables there.
+The scripts select both `APOLLO_APP_VARIANT` and the matching EAS environment. Build profiles supply the same variant. Do not set a conflicting `APOLLO_APP_VARIANT` in EAS environment variables. SDK 58 update exports use the selected EAS environment; configure any required app variables there.
 
 Launch the installed app online to download a compatible update, then close and reopen it to apply it. The app does not force a reload during a task. An update with a different fingerprint will not load in that binary. Build and install a new binary when native inputs change.
 

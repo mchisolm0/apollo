@@ -11,4 +11,4 @@ allowBuilds:
 patchedDependencies:
   expo-paste-input@0.1.15: patches/expo-paste-input@0.1.15.patch
   react-native-nitro-modules@0.35.9: patches/react-native-nitro-modules@0.35.9.patch
-  react-native-screens@4.26.2: patches/react-native-screens@4.26.2.patch
+  react-native-screens@4.30.1: patches/react-native-screens@4.30.1.patch

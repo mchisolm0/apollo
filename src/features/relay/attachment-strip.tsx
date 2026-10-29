@@ -73,7 +73,7 @@ async function localAttachment(file: VisibleAttachment): Promise<File> {
     let offset = 0;
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
     destination.create({ overwrite: true });
-    destination.write(bytes);
+    await destination.write(bytes);
     return destination;
   } catch (error) {
     if (destination.exists) destination.delete();

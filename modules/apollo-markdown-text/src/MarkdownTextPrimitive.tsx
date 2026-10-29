@@ -1,5 +1,5 @@
 import React, { type Ref } from "react";
-import { Platform, StyleSheet, Text as RNText, type TextProps, type TextStyle } from "react-native";
+import { Platform, StyleSheet, Text as RNText, type TextInstance, type TextProps, type TextStyle } from "react-native";
 import T3MarkdownTextRunNativeComponent from "./T3MarkdownTextRunNativeComponent";
 import T3MarkdownTextNativeComponent from "./T3MarkdownTextNativeComponent";
 import { flattenStyles } from "./util";
@@ -35,7 +35,7 @@ export type ContextMenuActionEvent = {
 export type MarkdownTextPrimitiveProps = Omit<TextProps, "onTextLayout" | "onPress" | "onLongPress" | "tabIndex"> & {
   onPress?: () => void;
   onLongPress?: () => void;
-  nativeTextRef?: Ref<RNText>;
+  nativeTextRef?: Ref<TextInstance>;
   uiTextView?: boolean;
   contextMenuConfig?: string;
   onContextMenuAction?: (event: ContextMenuActionEvent) => void;
@@ -59,7 +59,7 @@ function MarkdownTextPrimitiveChild({
   // Flatten the styles, and apply the root styles when needed
   const flattenedStyle = React.useMemo(() => flattenStyles(rootStyle, style), [rootStyle, style]);
   const contextValue = React.useMemo<[boolean, TextStyle]>(
-    () => [true, StyleSheet.flatten([rootStyle, style])],
+    () => [true, StyleSheet.flatten([rootStyle, style]) ?? {}],
     [rootStyle, style],
   );
   let childPosition = 0;
