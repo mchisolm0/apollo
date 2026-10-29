@@ -8,17 +8,21 @@ import type { RunScreenProps } from './run-screen';
 import type { HermesModel } from '../../lib/types';
 
 // Run send callbacks without loading native modules or display effects.
-function routeFixture(id: string) {
+function routeFixture(id: string, { status = 'connected', sessionMessages = async () => [] }: { status?: string; sessionMessages?: () => Promise<unknown[]> } = {}) {
   const saved: { sessionId: string; model: HermesModel }[] = [];
   const queued: unknown[] = [];
   const order: string[] = [];
   const resolved: { sessionId: string; creating?: boolean }[] = [];
   const slots = new Map<number, unknown>();
   let cursor = 0;
+  // Effects run only when a test asks, and again only after their dependencies change.
+  const effects: { run(): void | (() => void); deps?: readonly unknown[] }[] = [];
+  const ran = new Map<number, { deps?: readonly unknown[]; cleanup?: void | (() => void) }>();
+  let effectCursor = 0;
   const api = {
     agents: [{ id: 'agent', label: 'QA' }],
-    runtime: { agent: { status: 'connected', sessions: id === 'new' ? [] : [{ id }], runs: {}, events: [] } },
-    messages: {}, skills: async () => [], models: async () => [], sessionMessages: async () => [],
+    runtime: { agent: { status, sessions: id === 'new' ? [] : [{ id }], runs: {}, events: [] } },
+    messages: {}, skills: async () => [], models: async () => [], sessionMessages,
     resolveThreadModel: async (_agent: string, sessionId: string, options?: { creating?: boolean }) => { resolved.push({ sessionId, creating: options?.creating }); return saved.at(-1)?.model; },
     saveModelSelection: async (_agent: string, sessionId: string, model: HermesModel) => { order.push('save'); saved.push({ sessionId, model }); },
   };
@@ -36,8 +40,13 @@ function routeFixture(id: string) {
           if (!slots.has(index)) slots.set(index, initial);
           return [slots.get(index), (value: unknown) => slots.set(index, value)];
         },
-        useRef: (initial: unknown) => ({ current: initial }),
-        useMemo: (factory: () => unknown) => factory(), useCallback: (callback: unknown) => callback, useEffect() {},
+        useRef: (initial: unknown) => {
+          const index = cursor++;
+          if (!slots.has(index)) slots.set(index, { current: initial });
+          return slots.get(index);
+        },
+        useMemo: (factory: () => unknown) => factory(), useCallback: (callback: unknown) => callback,
+        useEffect: (run: () => void | (() => void), deps?: readonly unknown[]) => { effects[effectCursor++] = { run, deps }; },
       };
       if (name === 'expo-router') return { useFocusEffect() {}, useRouter: () => ({ setParams() {} }) };
       if (name === 'react-native') return { AppState: { currentState: 'active' } };
@@ -55,9 +64,17 @@ function routeFixture(id: string) {
   });
   const render = () => {
     cursor = 0;
+    effectCursor = 0;
     return exports.Session!({ id, agentId: 'agent' }).props.children.props;
   };
-  return { render, saved, queued, order, resolved };
+  const runEffects = () => effects.forEach((effect, index) => {
+    const last = ran.get(index);
+    if (last && effect.deps && last.deps?.every((dep, at) => Object.is(dep, effect.deps![at]))) return;
+    if (typeof last?.cleanup === 'function') last.cleanup();
+    ran.set(index, { deps: effect.deps, cleanup: effect.run() });
+  });
+  const setStatus = (next: string) => { api.runtime = { agent: { ...api.runtime.agent, status: next } }; };
+  return { render, runEffects, setStatus, saved, queued, order, resolved };
 }
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -72,4 +89,34 @@ test('a draft picker choice is saved under the creating message session before e
   assert.deepEqual(setup.resolved, [{ sessionId: 'created', creating: true }]);
   const [queued] = setup.queued as { model?: string; provider?: string }[];
   assert.deepEqual({ model: queued.model, provider: queued.provider }, { model: 'shared', provider: 'non-default' });
+});
+
+test('a thread opened while connecting loads once connected, without that attempt\'s error', async () => {
+  let attempts = 0;
+  const setup = routeFixture('thread', { status: 'connecting', sessionMessages: async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error('Network request failed');
+    return [];
+  } });
+  setup.render();
+  setup.runEffects();
+  await flush();
+  // The failed attempt is retried on connect, so it still reads as loading.
+  const waiting = setup.render();
+  assert.equal(waiting.error, undefined);
+  assert.equal(waiting.isLoading, true);
+  setup.setStatus('connected');
+  setup.render();
+  setup.runEffects();
+  await flush();
+  const screen = setup.render();
+  assert.equal(screen.error, undefined);
+  assert.equal(screen.isLoading, false);
+  // Dropping the connection again keeps the loaded thread without refetching it.
+  setup.setStatus('offline');
+  setup.render();
+  setup.runEffects();
+  await flush();
+  assert.equal(setup.render().error, undefined);
+  assert.equal(attempts, 2);
 });
