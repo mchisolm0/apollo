@@ -52,9 +52,12 @@ const tooMany = (remaining: number) => new Error(remaining <= 0
 async function addDraftFile(picked: PickedFile): Promise<DraftAttachment> {
   const source = new File(picked.uri);
   const bytes = source.size;
-  if (bytes > MAX_ATTACHMENT_BYTES) throw new Error(attachmentTooLargeMessage);
+  const image = picked.mimeType.startsWith('image/');
+  // Large images usually fit once downscaled, so only their result is held to the limit.
+  if (!image && bytes > MAX_ATTACHMENT_BYTES) throw new Error(attachmentTooLargeMessage);
   // A failed render keeps the original, as T3 does; the size check below still applies.
-  const fitted = picked.mimeType.startsWith('image/') ? await fitImage({ uri: picked.uri, mimeType: picked.mimeType, bytes }).catch(() => null) : null;
+  const fitted = image ? await fitImage({ uri: picked.uri, mimeType: picked.mimeType, bytes }).catch(() => null) : null;
+  if (!fitted && bytes > MAX_ATTACHMENT_BYTES) throw new Error(attachmentTooLargeMessage);
   const name = fitted ? imageNameForFormat(picked.name, fitted.format) : picked.name;
   const id = randomUUID();
   const directory = draftDirectory();
