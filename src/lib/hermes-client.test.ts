@@ -59,6 +59,11 @@ test('lost and future run statuses keep the run identity without breaking restor
   await assert.rejects(clientWith({ run_id: 'broken', status: 42 }).runStatus('broken'), /run response was invalid/);
 });
 
+test('thread history keeps Hermes row ids as its insertion order', async () => {
+  const [message] = await clientWith({ data: [{ id: 42, role: 'user', content: 'Hi' }] }).sessionMessages('thread');
+  assert.equal(message.sequence, 42);
+});
+
 test('models parser tolerates unknown shapes and skips malformed entries', () => {
   assert.deepEqual(plain(parseModels({ data: [{ id: 'hermes-large' }, null, { id: '' }, { name: 'hermes-mini', provider: 'Hermes' }] })), [
     { id: 'hermes-large' },
