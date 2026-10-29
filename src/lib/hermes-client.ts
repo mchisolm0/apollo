@@ -170,6 +170,7 @@ function parseMessage(value: unknown): HermesMessage {
     : undefined;
   return {
     id: stringValue(value.id),
+    sequence: numberValue(value.id),
     sessionId: stringValue(value.session_id),
     role: value.role,
     content: stringValue(value.content),

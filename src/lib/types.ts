@@ -110,6 +110,8 @@ export interface HermesSession {
 
 export interface HermesMessage {
   id?: string;
+  /** Hermes's numeric row id, which grows in insertion order. Local sends have none. */
+  sequence?: number;
   sessionId?: string;
   role: string;
   content?: string;
