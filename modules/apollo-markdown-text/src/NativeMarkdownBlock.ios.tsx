@@ -6,6 +6,7 @@ import { CopyTextButton } from "./CopyTextButton";
 import { MarkdownTextPrimitive } from "./MarkdownTextPrimitive";
 import { nativeMarkdownDocumentRuns, nativeMarkdownListItemBlocks } from "./nativeMarkdownText";
 import { NativeMarkdownSelectableText } from "./NativeMarkdownSelectableText.ios";
+import { pendingCodeHighlight } from "./pendingCodeHighlight";
 import type {
   MarkdownCodeHighlighter,
   MarkdownHighlightedToken,
@@ -67,14 +68,23 @@ function SelectableNode(props: {
   );
 }
 
+/** Everything but the code that changes highlighter output: theme, palette, and language. */
+function codeHighlightScope(
+  language: string | undefined,
+  theme: "light" | "dark",
+  highlightCode: MarkdownCodeHighlighter,
+): string {
+  const palette = (highlightCode as MarkdownCodeHighlighter & { readonly cacheKey?: string }).cacheKey;
+  return `${theme}:${palette ?? "default"}:${language ?? "text"}`;
+}
+
 function codeHighlightCacheKey(
   code: string,
   language: string | undefined,
   theme: "light" | "dark",
   highlightCode: MarkdownCodeHighlighter,
 ): string {
-  const palette = (highlightCode as MarkdownCodeHighlighter & { readonly cacheKey?: string }).cacheKey;
-  return `${theme}:${palette ?? "default"}:${language ?? "text"}:${code}`;
+  return `${codeHighlightScope(language, theme, highlightCode)}:${code}`;
 }
 
 function cacheHighlightedCode(key: string, tokens: HighlightedCode): void {
@@ -121,18 +131,28 @@ function loadHighlightedCode(
   return promise;
 }
 
+/**
+ * Tokens for a code block, or null while nothing usable exists yet. While a
+ * streaming block waits on its new highlight, the last completed result seeds
+ * `pendingCodeHighlight` so finished lines keep their colors.
+ */
 function useHighlightedCode(
   code: string,
   language: string | undefined,
   theme: "light" | "dark",
   highlightCode: MarkdownCodeHighlighter,
 ): HighlightedCode | null {
-  const key = codeHighlightCacheKey(code, language, theme, highlightCode);
+  const scope = codeHighlightScope(language, theme, highlightCode);
+  const key = `${scope}:${code}`;
   const [highlighted, setHighlighted] = useState<{
     readonly key: string;
+    readonly scope: string;
+    readonly code: string;
     readonly tokens: HighlightedCode | null;
   }>(() => ({
     key,
+    scope,
+    code,
     tokens: highlightedCodeCache.get(key) ?? null,
   }));
 
@@ -142,7 +162,7 @@ function useHighlightedCode(
     if (cached) {
       cacheHighlightedCode(key, cached);
       // eslint-disable-next-line react-hooks/set-state-in-effect -- Refresh the cache key when the code prop changes.
-      setHighlighted({ key, tokens: cached });
+      setHighlighted({ key, scope, code, tokens: cached });
       return () => {
         active = false;
       };
@@ -151,20 +171,26 @@ function useHighlightedCode(
     void loadHighlightedCode(code, language, theme, highlightCode)
       .then((tokens) => {
         if (active) {
-          setHighlighted({ key, tokens });
+          setHighlighted({ key, scope, code, tokens });
         }
       })
       .catch(() => {
         if (active) {
-          setHighlighted({ key, tokens: null });
+          setHighlighted({ key, scope, code, tokens: null });
         }
       });
     return () => {
       active = false;
     };
-  }, [code, highlightCode, key, language, theme]);
+  }, [code, highlightCode, key, language, scope, theme]);
 
-  return highlighted.key === key ? highlighted.tokens : null;
+  if (highlighted.key === key) return highlighted.tokens;
+  const cached = highlightedCodeCache.get(key);
+  if (cached) return cached;
+  if (highlighted.tokens && highlighted.scope === scope) {
+    return pendingCodeHighlight(highlighted.code, code, highlighted.tokens);
+  }
+  return null;
 }
 
 function HighlightedCodeText(props: {
