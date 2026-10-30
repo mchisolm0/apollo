@@ -10,8 +10,8 @@ import { useRelayStyles } from './relay-ui';
 const HOME_INDICATOR_CLEARANCE = 16;
 
 /**
- * Owns the bottom edge: docks rest just above the home indicator and ride the keyboard frame by frame,
- * including interactive swipe-down dismiss. Parents skip the bottom safe area.
+ * Owns the bottom edge: docks rest just above the home indicator and follow the keyboard, tracking it
+ * during interactive swipe-down dismiss. Parents skip the bottom safe area.
  * `edgeToEdge` content runs under a native toolbar to the screen edge and pads itself.
  */
 export function KeyboardFrame({ edgeToEdge = false, children }: { edgeToEdge?: boolean; children: ReactNode }) {
