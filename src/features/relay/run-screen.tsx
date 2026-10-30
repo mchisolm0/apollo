@@ -274,8 +274,8 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
               textPasteThresholdBytes={PASTED_TEXT_ATTACHMENT_BYTES}
               onChangeText={(value) => { setObservedSelection((previous) => previous ? { start: Math.min(previous.start, value.length), end: Math.min(previous.end, value.length), text: value } : previous); setInputSelection(undefined); setSkillsOpen(false); setSkillsDismissed(false); onDraftChange?.(value); }}
               onSelectionChange={(next, text) => { setObservedSelection({ ...next, text }); setInputSelection(undefined); setSkillsDismissed(false); }}
-              onPasteImages={(uris) => { if (!isActing && !isPicking && !sendDisabled) onPasteImages?.(uris); }}
-              // The editor has already held the text back, so the screen reports any paste it cannot take.
+              // The editor refuses pastes while frozen; the screen reports any other paste it cannot take.
+              onPasteImages={onPasteImages}
               onPasteText={({ text }) => onPasteText?.(text)}
               onSubmit={() => {
                 // Return with a typed $skill picks the top match, like tapping it.
