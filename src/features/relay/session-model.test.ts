@@ -56,6 +56,7 @@ function routeFixture(id: string, { status = 'connected', sessionMessages = asyn
       if (name.endsWith('/use-session-draft')) return { useSessionDraft: () => ({ draft: '[QA] tiny', attachments: [], loaded: true, prepareSend: async () => ({ id: 'message', sessionId: id === 'new' ? 'created' : id, text: '[QA] tiny', attachments: [] }), move: async () => {}, clear: async () => {} }) };
       if (name.endsWith('/use-session-inbox')) return { useSessionInbox: () => ({ markRead: async () => {}, sessions: [] }) };
       if (name.endsWith('/relay-ui')) return { useThemedStyles: () => ({}) };
+      if (name.endsWith('/use-sidebar-width')) return { useSidebarWidth: () => undefined };
       if (name.endsWith('/transcript')) return { createTranscriptProjector: () => () => [] };
       if (name.endsWith('/composer-skills')) return { selectedSkillNames: () => [] };
       if (name === '@/features/sharing') return { useIncomingShares: () => ({}) };

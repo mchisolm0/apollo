@@ -18,6 +18,7 @@ import { selectedSkillNames } from '@/features/relay/composer-skills';
 import { useSessionDraft } from '@/features/relay/use-session-draft';
 import { setVisibleNotificationSession } from '@/features/notifications/foreground';
 import { useApollo } from '@/lib';
+import { useSidebarWidth } from '@/features/layout/use-sidebar-width';
 import { currentApproval, isRunActive, sessionRun } from '@/lib/run-state';
 import { useStreamTick } from '@/lib/haptics';
 import type { HermesMessage, HermesModel, HermesRunEvent, HermesSkill } from '@/lib';
@@ -43,7 +44,10 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
     if (resolvedId) return setVisibleNotificationSession(agentId, resolvedId);
   }, [agentId, resolvedId]));
   const router = useRouter();
-  const openInbox = () => { Keyboard.dismiss(); router.dismissTo({ pathname: '/', params: { agentId } }); };
+  const closeThread = () => { Keyboard.dismiss(); router.dismissTo({ pathname: '/', params: { agentId } }); };
+  // Beside the sidebar the inbox is already on screen, so leaving the thread is for deletes only.
+  const split = useSidebarWidth() !== undefined;
+  const openInbox = split ? () => {} : closeThread;
   const [localError, setLocalError] = useState<string>();
   const [loadError, setLoadError] = useState<string>();
   const [loading, setLoading] = useState(id !== 'new');
@@ -323,7 +327,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
             }
           }
         })}
-        onBack={openInbox}
+        onBack={split ? undefined : openInbox}
         onSessionActions={() => {
           const item = inbox.sessions.find((candidate) => candidate.id === resolvedId);
           const lastUserText = [...history].reverse().find((message) => message.role === 'user' && message.content?.trim())?.content?.trim();
@@ -334,7 +338,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
             ...(resolvedId && titleInput ? [{ label: 'Regenerate title', onPress: () => { void act(() => regenerateTitle(agentId, resolvedId, titleInput)); } }] : []),
             ...(resolvedId ? [{ label: 'Delete thread', destructive: true, onPress: () => Alert.alert('Delete thread?', `"${session?.title ?? 'Thread'}" will be permanently removed.`, [
               { text: 'Cancel', style: 'cancel' },
-              { text: 'Delete', style: 'destructive', onPress: () => { void act(() => deleteSession(agentId, resolvedId).then(openInbox)); } },
+              { text: 'Delete', style: 'destructive', onPress: () => { void act(() => deleteSession(agentId, resolvedId).then(closeThread)); } },
             ]) }] : []),
             { label: 'Agent settings', onPress: () => router.push({ pathname: '/settings/[agentId]', params: { agentId } }) },
           ]);

@@ -44,12 +44,16 @@ type Props = {
   fresh?: boolean;
   onSettleCard?: (card: InboxCard) => void;
   onReopenCard?: (card: InboxCard) => void;
+  /** The native Mail toolbar needs a stack screen; the iPad sidebar sits outside one and uses the JS dock. */
+  nativeToolbar?: boolean;
+  /** The thread open beside the list. */
+  selectedId?: string;
 };
 const noCards: readonly InboxCard[] = [];
 const ignore = () => {};
 
 /** A searchable thread inbox with persistent finish/reopen actions. */
-export function SessionList({ sessions, connection = 'connected', onSessionPress, onSettle, onReopen, onNewSession, onForked, refreshing, onRefresh, cards = noCards, onCardPress = ignore, onCardAction = ignore, onPick = ignore, settledCards = NO_SETTLED, pendingRunIds, fresh = true, onSettleCard, onReopenCard }: Props) {
+export function SessionList({ sessions, connection = 'connected', onSessionPress, onSettle, onReopen, onNewSession, onForked, refreshing, onRefresh, cards = noCards, onCardPress = ignore, onCardAction = ignore, onPick = ignore, settledCards = NO_SETTLED, pendingRunIds, fresh = true, onSettleCard, onReopenCard, nativeToolbar = HAS_MAIL_TOOLBAR, selectedId }: Props) {
   const styles = useThemedStyles(createStyles);
   const colors = useColors();
   const { fontScale } = useWindowDimensions();
@@ -106,7 +110,7 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
   const handleAutoSettle = useCallback((sessionId: string, enabled: boolean) => { void setAutoSettle(sessionId, enabled); }, [setAutoSettle]);
   const rows = useMemo(() => buildInboxRows({ sessions, cards, settledCards, pendingRunIds, runStateLive: connection === 'connected', fresh, query, attentionOnly, collapsed, now, isSnoozed: (id) => isSessionSnoozed(snoozed, id) }), [sessions, cards, settledCards, pendingRunIds, connection, fresh, query, collapsed, attentionOnly, snoozed, now]);
 
-  return <KeyboardFrame key={fontScale} edgeToEdge={HAS_MAIL_TOOLBAR}>
+  return <KeyboardFrame key={fontScale} edgeToEdge={nativeToolbar}>
     <View style={styles.container}>
     <LegendList
       style={styles.list}
@@ -118,13 +122,13 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
       keyboardShouldPersistTaps="handled"
       keyboardDismissMode="on-drag"
       // Under the native toolbar the list reaches the screen edge, so it clears the home indicator itself.
-      contentContainerStyle={HAS_MAIL_TOOLBAR ? [styles.content, { paddingBottom: bottom + MAIL_TOOLBAR_INSET + 20 }] : styles.content}
+      contentContainerStyle={nativeToolbar ? [styles.content, { paddingBottom: bottom + MAIL_TOOLBAR_INSET + 20 }] : styles.content}
       refreshing={refreshing}
       onRefresh={onRefresh}
       renderItem={({ item }) => {
         if (item.kind === 'briefing') return <BriefingCard card={item.card} onOpen={onCardPress} onPick={onPick} onAction={onCardAction} onSettle={onSettleCard} />;
         if (item.kind === 'card') return <CardRow card={item.card} settled={item.settled} swipe={item.settled && !isCardSettled(item.card, settledCards) ? undefined : settleAction(item.card, settledCards)} onPress={onCardPress} onAction={onCardAction} onSettle={onSettleCard} onReopen={onReopenCard} />;
-        if (item.kind === 'session') return <SessionRow session={item.session} snoozed={isSessionSnoozed(snoozed, item.session.id)} onPress={onSessionPress} onSettle={onSettle ? handleSettle : undefined} onReopen={onReopen} onAutoSettle={autoSettleLoaded ? handleAutoSettle : undefined} onSnooze={handleSnooze} onUnsnooze={handleUnsnooze} onForked={onForked} />;
+        if (item.kind === 'session') return <SessionRow session={item.session} selected={item.session.id === selectedId} snoozed={isSessionSnoozed(snoozed, item.session.id)} onPress={onSessionPress} onSettle={onSettle ? handleSettle : undefined} onReopen={onReopen} onAutoSettle={autoSettleLoaded ? handleAutoSettle : undefined} onSnooze={handleSnooze} onUnsnooze={handleUnsnooze} onForked={onForked} />;
         if (item.kind === 'caughtUp') return <Text accessibilityRole="header" style={styles.caughtUp}>All caught up</Text>;
         const sectionId = item.id;
         const expanded = Boolean(query.trim()) || !collapsed[sectionId];
@@ -139,7 +143,7 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
     <UndoToast notice={toast.notice} onUndo={toast.undo} />
     </View>
     {customSnooze ? <CustomSnoozeSheet onClose={() => setCustomSnooze(undefined)} onSnooze={(until) => { setCustomSnooze(undefined); snoozeUntil(customSnooze, until); }} /> : null}
-    {HAS_MAIL_TOOLBAR ? <MailToolbar attentionOnly={attentionOnly} onFilter={handleFilter} onCompose={handleCompose} onSearch={setQuery} /> : <View style={styles.dock} pointerEvents="box-none">
+    {nativeToolbar ? <MailToolbar attentionOnly={attentionOnly} onFilter={handleFilter} onCompose={handleCompose} onSearch={setQuery} /> : <View style={styles.dock} pointerEvents="box-none">
       <View style={styles.dockCircle}>
         <Pressable accessibilityRole="button" accessibilityLabel={attentionOnly ? 'Show all items' : 'Show items needing attention'} accessibilityState={{ selected: attentionOnly }} onPress={() => setAttentionOnly(!attentionOnly)} style={styles.dockButton}>
           <SymbolView name={{ ios: attentionOnly ? 'line.3.horizontal.decrease.circle.fill' : 'line.3.horizontal.decrease', android: 'filter_list', web: 'filter_list' }} size={24} tintColor={attentionOnly ? colors.cyan : colors.primary} />
@@ -158,8 +162,8 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
   </KeyboardFrame>;
 }
 
-const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettle, onReopen, onAutoSettle, onSnooze, onUnsnooze, onForked }: {
-  session: InboxSession; snoozed: boolean; onPress: Props['onSessionPress']; onSettle: Props['onSettle']; onReopen: Props['onReopen']; onAutoSettle?: (sessionId: string, enabled: boolean) => void; onSnooze: (sessionId: string) => void; onUnsnooze: (sessionId: string) => void; onForked?: Props['onForked'];
+const SessionRow = memo(function SessionRow({ session, selected, snoozed, onPress, onSettle, onReopen, onAutoSettle, onSnooze, onUnsnooze, onForked }: {
+  session: InboxSession; selected: boolean; snoozed: boolean; onPress: Props['onSessionPress']; onSettle: Props['onSettle']; onReopen: Props['onReopen']; onAutoSettle?: (sessionId: string, enabled: boolean) => void; onSnooze: (sessionId: string) => void; onUnsnooze: (sessionId: string) => void; onForked?: Props['onForked'];
 }) {
   const styles = useThemedStyles(createStyles);
   const { fontScale } = useWindowDimensions();
@@ -219,8 +223,9 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
       accessibilityRole="button"
       accessibilityLabel={`Open thread ${session.title}${session.pendingApproval ? ', needs approval' : session.running ? ', working' : session.queued ? ', queued' : session.failed && !session.settled ? ', failed' : session.settled ? ', finished' : session.attention ? ', new result' : ''}${snoozed ? ', snoozed' : ''}`}
       accessibilityActions={[{ name: 'showActions', label: 'Thread actions' }, ...(action ? [{ name: action.label.toLowerCase(), label: action.label }] : []), ...(snoozable ? [{ name: 'snooze', label: 'Snooze' }] : [])]}
+      accessibilityState={{ selected }}
       onAccessibilityAction={(event) => event.nativeEvent.actionName === 'showActions' ? menu() : event.nativeEvent.actionName === 'snooze' ? requestSnooze() : perform()}
-      style={({ pressed }) => [styles.row, pressed && styles.pressed]}
+      style={({ pressed }) => [styles.row, (pressed || selected) && styles.pressed]}
     >
       <View style={styles.titleLine}>
         <Text numberOfLines={largeText ? undefined : quiet ? 1 : 2} style={[styles.title, quiet && styles.quietTitle, { fontSize: 17 * factor, lineHeight: 23 * factor }]}>{session.title}</Text>
