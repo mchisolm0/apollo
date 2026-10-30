@@ -12,5 +12,6 @@ Apollo's differences:
 
 - No `GlobalVoiceInputControl` pill. A composer that unmounts, switches thread, or gives way to an approval card discards its dictation.
 - The session is a lazy module singleton instead of an Effect atom, with no microphone priority preferences, shared audio-session registry, or showcase scene.
+- Apollo interrupts a recording that stops reporting after it started (a call or Siri pauses expo-audio without a status event); T3 leaves it showing as recording.
 - The draft has no revision counter. The editor is read-only while recording, so a changed text is the staleness check.
 - `ComposerDictationControl` uses Apollo's StyleSheet theme instead of Tailwind classes and drops the compact waveform and Android control sizing.

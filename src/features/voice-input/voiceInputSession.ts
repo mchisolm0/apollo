@@ -76,6 +76,7 @@ export class VoiceInputSession {
   private audioLevels = SILENT_LEVELS;
   private releaseKeepAwake: (() => void) | null = null;
   private meteringInterval: ReturnType<typeof setInterval> | null = null;
+  private sawRecordingSample = false;
 
   constructor(dependencies: VoiceInputSessionDependencies) {
     this.dependencies = dependencies;
@@ -127,6 +128,7 @@ export class VoiceInputSession {
 
   private startRecordingActivity(): void {
     this.releaseKeepAwake = this.dependencies.keepAwake();
+    this.sawRecordingSample = false;
     this.sampleRecording();
     this.meteringInterval = setInterval(() => this.sampleRecording(), VOICE_METERING_INTERVAL_MS);
   }
@@ -141,7 +143,13 @@ export class VoiceInputSession {
   private sampleRecording(): void {
     if (this.controller.currentState.phase !== "recording") return;
     const sample = this.dependencies.sampleRecording();
-    if (!sample) return;
+    // expo-audio pauses for a call or Siri without a status event. A recorder
+    // that stops reporting after it started is interrupted, not still starting.
+    if (!sample) {
+      if (this.sawRecordingSample) void this.controller.interruptRecording();
+      return;
+    }
+    this.sawRecordingSample = true;
 
     const level = normalizeVoiceInputDecibels(sample.metering);
     if (level !== 0 || this.audioLevels.some((sample) => sample !== 0)) {
