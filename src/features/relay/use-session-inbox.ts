@@ -137,6 +137,9 @@ async function unsnoozeInStore(agentId: string, sessionId: string): Promise<bool
   return true;
 }
 
+// setTimeout overflows past 2^31-1 ms (~24.8 days); longer snoozes re-arm in steps.
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
 /** Re-render at the next snooze expiry so expired threads leave the Snoozed section on their own. */
 function useSnoozeExpiry(agentId: string, snoozed: InboxSnoozed) {
   useEffect(() => {
@@ -146,15 +149,21 @@ function useSnoozeExpiry(agentId: string, snoozed: InboxSnoozed) {
       if (until > now && (next === undefined || until < next)) next = until;
     }
     if (next === undefined) return;
-    const timer = setTimeout(() => {
-      const entry = entryFor(agentId);
-      const pruned = pruneSnoozedLedger(entry.snoozed);
-      if (Object.keys(pruned).length !== Object.keys(entry.snoozed).length) {
-        void update(agentId, entry.settled, entry.read, pruned);
-      } else {
-        entry.listeners.forEach((listener) => listener());
-      }
-    }, Math.max(0, next * 1000 - Date.now() + 50));
+    const wakeAt = next * 1000 + 50;
+    let timer: ReturnType<typeof setTimeout>;
+    const arm = () => {
+      timer = setTimeout(() => {
+        if (Date.now() < wakeAt) { arm(); return; }
+        const entry = entryFor(agentId);
+        const pruned = pruneSnoozedLedger(entry.snoozed);
+        if (Object.keys(pruned).length !== Object.keys(entry.snoozed).length) {
+          void update(agentId, entry.settled, entry.read, pruned);
+        } else {
+          entry.listeners.forEach((listener) => listener());
+        }
+      }, Math.min(MAX_TIMER_MS, Math.max(0, wakeAt - Date.now())));
+    };
+    arm();
     return () => clearTimeout(timer);
   }, [agentId, snoozed]);
 }

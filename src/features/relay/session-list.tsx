@@ -4,7 +4,7 @@ import { Alert, Keyboard, Pressable, StyleSheet, Text, TextInput, useWindowDimen
 import { SymbolView } from 'expo-symbols';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LegendList } from '@legendapp/list/react-native';
-import Swipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
+import Swipeable, { SwipeDirection, type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 
 import { useTextScale, useThemedStyles, useColors, type RelayPalette } from './relay-ui';
 import { isLargeText } from './text-size';
@@ -12,7 +12,9 @@ import { KeyboardFrame } from './keyboard-frame';
 import { canSettleSession, isSessionSnoozed, type InboxSession } from './session-inbox';
 import { useAutoSettleLedger, useSnoozeLedger } from './use-session-inbox';
 import type { ConnectionState } from './types';
-import { showThreadMenu } from './session-actions';
+import { showSnoozeMenu, showThreadMenu } from './session-actions';
+import { UndoToast, useUndoToast } from './undo-toast';
+import { CustomSnoozeSheet } from '@/features/threads/custom-snooze-sheet';
 import { useApollo } from '@/lib';
 import { BriefingCard, CardRow } from '@/features/cloud/card-ui';
 import { buildInboxRows, isCardSettled, NO_SETTLED, settleAction, type CollapsibleSectionId, type InboxCard, type SettledCards } from '@/features/cloud/inbox-rows';
@@ -65,7 +67,40 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
   const handleFilter = useCallback(() => setAttentionOnly((current) => !current), []);
   const handleCompose = useCallback(() => { Keyboard.dismiss(); onNewSession?.(); }, [onNewSession]);
   const toggle = useCallback((id: CollapsibleSectionId) => setCollapsed((previous) => ({ ...previous, [id]: !previous[id] })), []);
-  const handleSnooze = useCallback((sessionId: string) => { void snooze(sessionId); }, [snooze]);
+  // Undo acts on the agent it was offered for, so switching agents drops it.
+  const toast = useUndoToast(sessions[0]?.agentId ?? '');
+  const { show: showUndo } = toast;
+  const [customSnooze, setCustomSnooze] = useState<string>();
+  // Undo runs after the settle round trip, so it must reach the latest reopen, not the one from swipe time.
+  const latestReopen = useRef(onReopen);
+  useEffect(() => { latestReopen.current = onReopen; }, [onReopen]);
+  // Settle is a connector write without a result here; offer Undo once the thread actually reads as settled.
+  const settling = useRef(new Set<string>());
+  useEffect(() => {
+    for (const session of sessions) {
+      if (!session.settled || !settling.current.delete(session.id)) continue;
+      const id = session.id;
+      showUndo('Settled', () => latestReopen.current?.(id));
+    }
+  }, [sessions, showUndo]);
+  const handleSettle = useCallback((sessionId: string) => {
+    if (!onSettle) return;
+    settling.current.add(sessionId);
+    onSettle(sessionId);
+    // A failed settle never reads as settled; stop waiting so a later settle elsewhere cannot show a stale Undo.
+    setTimeout(() => settling.current.delete(sessionId), 15_000);
+  }, [onSettle]);
+  const snoozeUntil = useCallback((sessionId: string, until: number) => {
+    const duration = until - Math.floor(Date.now() / 1000);
+    // A menu left open past a preset's time would otherwise fall back to the default 24h.
+    if (duration <= 0) { Alert.alert('Could not snooze thread', 'That snooze time has passed. Choose another time.'); return; }
+    void snooze(sessionId, duration).then((snoozed) => {
+      if (snoozed) showUndo('Snoozed', () => { void unsnooze(sessionId); });
+    });
+  }, [snooze, unsnooze, showUndo]);
+  const handleSnooze = useCallback((sessionId: string) => {
+    showSnoozeMenu((until) => snoozeUntil(sessionId, until), () => setCustomSnooze(sessionId));
+  }, [snoozeUntil]);
   const handleUnsnooze = useCallback((sessionId: string) => { void unsnooze(sessionId); }, [unsnooze]);
   const handleAutoSettle = useCallback((sessionId: string, enabled: boolean) => { void setAutoSettle(sessionId, enabled); }, [setAutoSettle]);
   const rows = useMemo(() => buildInboxRows({ sessions, cards, settledCards, pendingRunIds, runStateLive: connection === 'connected', fresh, query, attentionOnly, collapsed, now, isSnoozed: (id) => isSessionSnoozed(snoozed, id) }), [sessions, cards, settledCards, pendingRunIds, connection, fresh, query, collapsed, attentionOnly, snoozed, now]);
@@ -88,7 +123,7 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
       renderItem={({ item }) => {
         if (item.kind === 'briefing') return <BriefingCard card={item.card} onOpen={onCardPress} onPick={onPick} onAction={onCardAction} onSettle={onSettleCard} />;
         if (item.kind === 'card') return <CardRow card={item.card} settled={item.settled} swipe={item.settled && !isCardSettled(item.card, settledCards) ? undefined : settleAction(item.card, settledCards)} onPress={onCardPress} onAction={onCardAction} onSettle={onSettleCard} onReopen={onReopenCard} />;
-        if (item.kind === 'session') return <SessionRow session={item.session} snoozed={isSessionSnoozed(snoozed, item.session.id)} onPress={onSessionPress} onSettle={onSettle} onReopen={onReopen} onAutoSettle={autoSettleLoaded ? handleAutoSettle : undefined} onSnooze={handleSnooze} onUnsnooze={handleUnsnooze} onForked={onForked} />;
+        if (item.kind === 'session') return <SessionRow session={item.session} snoozed={isSessionSnoozed(snoozed, item.session.id)} onPress={onSessionPress} onSettle={onSettle ? handleSettle : undefined} onReopen={onReopen} onAutoSettle={autoSettleLoaded ? handleAutoSettle : undefined} onSnooze={handleSnooze} onUnsnooze={handleUnsnooze} onForked={onForked} />;
         if (item.kind === 'caughtUp') return <Text accessibilityRole="header" style={styles.caughtUp}>All caught up</Text>;
         const sectionId = item.id;
         const expanded = Boolean(query.trim()) || !collapsed[sectionId];
@@ -100,7 +135,9 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
       }}
       ListEmptyComponent={<View style={styles.empty}><Text style={styles.emptyTitle}>{connection !== 'connected' && !sessions.length ? 'Threads are unavailable' : query ? 'No matches' : attentionOnly ? 'All caught up' : 'Start a thread'}</Text><Text style={styles.emptyText}>{connection !== 'connected' && !sessions.length ? 'Reconnect to load your threads.' : query ? 'Try a different search.' : attentionOnly ? 'Nothing needs your attention.' : 'Choose New thread to get started.'}</Text></View>}
     />
+    <UndoToast notice={toast.notice} onUndo={toast.undo} />
     </View>
+    {customSnooze ? <CustomSnoozeSheet onClose={() => setCustomSnooze(undefined)} onSnooze={(until) => { setCustomSnooze(undefined); snoozeUntil(customSnooze, until); }} /> : null}
     {HAS_MAIL_TOOLBAR ? <MailToolbar attentionOnly={attentionOnly} onFilter={handleFilter} onCompose={handleCompose} onSearch={setQuery} /> : <View style={styles.dock} pointerEvents="box-none">
       <View style={styles.dockCircle}>
         <Pressable accessibilityRole="button" accessibilityLabel={attentionOnly ? 'Show all items' : 'Show items needing attention'} accessibilityState={{ selected: attentionOnly }} onPress={() => setAttentionOnly(!attentionOnly)} style={styles.dockButton}>
@@ -132,7 +169,10 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
   const action = session.settled && onReopen ? { label: 'Reopen', run: () => onReopen(session.id) }
     : snoozed ? { label: 'Unsnooze', run: () => onUnsnooze(session.id) }
     : canSettleSession(session) && onSettle ? { label: 'Settle', run: () => onSettle(session.id) } : undefined;
+  // T3 blocks snoozing work that is waiting on you.
+  const snoozable = !session.settled && !snoozed && !session.pendingApproval;
   const perform = () => { swipe.current?.close(); action?.run(); };
+  const requestSnooze = () => { swipe.current?.close(); onSnooze(session.id); };
   // Opening a snoozed thread returns it to its section.
   const open = () => { Keyboard.dismiss(); if (snoozed) onUnsnooze(session.id); onPress(session); };
   const menu = () => {
@@ -143,7 +183,7 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
     showThreadMenu({ title: session.title, pinned, settled: session.settled, snoozed, autoSettle: !session.autoSettleDisabled }, {
       ...(action?.label === 'Settle' ? { onSettle: perform } : {}),
       ...(action?.label === 'Reopen' ? { onReopen: perform } : {}),
-      ...(snoozed ? { onUnsnooze: () => onUnsnooze(session.id) } : { onSnooze: () => onSnooze(session.id) }),
+      ...(snoozed ? { onUnsnooze: () => onUnsnooze(session.id) } : snoozable ? { onSnooze: () => onSnooze(session.id) } : {}),
       ...(onAutoSettle ? { onAutoSettle: (enabled: boolean) => onAutoSettle(session.id, enabled) } : {}),
       onRegenerateTitle: () => { void regenerateTitle(session.agentId, session.id, session.preview ?? session.title).catch(reportFailure('regenerate the title')); },
       onPin: (next) => { void setPinned(session.agentId, session.id, next).catch(reportFailure(next ? 'pin the thread' : 'unpin the thread')); },
@@ -165,15 +205,19 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
   // Hermes previews are the first user message; skip them when the title already says the same thing.
   const preview = session.preview?.trim();
   const showPreview = !quiet && preview && !session.title.startsWith(preview.replace(/…$|\.\.\.$/u, '').slice(0, 40));
-  return <Swipeable key={session.id} ref={swipe} overshootRight={false} childrenContainerStyle={styles.swipeRow} renderRightActions={action ? () => <Pressable accessibilityRole="button" accessibilityLabel={`${action.label} thread ${session.title}`} onPress={perform} style={styles.swipeAction}><Text style={styles.swipeText}>{action.label}</Text></Pressable> : undefined}>
+  // Swipe left settles (or reopens/unsnoozes), swipe right picks a snooze; a swipe past the threshold commits on release.
+  return <Swipeable key={session.id} ref={swipe} overshootLeft={false} overshootRight={false} leftThreshold={SWIPE_COMMIT} rightThreshold={SWIPE_COMMIT} childrenContainerStyle={styles.swipeRow}
+    onSwipeableOpen={(direction) => direction === SwipeDirection.LEFT ? perform() : requestSnooze()}
+    renderRightActions={action ? () => <Pressable accessibilityRole="button" accessibilityLabel={`${action.label} thread ${session.title}`} onPress={perform} style={styles.swipeAction}><Text style={styles.swipeText}>{action.label}</Text></Pressable> : undefined}
+    renderLeftActions={snoozable ? () => <Pressable accessibilityRole="button" accessibilityLabel={`Snooze thread ${session.title}`} onPress={requestSnooze} style={[styles.swipeAction, styles.snoozeAction]}><Text style={styles.swipeText}>Snooze</Text></Pressable> : undefined}>
     <View style={styles.rowContainer}>
     <Pressable
       onPress={open}
       onLongPress={menu}
       accessibilityRole="button"
       accessibilityLabel={`Open thread ${session.title}${session.pendingApproval ? ', needs approval' : session.running ? ', working' : session.queued ? ', queued' : session.failed && !session.settled ? ', failed' : session.settled ? ', finished' : session.attention ? ', new result' : ''}${snoozed ? ', snoozed' : ''}`}
-      accessibilityActions={action ? [{ name: 'showActions', label: 'Thread actions' }, { name: action.label.toLowerCase(), label: action.label }] : [{ name: 'showActions', label: 'Thread actions' }]}
-      onAccessibilityAction={(event) => event.nativeEvent.actionName === 'showActions' ? menu() : perform()}
+      accessibilityActions={[{ name: 'showActions', label: 'Thread actions' }, ...(action ? [{ name: action.label.toLowerCase(), label: action.label }] : []), ...(snoozable ? [{ name: 'snooze', label: 'Snooze' }] : [])]}
+      onAccessibilityAction={(event) => event.nativeEvent.actionName === 'showActions' ? menu() : event.nativeEvent.actionName === 'snooze' ? requestSnooze() : perform()}
       style={({ pressed }) => [styles.row, pressed && styles.pressed]}
     >
       <View style={styles.titleLine}>
@@ -185,6 +229,10 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
     </View>
   </Swipeable>;
 });
+
+const SWIPE_ACTION_WIDTH = 84;
+// Most of the action's width, so a flick that barely reveals it springs back instead of committing.
+const SWIPE_COMMIT = SWIPE_ACTION_WIDTH * 0.7;
 
 const createStyles = (colors: RelayPalette) => StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background }, list: { flex: 1 }, content: { paddingBottom: 20 },
@@ -203,7 +251,7 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   preview: { color: colors.secondary },
   // Gesture Handler 3 keeps actions behind the row, so the row must paint over them.
   swipeRow: { backgroundColor: colors.background },
-  swipeAction: { backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center', minWidth: 84, paddingHorizontal: 16 }, swipeText: { color: colors.background, fontWeight: '600', fontSize: 15 },
+  swipeAction: { backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center', minWidth: SWIPE_ACTION_WIDTH, paddingHorizontal: 16 }, snoozeAction: { backgroundColor: colors.amber }, swipeText: { color: colors.background, fontWeight: '600', fontSize: 15 },
 
   dock: { paddingHorizontal: 12, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 10 },
   dockCircle: { width: 44, height: 44, borderRadius: 8, backgroundColor: colors.surface },
