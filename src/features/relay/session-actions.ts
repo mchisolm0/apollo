@@ -1,5 +1,7 @@
 import { ActionSheetIOS, Alert, Platform } from 'react-native';
 
+import { resolveSnoozePresets } from './snooze-presets';
+
 export type Action = { label: string; onPress: () => void; destructive?: boolean };
 
 /** Use the system action sheet for secondary actions, including screen-reader access. */
@@ -90,4 +92,12 @@ export function threadMenuActions(session: ThreadMenuSession, handlers: ThreadMe
 /** One-call menu for call sites that already resolved their handlers. */
 export function showThreadMenu(session: ThreadMenuSession, handlers: ThreadMenuHandlers) {
   showSessionActions(session.title, threadMenuActions(session, handlers));
+}
+
+/** T3's "Snooze until" presets plus Custom, shared by the row swipe and the thread menu. */
+export function showSnoozeMenu(onSnooze: (until: number) => void, onCustom: () => void, now: Date = new Date()) {
+  showSessionActions('Snooze until', [
+    ...resolveSnoozePresets(now).map((preset) => ({ label: `${preset.label} · ${preset.whenLabel}`, onPress: () => onSnooze(preset.until) })),
+    { label: 'Custom…', onPress: onCustom },
+  ]);
 }
