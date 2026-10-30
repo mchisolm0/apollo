@@ -37,6 +37,8 @@ export function AppShortcuts() {
   // The tapped action waits here until it can be routed; `taps` re-runs routing for background taps.
   const pending = useRef<QuickActions.Action | undefined>(QuickActions.initial);
   const [taps, setTaps] = useState(0);
+  // Bumped per routed tap so a slow refresh for an older tap never overrides a newer one.
+  const routed = useRef(0);
 
   useEffect(() => {
     let live = true;
@@ -58,14 +60,17 @@ export function AppShortcuts() {
     const action = pending.current;
     if (!action || agentKey === undefined || !recents) return;
     pending.current = undefined;
+    routed.current += 1;
     const destination = shortcutDestination(action, agentKey ? agentKey.split('\n') : [], recents);
     if (destination?.pathname !== '/session/[id]' || destination.params.id === 'new') {
       if (destination) router.push(destination);
       return;
     }
     const { id: sessionId, agentId } = destination.params;
+    const request = routed.current;
     void (async () => {
       if (!hasSession(agentId, sessionId)) await refreshAgent(agentId).catch(() => {});
+      if (request !== routed.current) return;
       if (hasSession(agentId, sessionId)) return router.push(destination);
       // A deleted (or unreachable) thread leaves the launcher and opens its agent's inbox instead.
       persistable.current = true;
