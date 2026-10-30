@@ -599,6 +599,11 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
     applyControlledDocument(force: true)
   }
 
+  func setTextAccessibility(label: String?, hint: String?) {
+    if let label { textView.accessibilityLabel = label.isEmpty ? nil : label }
+    if let hint { textView.accessibilityHint = hint.isEmpty ? nil : hint }
+  }
+
   func setPlaceholder(_ placeholder: String) {
     placeholderLabel.text = placeholder
     setNeedsLayout()

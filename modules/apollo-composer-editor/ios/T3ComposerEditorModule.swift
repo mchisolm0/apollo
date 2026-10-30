@@ -15,6 +15,13 @@ public class T3ComposerEditorModule: Module {
       Prop("placeholder") { (view: T3ComposerEditorView, placeholder: String) in
         view.setPlaceholder(placeholder)
       }
+      // On the text view itself: a label on the container would make it one opaque element.
+      Prop("textAccessibilityLabel") { (view: T3ComposerEditorView, label: String) in
+        view.setTextAccessibility(label: label, hint: nil)
+      }
+      Prop("textAccessibilityHint") { (view: T3ComposerEditorView, hint: String) in
+        view.setTextAccessibility(label: nil, hint: hint)
+      }
       Prop("fontFamily") { (view: T3ComposerEditorView, fontFamily: String) in
         view.setFontFamily(fontFamily)
       }

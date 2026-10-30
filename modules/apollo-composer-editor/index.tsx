@@ -90,6 +90,8 @@ type NativeComposerEditorProps = ViewProps & {
   readonly spellCheck: boolean;
   readonly textPasteThresholdBytes: number;
   readonly maxInputChars: number;
+  readonly textAccessibilityLabel: string;
+  readonly textAccessibilityHint: string;
   readonly onComposerChange: (event: NativeEditorEvent) => void;
   readonly onComposerSelectionChange: (event: NativeEditorEvent) => void;
   readonly onComposerPasteImages: (event: NativeSyntheticEvent<{ readonly uris: readonly string[] }>) => void;
@@ -193,8 +195,8 @@ function NativeComposerEditor({ Native, ref, value, selection, tokens = [], them
     spellCheck
     textPasteThresholdBytes={onPasteText ? (props.textPasteThresholdBytes ?? 0) : 0}
     maxInputChars={props.maxLength}
-    accessibilityLabel={props.accessibilityLabel}
-    accessibilityHint={props.accessibilityHint}
+    textAccessibilityLabel={props.accessibilityLabel ?? ''}
+    textAccessibilityHint={props.accessibilityHint ?? ''}
     style={[style, { height: Math.min(maxHeight, Math.max(minHeight, contentHeight)) }]}
     onComposerChange={({ nativeEvent }) => {
       const acknowledged = acceptNativeEvent(nativeEvent.eventCount, nativeEvent.value, nativeEvent.selection);

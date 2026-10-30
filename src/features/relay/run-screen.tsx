@@ -102,7 +102,8 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
     if (followFrame.current !== undefined) cancelAnimationFrame(followFrame.current);
   }, [following]);
   const [observedSelection, setObservedSelection] = useState<{ start: number; end: number; text: string }>();
-  const [inputSelection, setInputSelection] = useState<{ start: number; end: number }>();
+  // A caret the composer moves itself (skill pick, transcript), applied only while the draft is the text it was meant for.
+  const [inputSelection, setInputSelection] = useState<{ start: number; end: number; text: string }>();
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [skillsDismissed, setSkillsDismissed] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
@@ -128,7 +129,7 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
     onCommitDraft: (text, next) => {
       onDraftChange?.(text);
       setObservedSelection({ ...next, text });
-      setInputSelection(next);
+      setInputSelection({ ...next, text });
     },
   });
   const voicePresentation = resolveVoiceComposerPresentation(voiceInput.state, voiceInput.elapsedSeconds);
@@ -166,7 +167,7 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
     const result = insertSkill(draft, skillMenuTrigger, skill.name);
     onDraftChange?.(result.text);
     setObservedSelection({ start: result.cursor, end: result.cursor, text: result.text });
-    setInputSelection({ start: result.cursor, end: result.cursor });
+    setInputSelection({ start: result.cursor, end: result.cursor, text: result.text });
     setSkillsOpen(false);
     setSkillsDismissed(false);
     requestAnimationFrame(() => input.current?.focus());
@@ -252,7 +253,7 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
               // A new thread opens ready to type.
               autoFocus={session.id === 'new'}
               value={draft}
-              selection={inputSelection}
+              selection={inputSelection?.text === draft ? { start: inputSelection.start, end: inputSelection.end } : undefined}
               tokens={tokens}
               theme={{ text: colors.primary, placeholder: colors.secondary, accent: colors.cyan, surface: colors.composer }}
               fontSize={17 * factor}
