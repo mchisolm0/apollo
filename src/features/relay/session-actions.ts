@@ -94,8 +94,12 @@ export function showThreadMenu(session: ThreadMenuSession, handlers: ThreadMenuH
   showSessionActions(session.title, threadMenuActions(session, handlers));
 }
 
-/** T3's "Snooze until" presets plus Custom, shared by the row swipe and the thread menu. */
+/**
+ * T3's "Snooze until" presets plus Custom, shared by the row swipe and the thread menu.
+ * Android alerts hold three buttons, so there the custom sheet lists the presets itself.
+ */
 export function showSnoozeMenu(onSnooze: (until: number) => void, onCustom: () => void, now: Date = new Date()) {
+  if (Platform.OS === 'android') { onCustom(); return; }
   showSessionActions('Snooze until', [
     ...resolveSnoozePresets(now).map((preset) => ({ label: `${preset.label} · ${preset.whenLabel}`, onPress: () => onSnooze(preset.until) })),
     { label: 'Custom…', onPress: onCustom },
