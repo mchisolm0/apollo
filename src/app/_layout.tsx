@@ -57,7 +57,8 @@ function ScreenTracker() {
 export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-    <KeyboardProvider>
+    {/* No preload: it focuses and blurs a hidden field after mount, which drops a screen's autoFocus. */}
+    <KeyboardProvider preload={false}>
     <PostHogProvider client={posthog} autocapture={false}>
     <ApolloProvider>
       <OutboxProvider>
