@@ -103,8 +103,10 @@ export function AppShortcuts() {
   // State adjusted while rendering (not in effects) so `runtime` and `recents` are current.
   if (missing) {
     setMissing(undefined);
-    // Only a reachable agent proves the thread is gone; an offline one keeps it in the launcher.
-    if (recents && runtime[missing.agentId]?.status === 'connected') {
+    // Only a reachable agent proves the thread is gone (a concurrent refresh may have found it since);
+    // an offline one keeps it in the launcher.
+    const agent = runtime[missing.agentId];
+    if (recents && agent?.status === 'connected' && !agent.sessions.some((session) => session.id === missing.sessionId)) {
       setRecents(recents.filter((recent) => recent.agentId !== missing.agentId || recent.sessionId !== missing.sessionId));
     }
   } else if (recents && thread) {
