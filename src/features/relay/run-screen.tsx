@@ -265,9 +265,9 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
               style={expanded ? styles.input : styles.pillInput}
               onFocus={() => setFocused(true)}
               onBlur={() => setFocused(false)}
-              editable={!isActing}
-              // Dictation freezes the text but keeps the keyboard and caret where the transcript lands.
-              readOnly={voiceInput.freezesEditor}
+              // Saving and dictation freeze the text but keep focus, the keyboard, and the caret where a transcript lands.
+              // Not `editable`: resigning focus mid-send emits a native event that can outrun the draft clearing.
+              readOnly={isActing || voiceInput.freezesEditor}
               scrollEnabled={expanded}
               enterBehavior={enterBehavior}
               maxLength={MAX_DRAFT_CHARS}
@@ -275,7 +275,8 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
               onChangeText={(value) => { setObservedSelection((previous) => previous ? { start: Math.min(previous.start, value.length), end: Math.min(previous.end, value.length), text: value } : previous); setInputSelection(undefined); setSkillsOpen(false); setSkillsDismissed(false); onDraftChange?.(value); }}
               onSelectionChange={(next, text) => { setObservedSelection({ ...next, text }); setInputSelection(undefined); setSkillsDismissed(false); }}
               onPasteImages={(uris) => { if (!isActing && !isPicking && !sendDisabled) onPasteImages?.(uris); }}
-              onPasteText={({ text }) => { if (!isActing && !isPicking && !sendDisabled) onPasteText?.(text); }}
+              // The editor has already held the text back, so the screen reports any paste it cannot take.
+              onPasteText={({ text }) => onPasteText?.(text)}
               onSubmit={() => {
                 // Return with a typed $skill picks the top match, like tapping it.
                 if (typedSkill && !skillsDismissed && skillMatches[0]) chooseSkill(skillMatches[0]);

@@ -213,7 +213,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   };
 
   const paste = async (persist: () => Promise<readonly DraftAttachment[]>) => {
-    if (pickerLock.current || actionLock.current || !draftLoaded) return;
+    if (pickerLock.current || actionLock.current || !draftLoaded || incoming) { setLocalError('Could not paste right now. Try again.'); return; }
     pickerLock.current = true;
     setPicking(true);
     try { setAttachments([...attachments, ...await persist()]); }
