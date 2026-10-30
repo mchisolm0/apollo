@@ -1,0 +1,9 @@
+{
+  "name": "@apollo/native-composer-editor",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "main": "./index.tsx",
+  "types": "./index.tsx",
+  "react-native": "./index.tsx"
+}

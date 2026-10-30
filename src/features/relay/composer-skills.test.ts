@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { insertSkill, matchingSkills, selectedSkillNames, skillTrigger } from './composer-skills.ts';
+import { insertSkill, matchingSkills, selectedSkillNames, skillTokens, skillTrigger } from './composer-skills.ts';
 
 const skills = [
   { name: 'research', description: 'Find primary sources', category: 'Writing' },
@@ -34,4 +34,23 @@ test('skill references match regardless of case and report the catalog spelling'
   assert.deepEqual(selectedSkillNames('$RESEARCH and $research', skills), ['research']);
   assert.deepEqual(selectedSkillNames('$Frontend-Design mock', skills), ['frontend-design']);
   assert.deepEqual(selectedSkillNames('$Unknown $researching', skills), []);
+});
+
+test('known references become chips once a space follows them', () => {
+  assert.deepEqual(skillTokens('Use $research and $Frontend-Design ', skills), [
+    { type: 'skill', source: '$research', label: 'research', start: 4, end: 13 },
+    { type: 'skill', source: '$Frontend-Design', label: 'frontend-design', start: 18, end: 34 },
+  ]);
+  // Still typing, unknown, glued to a word, or no catalog: plain text.
+  assert.deepEqual(skillTokens('Use $research', skills), []);
+  assert.deepEqual(skillTokens('$unknown $researching price$research ', skills), []);
+  assert.deepEqual(skillTokens('$research ', []), []);
+});
+
+test('a chip whose trailing space is deleted stays a chip', () => {
+  const chipped = skillTokens('Use $research ', skills);
+  assert.deepEqual(skillTokens('Use $research', skills, chipped), chipped);
+  // Edited source, or a chip no longer at the end, falls back to text.
+  assert.deepEqual(skillTokens('Use $researc', skills, chipped), []);
+  assert.deepEqual(skillTokens('Use $research.', skills, chipped), []);
 });

@@ -6,6 +6,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { attachmentTooLargeMessage, MAX_ATTACHMENTS, MAX_ATTACHMENT_BYTES, type DraftAttachment } from '../../lib/attachments';
 import { fitImage } from '../attachments/fit-image';
 import { imageNameForFormat } from '../attachments/image-fit';
+import { pastedTextFileName } from './composer-paste';
 
 const draftDirectory = () => new Directory(Paths.document, 'attachment-drafts');
 const incomingShareDirectory = () => new Directory(Paths.document, 'incoming-shares');
@@ -87,7 +88,7 @@ async function addDraftFiles(picked: readonly PickedFile[], remaining: number): 
   }
 }
 
-/** Copies image URIs emitted by expo-paste-input into durable app storage. */
+/** Copies image URIs the composer wrote for a paste or drop into durable app storage. */
 export async function persistPastedImages(uris: readonly string[], remaining: number): Promise<DraftAttachment[]> {
   if (uris.some((uri) => !uri.startsWith('file://'))) throw new Error('Pasted images must come from a local file.');
   return addDraftFiles(uris.map((uri, index) => {
@@ -95,6 +96,23 @@ export async function persistPastedImages(uris: readonly string[], remaining: nu
     const mimeType = extension === '.gif' ? 'image/gif' : extension === '.webp' ? 'image/webp' : extension === '.png' ? 'image/png' : 'image/jpeg';
     return { uri, name: `pasted-image-${index + 1}${extension}`, mimeType };
   }), remaining);
+}
+
+/** Saves a long text paste as a `.txt` draft attachment. */
+export async function persistPastedText(text: string, existing: readonly DraftAttachment[]): Promise<DraftAttachment> {
+  if (existing.length >= MAX_ATTACHMENTS) throw tooMany(MAX_ATTACHMENTS - existing.length);
+  const id = randomUUID();
+  const directory = draftDirectory();
+  directory.create({ intermediates: true, idempotent: true });
+  const destination = new File(directory, `${id}.txt`);
+  try {
+    await destination.write(text);
+    if (destination.size > MAX_ATTACHMENT_BYTES) throw new Error(attachmentTooLargeMessage);
+    return { id, name: pastedTextFileName(existing.map((file) => file.name)), mimeType: 'text/plain', size: destination.size, uri: destination.uri };
+  } catch (error) {
+    if (destination.exists) destination.delete();
+    throw error;
+  }
 }
 
 export async function pickAttachments(kind: 'photos' | 'files', remaining: number): Promise<DraftAttachment[]> {

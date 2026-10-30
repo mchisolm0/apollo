@@ -1,0 +1,7 @@
+{
+  "platforms": ["apple"],
+  "apple": {
+    "modules": ["T3ComposerEditorModule"],
+    "podspecPath": "T3ComposerEditor.podspec"
+  }
+}

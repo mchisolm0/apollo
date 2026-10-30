@@ -54,3 +54,26 @@ export function selectedSkillNames(text: string, skills: readonly HermesSkill[])
   }
   return selected;
 }
+
+/** A known `$skill` reference the composer draws as one chip. The draft text keeps `source`. */
+export type SkillToken = { type: 'skill'; source: string; label: string; start: number; end: number };
+
+/**
+ * Known skill references followed by whitespace, so a name being typed stays text until it is done.
+ * A chip from `previous` that now ends the text (its trailing space was deleted) stays a chip, as in T3.
+ */
+export function skillTokens(text: string, skills: readonly HermesSkill[], previous: readonly SkillToken[] = []): SkillToken[] {
+  if (!skills.length) return [];
+  const canonical = new Map(skills.map((skill) => [skill.name.toLocaleLowerCase(), skill.name]));
+  const tokens: SkillToken[] = [];
+  for (const match of text.matchAll(/(^|\s)(\$([^\s$]+))(?=\s)/g)) {
+    const label = canonical.get((match[3] ?? '').toLocaleLowerCase());
+    const source = match[2] ?? '';
+    if (!label) continue;
+    const start = (match.index ?? 0) + (match[1] ?? '').length;
+    tokens.push({ type: 'skill', source, label, start, end: start + source.length });
+  }
+  const trailing = previous.find((token) => token.end === text.length && text.slice(token.start, token.end) === token.source && canonical.has(token.label.toLocaleLowerCase()));
+  if (trailing && (trailing.start === 0 || /\s/.test(text[trailing.start - 1] ?? ''))) tokens.push(trailing);
+  return tokens;
+}

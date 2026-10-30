@@ -2,8 +2,8 @@ import { useThemedStyles, type RelayPalette } from '@/features/relay/relay-ui';
 import { posthog } from '@/config/posthog';
 import { useOutbox } from '@/lib/outbox-context';
 import { useIncomingShares } from '@/features/sharing';
-import { MAX_ATTACHMENTS } from '@/lib/attachments';
-import { pickAttachments, persistPastedImages, copySharedAttachments, discardAttachment } from '@/features/relay/pick-attachments';
+import { MAX_ATTACHMENTS, type DraftAttachment } from '@/lib/attachments';
+import { pickAttachments, persistPastedImages, persistPastedText, copySharedAttachments, discardAttachment } from '@/features/relay/pick-attachments';
 import { Redirect, useFocusEffect, useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActionSheetIOS, Alert, AppState, Keyboard, Platform, StyleSheet } from 'react-native';
@@ -212,12 +212,13 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
     else Alert.alert('Attach', undefined, [{ text: 'Photo Library', onPress: () => void pick('photos') }, { text: 'Choose Files', onPress: () => void pick('files') }, { text: 'Cancel', style: 'cancel' }]);
   };
 
-  const pasteImages = async (uris: readonly string[]) => {
-    if (pickerLock.current || actionLock.current || !draftLoaded) return;
+  const paste = async (persist: () => Promise<readonly DraftAttachment[]>) => {
+    if (pickerLock.current || actionLock.current || !draftLoaded || incoming) { setLocalError('Could not paste right now. Try again.'); return; }
     pickerLock.current = true;
     setPicking(true);
-    try { setAttachments([...attachments, ...await persistPastedImages(uris, MAX_ATTACHMENTS - attachments.length)]); }
-    catch (error) { setLocalError(error instanceof Error ? error.message : 'Could not paste images.'); }
+    setLocalError(undefined);
+    try { setAttachments([...attachments, ...await persist()]); }
+    catch (error) { setLocalError(error instanceof Error ? error.message : 'Could not paste. Try again.'); }
     finally { pickerLock.current = false; setPicking(false); }
   };
 
@@ -289,7 +290,8 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
         attachments={attachments}
         isPicking={picking}
         onAddAttachments={addAttachments}
-        onPasteImages={(uris) => void pasteImages(uris)}
+        onPasteImages={(uris) => void paste(() => persistPastedImages(uris, MAX_ATTACHMENTS - attachments.length))}
+        onPasteText={(text) => void paste(async () => [await persistPastedText(text, attachments)])}
         queuedMessages={queuedMessages}
         onRetryQueued={(messageId) => void act(() => outbox.retry(messageId))}
         onSteerQueued={run && running && run.status !== 'stopping' && !approval ? (messageId) => void act(() => outbox.steer(messageId, run.runId)) : undefined}

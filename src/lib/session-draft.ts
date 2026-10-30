@@ -49,6 +49,11 @@ function legacyDraftKey(agentId: string, sessionId: string): string {
   return `apollo.draft.${encodeURIComponent(agentId)}.${encodeURIComponent(sessionId)}`;
 }
 
+/** Drops U+FFFC, the object replacement character iOS uses for attachments such as the dictation placeholder. It is never draft text. */
+export function withoutAttachmentCharacters(text: string): string {
+  return text.replaceAll('\uFFFC', '');
+}
+
 function validateDraft(draft: string, attachments: readonly DraftAttachment[]): void {
   if (draft.length > 8000) throw new Error('Drafts must be 8,000 characters or shorter.');
   if (attachments.length > MAX_ATTACHMENTS) throw new Error(`You can attach up to ${MAX_ATTACHMENTS} files per message.`);
@@ -157,6 +162,8 @@ export class SessionDraftStore {
         const parsed: unknown = JSON.parse(saved);
         if (!validRecord(parsed)) throw new Error('Saved draft is invalid.');
         validateDraft(parsed.draft, parsed.attachments);
+        // Older builds could save iOS's dictation placeholder; a draft mid-send keeps its text to match its receipt.
+        if (!parsed.prepared) parsed.draft = withoutAttachmentCharacters(parsed.draft);
         if (parsed.prepared && (parsed.prepared.text !== parsed.draft || !sameAttachments(parsed.prepared.attachments, parsed.attachments))) parsed.prepared = undefined;
         this.record = this.edited
           ? { ...parsed, draft: this.record.draft, attachments: this.record.attachments, prepared: undefined }
@@ -273,9 +280,11 @@ export class SessionDraftStore {
     return enqueueKeys([this.persistenceKey], async () => {
       validateDraft(this.record.draft, this.record.attachments);
       if (this.saveFailed) throw new Error(this.state.error ?? 'Save the draft before sending.');
-      if (this.record.prepared && this.record.prepared.text === this.record.draft && sameAttachments(this.record.prepared.attachments, this.record.attachments)) return this.record.prepared;
-      if (!this.record.draft.trim() && !this.record.attachments.length) throw new Error('Draft cannot be empty.');
-      const prepared: PreparedDraft = { id: this.options.uuid(), sessionId: this.sessionId === 'new' ? this.options.uuid() : this.sessionId, text: this.record.draft, attachments: [...this.record.attachments] };
+      // A draft saved before the composer dropped placeholders can still hold one.
+      const text = withoutAttachmentCharacters(this.record.draft);
+      if (this.record.prepared && this.record.prepared.text === text && sameAttachments(this.record.prepared.attachments, this.record.attachments)) return this.record.prepared;
+      if (!text.trim() && !this.record.attachments.length) throw new Error('Draft cannot be empty.');
+      const prepared: PreparedDraft = { id: this.options.uuid(), sessionId: this.sessionId === 'new' ? this.options.uuid() : this.sessionId, text, attachments: [...this.record.attachments] };
       this.record = { ...this.record, prepared };
       const revision = this.revision;
       await this.options.storage.setItem(this.persistenceKey, JSON.stringify(this.record));
