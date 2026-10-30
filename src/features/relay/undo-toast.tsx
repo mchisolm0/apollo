@@ -10,10 +10,13 @@ import { useColors } from './relay-ui';
 /** How long Undo stays offered, matching T3's sidebar notice. */
 export const UNDO_TOAST_MS = 5000;
 
-type UndoNotice = { id: number; message: string; undo: () => void };
+type UndoNotice = { id: number; scope: string; message: string; undo: () => void };
 
-/** One undoable action at a time: a newer action replaces the older notice and its Undo. */
-export function useUndoToast() {
+/**
+ * One undoable action at a time: a newer action replaces the older notice and its Undo.
+ * A notice belongs to the `scope` (agent) it was shown in and hides once the scope changes.
+ */
+export function useUndoToast(scope: string) {
   const [notice, setNotice] = useState<UndoNotice>();
   const current = useRef<UndoNotice>(undefined);
   const next = useRef(0);
@@ -24,14 +27,14 @@ export function useUndoToast() {
     const timer = setTimeout(() => { if (current.current?.id === notice.id) replace(undefined); }, UNDO_TOAST_MS);
     return () => clearTimeout(timer);
   }, [notice, replace]);
-  const show = useCallback((message: string, undo: () => void) => replace({ id: ++next.current, message, undo }), [replace]);
+  const show = useCallback((message: string, undo: () => void) => replace({ id: ++next.current, scope, message, undo }), [replace, scope]);
   // Clear before running so a double tap cannot undo twice.
   const undo = useCallback(() => {
     const pending = current.current;
     replace(undefined);
-    pending?.undo();
-  }, [replace]);
-  return { notice, show, undo };
+    if (pending?.scope === scope) pending.undo();
+  }, [replace, scope]);
+  return { notice: notice?.scope === scope ? notice : undefined, show, undo };
 }
 
 // Same placement as the "Update ready" notice: just above the bottom dock, over the list.

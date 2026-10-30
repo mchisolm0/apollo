@@ -67,7 +67,8 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
   const handleFilter = useCallback(() => setAttentionOnly((current) => !current), []);
   const handleCompose = useCallback(() => { Keyboard.dismiss(); onNewSession?.(); }, [onNewSession]);
   const toggle = useCallback((id: CollapsibleSectionId) => setCollapsed((previous) => ({ ...previous, [id]: !previous[id] })), []);
-  const toast = useUndoToast();
+  // Undo acts on the agent it was offered for, so switching agents drops it.
+  const toast = useUndoToast(sessions[0]?.agentId ?? '');
   const { show: showUndo } = toast;
   const [customSnooze, setCustomSnooze] = useState<string>();
   // Undo runs after the settle round trip, so it must reach the latest reopen, not the one from swipe time.
