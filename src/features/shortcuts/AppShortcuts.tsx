@@ -26,7 +26,7 @@ const icon = (kind: 'new' | 'thread') =>
  */
 export function AppShortcuts() {
   const router = useRouter();
-  const { agents, runtime, loading } = useApollo();
+  const { agents, runtime, loading, hasSession, refreshAgent } = useApollo();
   const pathname = usePathname();
   const params = useGlobalSearchParams<{ id?: string; agentId?: string }>();
   // null until the stored list loads, so the first thread opened after launch cannot clobber it.
@@ -59,8 +59,20 @@ export function AppShortcuts() {
     if (!action || agentKey === undefined || !recents) return;
     pending.current = undefined;
     const destination = shortcutDestination(action, agentKey ? agentKey.split('\n') : [], recents);
-    if (destination) router.push(destination);
-  }, [taps, agentKey, recents, router]);
+    if (destination?.pathname !== '/session/[id]' || destination.params.id === 'new') {
+      if (destination) router.push(destination);
+      return;
+    }
+    const { id: sessionId, agentId } = destination.params;
+    void (async () => {
+      if (!hasSession(agentId, sessionId)) await refreshAgent(agentId).catch(() => {});
+      if (hasSession(agentId, sessionId)) return router.push(destination);
+      // A deleted (or unreachable) thread leaves the launcher and opens its agent's inbox instead.
+      persistable.current = true;
+      setRecents((current) => current && current.filter((thread) => thread.agentId !== agentId || thread.sessionId !== sessionId));
+      router.dismissTo({ pathname: '/', params: { agentId } });
+    })();
+  }, [taps, agentKey, recents, router, hasSession, refreshAgent]);
 
   const thread = activeThread(pathname, params);
   const agentId = thread?.agentId;
