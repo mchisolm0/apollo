@@ -48,9 +48,10 @@ function routeFixture(id: string, { status = 'connected', sessionMessages = asyn
         useMemo: (factory: () => unknown) => factory(), useCallback: (callback: unknown) => callback,
         useEffect: (run: () => void | (() => void), deps?: readonly unknown[]) => { effects[effectCursor++] = { run, deps }; },
       };
-      if (name === 'expo-router') return { useFocusEffect() {}, useRouter: () => ({ setParams() {} }) };
+      if (name === 'expo-router') return { useFocusEffect() {}, useIsFocused: () => true, useRouter: () => ({ setParams() {} }) };
       if (name === 'react-native') return { AppState: { currentState: 'active' } };
       if (name === '@/lib') return { useApollo: () => api };
+      if (name === '@/lib/haptics') return { useStreamTick() {} };
       if (name === '@/lib/outbox-context') return { useOutbox: () => ({ loaded: true, items: [], enqueue: async (value: unknown) => { order.push('enqueue'); queued.push(value); } }) };
       if (name.endsWith('/use-session-draft')) return { useSessionDraft: () => ({ draft: '[QA] tiny', attachments: [], loaded: true, prepareSend: async () => ({ id: 'message', sessionId: id === 'new' ? 'created' : id, text: '[QA] tiny', attachments: [] }), move: async () => {}, clear: async () => {} }) };
       if (name.endsWith('/use-session-inbox')) return { useSessionInbox: () => ({ markRead: async () => {}, sessions: [] }) };
