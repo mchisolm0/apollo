@@ -91,7 +91,10 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
     setTimeout(() => settling.current.delete(sessionId), 15_000);
   }, [onSettle]);
   const snoozeUntil = useCallback((sessionId: string, until: number) => {
-    void snooze(sessionId, until - Math.floor(Date.now() / 1000)).then((snoozed) => {
+    const duration = until - Math.floor(Date.now() / 1000);
+    // A menu left open past a preset's time would otherwise fall back to the default 24h.
+    if (duration <= 0) { Alert.alert('Could not snooze thread', 'That snooze time has passed. Choose another time.'); return; }
+    void snooze(sessionId, duration).then((snoozed) => {
       if (snoozed) showUndo('Snoozed', () => { void unsnooze(sessionId); });
     });
   }, [snooze, unsnooze, showUndo]);
