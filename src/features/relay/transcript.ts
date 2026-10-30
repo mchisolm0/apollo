@@ -161,6 +161,21 @@ const SYSTEM_DISPLAY_KINDS = new Set([
 /** Injected user rows without a display kind: delegation results and `[System note: ...]` nudges. */
 const SYSTEM_PROMPT = /^\s*(?:\[ASYNC DELEGATION (?:BATCH COMPLETE|COMPLETE|TASK FAILED) — deleg_|\[System(?: note)?:)/u;
 
+/** Hermes cron mirrors a delivery into its origin chat as a user row: `[Cron delivery: <job>]\n<text>`. */
+const CRON_DELIVERY = /^\s*\[Cron delivery: ([^\n]*?)\](?:\n|$)/u;
+
+export interface CronDelivery {
+  readonly job: string;
+  readonly text: string;
+}
+
+/** The job name and delivered text of a Hermes cron mirror, or undefined for any other message. */
+export function cronDelivery(text: string): CronDelivery | undefined {
+  const match = CRON_DELIVERY.exec(text);
+  if (!match) return undefined;
+  return { job: match[1]?.trim() || 'cron', text: text.slice(match[0].length).trim() };
+}
+
 /** One-line prose summaries drop markdown markers; tool commands and paths stay literal. */
 export function stepSummary(step: TranscriptStep): string {
   if (step.kind === 'tool') return oneLine(step.input || step.output);
@@ -342,7 +357,7 @@ function buildHistory(history: readonly HermesMessage[], previous?: HistoryCache
     // Hermes hides its own `[System: ...]` nudges, such as stream-timeout retries.
     if (injectable && message.displayKind === 'hidden') continue;
     // Assistant rows (including Hermes's `failed_turn` notice) stay assistant text inside their turn.
-    const system = injectable && (SYSTEM_DISPLAY_KINDS.has(message.displayKind ?? '') || SYSTEM_PROMPT.test(text));
+    const system = injectable && (SYSTEM_DISPLAY_KINDS.has(message.displayKind ?? '') || SYSTEM_PROMPT.test(text) || CRON_DELIVERY.test(text));
     if (role !== 'user' && role !== 'assistant' && role !== 'error' && !(role === 'system' && system)) continue;
     const reasoning = role === 'assistant' ? message.reasoningContent ?? message.reasoning : undefined;
     if (reasoning?.trim()) pushStep({ id: `history-thought-${key}`, kind: 'thought', text: reasoning });

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createTranscriptProjector, stepSummary, type TranscriptActivityRow, type TranscriptRow } from './transcript.ts';
+import { createTranscriptProjector, cronDelivery, stepSummary, type TranscriptActivityRow, type TranscriptRow } from './transcript.ts';
 import type { HermesMessage, HermesRunEvent } from '../../lib/types.ts';
 
 const message = (value: Partial<HermesMessage> & Pick<HermesMessage, 'role'>): HermesMessage => value;
@@ -52,6 +52,25 @@ test('drops hidden Hermes nudges and labels legacy system notes as system', () =
     events: [], running: false,
   });
   assert.deepEqual(rows.map((row) => row.kind), ['user', 'system']);
+});
+
+test('parses Hermes cron mirrors into job name and delivered text', () => {
+  assert.deepEqual(cronDelivery('[Cron delivery: Morning brief]\nThree new issues.\n\nDetails'), { job: 'Morning brief', text: 'Three new issues.\n\nDetails' });
+  assert.deepEqual(cronDelivery('[Cron delivery: a1b2c3]'), { job: 'a1b2c3', text: '' });
+  assert.equal(cronDelivery('Please check [Cron delivery: x]\nlater'), undefined);
+  assert.equal(cronDelivery('[Cron delivery: x] inline'), undefined);
+  assert.equal(cronDelivery('[System note: interrupted]'), undefined);
+});
+
+test('labels cron mirrors as system rows and leaves similar user text alone', () => {
+  const rows = createTranscriptProjector()({
+    history: [
+      message({ id: 'c1', role: 'user', content: '[Cron delivery: Morning brief]\nThree new issues.' }),
+      message({ id: 'u1', role: 'user', content: 'What does [Cron delivery: x] mean?' }),
+    ],
+    events: [], running: false,
+  });
+  assert.deepEqual(rows.map((row) => row.kind), ['system', 'user']);
 });
 
 test('labels backend-authored user turns as system and keeps their turn boundaries', () => {
