@@ -2,8 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { STREAM_TICK_MS, streamTick, type StreamTickState } from './stream-tick.ts';
 
-test('a reply already streaming when the thread opens stays quiet', () => {
-  assert.equal(streamTick(undefined, { id: 'a', length: 40 }, 1000).tick, false);
+test('a reply already streaming when the thread opens waits a throttle window', () => {
+  const opened = streamTick(undefined, { id: 'a', length: 40 }, 1000);
+  assert.equal(opened.tick, false);
+  assert.equal(streamTick(opened.state, { id: 'a', length: 45 }, 1100).tick, false);
+  assert.equal(streamTick(opened.state, { id: 'a', length: 45 }, 1000 + STREAM_TICK_MS).tick, true);
 });
 
 test('a new reply ticks at once, then growth ticks no faster than the throttle', () => {
