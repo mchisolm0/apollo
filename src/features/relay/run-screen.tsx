@@ -17,11 +17,12 @@ import { RingSpinner } from './ring-spinner';
 import { insertSkill, matchingSkills, selectedSkillNames, skillTrigger, type SkillTrigger } from './composer-skills';
 import { showSessionActions } from './session-actions';
 import { MessageContent } from './message-content';
+import { CronDeliveryEntry } from './cron-delivery-entry';
 import { ModelPicker, modelDisplayName } from './model-picker';
 import type { HermesModel, HermesSkill } from '../../lib/types';
 import type { ApprovalRequest, ConnectionState, RelaySession } from './types';
 import { elapsed, formatDuration, liveActivityLabel, readableOutput, settledActivityLabel, toolVerb } from './activity';
-import { stepSummary, type TranscriptActivityRow, type TranscriptRow, type TranscriptStep } from './transcript';
+import { cronDelivery, stepSummary, type TranscriptActivityRow, type TranscriptRow, type TranscriptStep } from './transcript';
 
 export type RunScreenProps = {
   session: RelaySession;
@@ -104,9 +105,12 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
     ? { start: Math.min(observedSelection.start, draft.length), end: Math.min(observedSelection.end, draft.length) }
     : { start: draft.length, end: draft.length };
   const suspendFollow = useCallback(() => setFollowing(false), []);
-  const renderItem = useCallback(({ item }: { item: TranscriptRow }) => item.kind === 'activity'
-    ? <ActivityEntry row={item} connection={connection} onDisclosure={suspendFollow} />
-    : <TranscriptEntry row={item} agentName={agentName ?? 'Hermes'} attachmentSource={attachmentSource} />, [suspendFollow, agentName, attachmentSource, connection]);
+  const renderItem = useCallback(({ item }: { item: TranscriptRow }) => {
+    if (item.kind === 'activity') return <ActivityEntry row={item} connection={connection} onDisclosure={suspendFollow} />;
+    const cron = item.kind === 'system' ? cronDelivery(item.text) : undefined;
+    if (cron) return <CronDeliveryEntry delivery={cron} onDisclosure={suspendFollow} />;
+    return <TranscriptEntry row={item} agentName={agentName ?? 'Hermes'} attachmentSource={attachmentSource} />;
+  }, [suspendFollow, agentName, attachmentSource, connection]);
   const canSend = connection !== 'revoked' && !sendDisabled && !isActing && !isPicking && Boolean(draft.trim() || attachments.length);
   const typedSkill = selection.start === selection.end ? skillTrigger(draft, selection.end) : undefined;
   const skillMenuTrigger: SkillTrigger | undefined = !skillsDismissed ? typedSkill ?? (skillsOpen ? { query: '', start: selection.end, end: selection.end } : undefined) : undefined;
