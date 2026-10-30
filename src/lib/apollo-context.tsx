@@ -16,10 +16,9 @@ import {
 import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Directory, Paths } from 'expo-file-system';
-import { openDatabaseAsync } from 'expo-sqlite';
+import { deleteDatabaseAsync, openDatabaseAsync } from 'expo-sqlite';
 
-import { reconcileHistory } from './message-history';
-import { createThreadCache } from './thread-cache';
+import { createThreadCache, mergeLiveHistory } from './thread-cache';
 import { errorMessage } from './protocol';
 import { AgentCatalog } from './catalog';
 import { eventTransportIdentity, isRunActive, statusAfterEvent } from './run-state';
@@ -103,7 +102,11 @@ async function loadModelSelection(agentId: string, sessionId: string) {
 }
 
 // Caches is excluded from device backups and the OS may purge it, which a cache can afford.
-const threadCache = createThreadCache(() => openDatabaseAsync('apollo-thread-cache.db', undefined, new Directory(Paths.cache, 'SQLite').uri));
+const threadCacheDirectory = new Directory(Paths.cache, 'SQLite').uri;
+const threadCache = createThreadCache({
+  open: () => openDatabaseAsync('apollo-thread-cache.db', undefined, threadCacheDirectory),
+  remove: () => deleteDatabaseAsync('apollo-thread-cache.db', threadCacheDirectory),
+});
 
 const ApolloContext = createContext<ApolloContextValue | undefined>(undefined);
 
@@ -156,6 +159,27 @@ export function ApolloProvider({
       [agentId]: { ...(current[agentId] ?? emptyRuntime()), ...patch },
     }));
   }, [setRuntime]);
+
+  // Drops an agent's threads from memory and the device cache.
+  const forgetThreads = useCallback(async (agentId: string) => {
+    setMessages((current) => {
+      const next = { ...current };
+      for (const key of Object.keys(next)) if (key.startsWith(`${agentId}:`)) delete next[key];
+      return next;
+    });
+    for (const key of cachedThreads.current.keys()) if (key.startsWith(`${agentId}:`)) cachedThreads.current.delete(key);
+    for (const key of hydratedThreads.current) if (key.startsWith(`${agentId}:`)) hydratedThreads.current.delete(key);
+    cachedLists.current.delete(agentId);
+    await threadCache.clearAgent(agentId).catch(() => undefined);
+  }, []);
+
+  // A 401 means this device lost access, so the agent's threads stop being readable here too.
+  const markUnreachable = useCallback((agentId: string, error: unknown) => {
+    const revoked = error instanceof HermesRequestError && error.status === 401;
+    updateRuntime(agentId, { status: revoked ? 'revoked' : 'offline', error: errorText(error), ...(revoked ? { sessions: [] } : {}) });
+    if (revoked) void forgetThreads(agentId);
+    return revoked;
+  }, [forgetThreads, updateRuntime]);
 
   const closeSubscription = useCallback((agentId: string, runId?: string) => {
     for (const [key, subscription] of subscriptions.current) {
@@ -220,13 +244,11 @@ export function ApolloProvider({
           pollDelay = 3_000;
           updateRuntime(agent.id, { status: 'connected', error: undefined });
           updateRun(agent.id, status);
-          if (history && status.sessionId) setMessages((current) => ({ ...current, [`${agent.id}:${status.sessionId}`]: reconcileHistory(current[`${agent.id}:${status.sessionId}`] ?? [], history) }));
+          if (history && status.sessionId) setMessages((current) => ({ ...current, [`${agent.id}:${status.sessionId}`]: mergeLiveHistory(current[`${agent.id}:${status.sessionId}`], history) }));
           if (!isRunActive(status.status)) closeSubscription(agent.id, runId);
         } catch (error) {
           if (!closed) {
-            const revoked = error instanceof HermesRequestError && error.status === 401;
-            updateRuntime(agent.id, { status: revoked ? 'revoked' : 'offline', error: errorText(error) });
-            if (revoked) closeSubscription(agent.id, runId);
+            if (markUnreachable(agent.id, error)) closeSubscription(agent.id, runId);
             else pollDelay = Math.min(pollDelay * 2, 30_000);
           }
         } finally {
@@ -281,7 +303,7 @@ export function ApolloProvider({
               ]);
               if (closed) return;
               updateRuntime(agent.id, { sessions });
-              if (history && status.sessionId) setMessages((current) => ({ ...current, [`${agent.id}:${status.sessionId}`]: reconcileHistory(current[`${agent.id}:${status.sessionId}`] ?? [], history) }));
+              if (history && status.sessionId) setMessages((current) => ({ ...current, [`${agent.id}:${status.sessionId}`]: mergeLiveHistory(current[`${agent.id}:${status.sessionId}`], history) }));
               closeSubscription(agent.id, runId);
               // The final response may commit moments after the terminal event;
               // incomplete history gets one retry before the next refresh picks it up.
@@ -289,7 +311,7 @@ export function ApolloProvider({
                 setTimeout(() => {
                   // The subscription is already closed here, so `closed` is always true.
                   void client.sessionMessages(status.sessionId!).then((retry) => {
-                    setMessages((current) => ({ ...current, [`${agent.id}:${status.sessionId}`]: reconcileHistory(current[`${agent.id}:${status.sessionId}`] ?? [], retry) }));
+                    setMessages((current) => ({ ...current, [`${agent.id}:${status.sessionId}`]: mergeLiveHistory(current[`${agent.id}:${status.sessionId}`], retry) }));
                   }).catch(() => undefined);
                 }, 2_000);
               }
@@ -307,7 +329,7 @@ export function ApolloProvider({
       if (quietTimer) clearTimeout(quietTimer);
       source.close();
     } });
-  }, [closeSubscription, updateRuntime, updateRun, setRuntime]);
+  }, [closeSubscription, markUnreachable, updateRuntime, updateRun, setRuntime]);
 
   const refreshAgent = useCallback(async (agentId: string): Promise<void> => {
     const agent = catalog.get(agentId);
@@ -340,7 +362,7 @@ export function ApolloProvider({
         updateRun(agentId, run);
         if (run.sessionId) {
           const history = await client.sessionMessages(run.sessionId);
-          setMessages((current) => ({ ...current, [`${agentId}:${run.sessionId}`]: reconcileHistory(current[`${agentId}:${run.sessionId}`] ?? [], history) }));
+          setMessages((current) => ({ ...current, [`${agentId}:${run.sessionId}`]: mergeLiveHistory(current[`${agentId}:${run.sessionId}`], history) }));
         }
         if (isRunActive(run.status)) subscribe(updated, client, run.runId);
         else closeSubscription(agentId, run.runId);
@@ -348,12 +370,9 @@ export function ApolloProvider({
     } catch (connectionError) {
       clients.current.delete(agentId);
       closeSubscription(agentId);
-      updateRuntime(agentId, {
-        status: connectionError instanceof HermesRequestError && connectionError.status === 401 ? 'revoked' : 'offline',
-        error: errorText(connectionError),
-      });
+      markUnreachable(agentId, connectionError);
     }
-  }, [catalog, closeSubscription, subscribe, updateRuntime, updateRun]);
+  }, [catalog, closeSubscription, markUnreachable, subscribe, updateRuntime, updateRun]);
 
   // Inbox refreshes only the list, without reconnecting active run subscriptions.
   const refreshSessions = useCallback(async (agentId: string): Promise<void> => {
@@ -363,13 +382,10 @@ export function ApolloProvider({
       const sessions = await client.sessions();
       if (clients.current.get(agentId) === client) updateRuntime(agentId, { sessions, status: 'connected', error: undefined });
     } catch (error) {
-      if (clients.current.get(agentId) === client) updateRuntime(agentId, {
-        status: error instanceof HermesRequestError && error.status === 401 ? 'revoked' : 'offline',
-        error: errorText(error),
-      });
+      if (clients.current.get(agentId) === client) markUnreachable(agentId, error);
       throw error;
     }
-  }, [refreshAgent, updateRuntime]);
+  }, [markUnreachable, refreshAgent, updateRuntime]);
 
   useEffect(() => {
     let cancelled = false;
@@ -405,10 +421,10 @@ export function ApolloProvider({
     };
   }, [catalog, refreshAgent, setRuntime]);
 
-  // Saves each live thread list. A list counts as live once this launch has fetched capabilities.
+  // Saves each live thread list. A list counts as live while connected, once this launch has fetched capabilities.
   useEffect(() => {
     for (const [agentId, state] of Object.entries(runtime)) {
-      if (!state.capabilities || !catalog.get(agentId) || cachedLists.current.get(agentId) === state.sessions) continue;
+      if (state.status !== 'connected' || !state.capabilities || !catalog.get(agentId) || cachedLists.current.get(agentId) === state.sessions) continue;
       cachedLists.current.set(agentId, state.sessions);
       void threadCache.saveList(agentId, state.sessions).catch(() => undefined);
     }
@@ -421,7 +437,7 @@ export function ApolloProvider({
       // Agent ids are UUIDs, so the first colon ends the agent id.
       const split = key.indexOf(':');
       const agentId = key.slice(0, split);
-      if (!catalog.get(agentId)) continue;
+      if (!catalog.get(agentId) || runtimeRef.current[agentId]?.status === 'revoked') continue;
       cachedThreads.current.set(key, history);
       void threadCache.saveThread(agentId, key.slice(split + 1), history).catch(() => undefined);
     }
@@ -723,7 +739,7 @@ export function ApolloProvider({
     if (!hydratedThreads.current.has(key)) {
       hydratedThreads.current.add(key);
       void threadCache.loadThread(agentId, sessionId).then((cached) => {
-        if (!cached || deletedThreads.current.has(key)) return;
+        if (!cached || deletedThreads.current.has(key) || runtimeRef.current[agentId]?.status === 'revoked') return;
         cachedThreads.current.set(key, cached);
         setMessages((current) => current[key] ? current : { ...current, [key]: cached });
       }).catch(() => undefined);
@@ -735,7 +751,7 @@ export function ApolloProvider({
     }
     if (!client) throw new Error('Agent is offline');
     const loaded = await client.sessionMessages(sessionId);
-    setMessages((current) => ({ ...current, [`${agentId}:${sessionId}`]: reconcileHistory(current[`${agentId}:${sessionId}`] ?? [], loaded) }));
+    setMessages((current) => ({ ...current, [`${agentId}:${sessionId}`]: mergeLiveHistory(current[`${agentId}:${sessionId}`], loaded) }));
     return loaded;
   }, [refreshAgent]);
 
@@ -820,17 +836,8 @@ export function ApolloProvider({
       delete next[agentId];
       return next;
     });
-    setMessages((current) => {
-      const next = { ...current };
-      for (const key of Object.keys(next)) if (key.startsWith(`${agentId}:`)) delete next[key];
-      return next;
-    });
-    // Last, so no save from state that still held this agent lands after the clear.
-    for (const key of cachedThreads.current.keys()) if (key.startsWith(`${agentId}:`)) cachedThreads.current.delete(key);
-    for (const key of hydratedThreads.current) if (key.startsWith(`${agentId}:`)) hydratedThreads.current.delete(key);
-    cachedLists.current.delete(agentId);
-    await threadCache.clearAgent(agentId).catch(() => undefined);
-  }, [catalog, closeSubscription, notificationClient, setRuntime]);
+    await forgetThreads(agentId);
+  }, [catalog, closeSubscription, forgetThreads, notificationClient, setRuntime]);
 
   const hasSession = useCallback((agentId: string, sessionId: string) => runtimeRef.current[agentId]?.sessions.some((session) => session.id === sessionId) ?? false, []);
 

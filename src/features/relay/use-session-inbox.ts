@@ -3,7 +3,7 @@ import { useOutbox } from '../../lib/outbox-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 
-import { useApollo, type InboxConfig, type InboxSettledState } from '@/lib';
+import { useApollo, type AgentRuntimeState, type InboxConfig, type InboxSettledState } from '@/lib';
 
 import {
   canSettleSession,
@@ -276,11 +276,13 @@ export function useSessionInbox(agentId: string, state: SessionInboxState | unde
 }
 
 /** Mounted once per paired agent by the root layout, independent of mounted screens. */
-export function SessionInboxAutoSettle({ agentId, state }: { agentId: string; state: SessionInboxState | undefined }) {
+export function SessionInboxAutoSettle({ agentId, state }: { agentId: string; state: (SessionInboxState & Pick<AgentRuntimeState, 'status'>) | undefined }) {
   const { sessions, loaded, settle } = useSessionInbox(agentId, state);
   const pending = useRef(new Set<string>());
+  // Settling needs the agent; a cached list can show while it is offline.
+  const connected = state?.status === 'connected';
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || !connected) return;
     const tick = () => {
       const now = Math.floor(Date.now() / 1000);
       for (const session of autoSettleSessionsDue(sessions, entryFor(agentId).read, now, pending.current)) {
@@ -291,7 +293,7 @@ export function SessionInboxAutoSettle({ agentId, state }: { agentId: string; st
     tick();
     const timer = setInterval(tick, 60_000);
     return () => clearInterval(timer);
-  }, [agentId, loaded, sessions, settle]);
+  }, [agentId, connected, loaded, sessions, settle]);
   return null;
 }
 
