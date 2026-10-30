@@ -48,7 +48,7 @@ function routeFixture(id: string, { status = 'connected', sessionMessages = asyn
         useMemo: (factory: () => unknown) => factory(), useCallback: (callback: unknown) => callback,
         useEffect: (run: () => void | (() => void), deps?: readonly unknown[]) => { effects[effectCursor++] = { run, deps }; },
       };
-      if (name === 'expo-router') return { useFocusEffect() {}, useRouter: () => ({ setParams() {} }) };
+      if (name === 'expo-router') return { useFocusEffect() {}, useIsFocused: () => true, useRouter: () => ({ setParams() {} }) };
       if (name === 'react-native') return { AppState: { currentState: 'active' } };
       if (name === '@/lib') return { useApollo: () => api };
       if (name === '@/lib/haptics') return { useStreamTick() {} };

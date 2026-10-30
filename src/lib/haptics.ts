@@ -16,14 +16,18 @@ export const haptics = {
   medium: () => run(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)),
 };
 
-/** Ticks lightly while `streaming` (the reply currently streaming in) grows, throttled by `streamTick`. */
-export function useStreamTick(streaming: { readonly id: string; readonly length: number } | undefined) {
+/**
+ * Ticks lightly while `streaming` (the reply currently streaming in) grows, throttled by `streamTick`.
+ * A hidden screen stays quiet and starts fresh when shown again, so returning mid-reply does not tick.
+ */
+export function useStreamTick(streaming: { readonly id: string; readonly length: number } | undefined, visible: boolean) {
   const last = useRef<StreamTickState | undefined>(undefined);
   const id = streaming?.id;
   const length = streaming?.length ?? 0;
   useEffect(() => {
+    if (!visible) { last.current = undefined; return; }
     const next = streamTick(last.current, id === undefined ? undefined : { id, length }, Date.now());
     last.current = next.state;
     if (next.tick) haptics.selection();
-  }, [id, length]);
+  }, [id, length, visible]);
 }

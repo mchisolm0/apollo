@@ -4,7 +4,7 @@ import { useOutbox } from '@/lib/outbox-context';
 import { useIncomingShares } from '@/features/sharing';
 import { MAX_ATTACHMENTS } from '@/lib/attachments';
 import { pickAttachments, persistPastedImages, copySharedAttachments, discardAttachment } from '@/features/relay/pick-attachments';
-import { Redirect, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { Redirect, useFocusEffect, useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActionSheetIOS, Alert, AppState, Keyboard, Platform, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -171,8 +171,9 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   const live = runId ? allEvents.filter((event) => event.runId === runId) : noEvents;
   const history = resolvedId ? messages[`${agentId}:${resolvedId}`] ?? noMessages : noMessages;
   const events = project({ history, events: live, runId: run?.runId, runStartedAt: run?.createdAt, runEndedAt: run?.updatedAt, runStatus: run?.status, runOutput: run?.output, running });
+  const focused = useIsFocused();
   const streaming = events.findLast((row) => row.kind === 'assistant' && row.status === 'running');
-  useStreamTick(streaming?.kind === 'assistant' ? { id: streaming.id, length: streaming.text.length } : undefined);
+  useStreamTick(streaming?.kind === 'assistant' ? { id: streaming.id, length: streaming.text.length } : undefined, focused);
   const request = currentApproval(live, run);
   const command = typeof request?.command === 'string' ? request.command : typeof request?.preview === 'string' ? request.preview : undefined;
   const approval = command ? {
