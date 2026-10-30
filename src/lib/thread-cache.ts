@@ -28,7 +28,7 @@ export interface ThreadCache {
   saveList(agentId: string, sessions: readonly HermesSession[]): Promise<void>;
   /** A thread's saved messages, or undefined when none are cached. Counts as a use. */
   loadThread(agentId: string, sessionId: string): Promise<readonly HermesMessage[] | undefined>;
-  /** Saves only server-saved messages, then keeps the agent's most recently used threads. */
+  /** Saves only server-saved messages, then keeps the agent's most recently used threads. An empty history removes the thread. */
   saveThread(agentId: string, sessionId: string, messages: readonly HermesMessage[]): Promise<void>;
   removeThread(agentId: string, sessionId: string): Promise<void>;
   clearAgent(agentId: string): Promise<void>;
@@ -101,6 +101,9 @@ PRAGMA user_version = ${THREAD_CACHE_LAYOUT_VERSION};
 COMMIT;
 `;
 
+// SQLite's messages for SQLITE_NOTADB and SQLITE_CORRUPT, including a malformed schema.
+const CORRUPT = /file is not a database|malformed/u;
+
 async function prepare(db: CacheDatabase) {
   const [row] = await db.getAllAsync<{ user_version: number }>('PRAGMA user_version', []);
   if (row?.user_version !== THREAD_CACHE_LAYOUT_VERSION) await db.execAsync(LAYOUT);
@@ -109,7 +112,7 @@ async function prepare(db: CacheDatabase) {
 
 export function createThreadCache(storage: CacheStorage, now: () => number = Date.now): ThreadCache {
   let ready: Promise<CacheDatabase> | undefined;
-  // An open that fails starts over from an empty file once; if that fails too, the next call tries again.
+  // A corrupt file starts over empty, once. Any failed open is tried again on the next call.
   const attempt = async (retry: boolean): Promise<CacheDatabase> => {
     let db: CacheDatabase | undefined;
     try {
@@ -117,7 +120,7 @@ export function createThreadCache(storage: CacheStorage, now: () => number = Dat
       return await prepare(db);
     } catch (error) {
       await db?.closeAsync().catch(() => undefined);
-      if (!retry) throw error;
+      if (!retry || !CORRUPT.test(error instanceof Error ? error.message : String(error))) throw error;
       await storage.remove();
       return attempt(false);
     }
@@ -138,6 +141,10 @@ export function createThreadCache(storage: CacheStorage, now: () => number = Dat
 
   // Message count and newest sequence of each thread's last write, by agent, to skip saving the same history again.
   const written = new Map<string, Map<string, string>>();
+  const removeThread = (agentId: string, sessionId: string) => serial(async (db) => {
+    written.get(agentId)?.delete(sessionId);
+    await db.runAsync('DELETE FROM threads WHERE agent_id = ? AND session_id = ?', [agentId, sessionId]);
+  });
 
   return {
     loadLists: () => serial(async (db) => {
@@ -167,6 +174,7 @@ export function createThreadCache(storage: CacheStorage, now: () => number = Dat
       return messages;
     }),
     saveThread: (agentId, sessionId, messages) => {
+      if (!messages.length) return removeThread(agentId, sessionId);
       const saved = persistableMessages(messages);
       if (!saved.length) return Promise.resolve();
       const shape = `${saved.length}:${saved.reduce((newest, message) => Math.max(newest, message.sequence ?? newest), -Infinity)}`;
@@ -181,10 +189,7 @@ export function createThreadCache(storage: CacheStorage, now: () => number = Dat
         for (const row of evicted) written.get(agentId)?.delete(row.session_id);
       });
     },
-    removeThread: (agentId, sessionId) => serial(async (db) => {
-      written.get(agentId)?.delete(sessionId);
-      await db.runAsync('DELETE FROM threads WHERE agent_id = ? AND session_id = ?', [agentId, sessionId]);
-    }),
+    removeThread,
     clearAgent: (agentId) => serial(async (db) => {
       written.delete(agentId);
       await db.runAsync('DELETE FROM threads WHERE agent_id = ?', [agentId]);

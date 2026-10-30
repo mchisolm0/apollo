@@ -173,14 +173,6 @@ export function ApolloProvider({
     await threadCache.clearAgent(agentId).catch(() => undefined);
   }, []);
 
-  // A 401 means this device lost access, so the agent's threads stop being readable here too.
-  const markUnreachable = useCallback((agentId: string, error: unknown) => {
-    const revoked = error instanceof HermesRequestError && error.status === 401;
-    updateRuntime(agentId, { status: revoked ? 'revoked' : 'offline', error: errorText(error), ...(revoked ? { sessions: [] } : {}) });
-    if (revoked) void forgetThreads(agentId);
-    return revoked;
-  }, [forgetThreads, updateRuntime]);
-
   const closeSubscription = useCallback((agentId: string, runId?: string) => {
     for (const [key, subscription] of subscriptions.current) {
       if (key === JSON.stringify([agentId, subscription.runId]) && (!runId || subscription.runId === runId)) {
@@ -189,6 +181,18 @@ export function ApolloProvider({
       }
     }
   }, []);
+
+  // A 401 means this device lost access, so the agent's threads stop being readable here too.
+  const markUnreachable = useCallback((agentId: string, error: unknown) => {
+    const revoked = error instanceof HermesRequestError && error.status === 401;
+    updateRuntime(agentId, { status: revoked ? 'revoked' : 'offline', error: errorText(error), ...(revoked ? { sessions: [] } : {}) });
+    if (revoked) {
+      clients.current.delete(agentId);
+      closeSubscription(agentId);
+      void forgetThreads(agentId);
+    }
+    return revoked;
+  }, [closeSubscription, forgetThreads, updateRuntime]);
 
   const updateRun = useCallback((agentId: string, run: HermesRunStatus) => {
     setRuntime((current) => {
@@ -248,8 +252,7 @@ export function ApolloProvider({
           if (!isRunActive(status.status)) closeSubscription(agent.id, runId);
         } catch (error) {
           if (!closed) {
-            if (markUnreachable(agent.id, error)) closeSubscription(agent.id, runId);
-            else pollDelay = Math.min(pollDelay * 2, 30_000);
+            if (!markUnreachable(agent.id, error)) pollDelay = Math.min(pollDelay * 2, 30_000);
           }
         } finally {
           polling = false;
@@ -421,10 +424,10 @@ export function ApolloProvider({
     };
   }, [catalog, refreshAgent, setRuntime]);
 
-  // Saves each live thread list. A list counts as live while connected, once this launch has fetched capabilities.
+  // Saves each live thread list. A list counts as live once this launch has fetched capabilities.
   useEffect(() => {
     for (const [agentId, state] of Object.entries(runtime)) {
-      if (state.status !== 'connected' || !state.capabilities || !catalog.get(agentId) || cachedLists.current.get(agentId) === state.sessions) continue;
+      if (state.status === 'revoked' || !state.capabilities || !catalog.get(agentId) || cachedLists.current.get(agentId) === state.sessions) continue;
       cachedLists.current.set(agentId, state.sessions);
       void threadCache.saveList(agentId, state.sessions).catch(() => undefined);
     }

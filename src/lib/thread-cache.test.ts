@@ -72,6 +72,15 @@ test('saving the same history again is skipped until the row is gone', async () 
   assert.ok(await cache.loadThread('a', 's'));
 });
 
+test('a thread whose live history is empty leaves the cache', async () => {
+  const { cache } = memoryCache();
+  await cache.saveThread('a', 's', [saved(1)]);
+  await cache.saveThread('a', 's', [{ id: 'run-user-r1', role: 'user', content: 'Pending' }]);
+  assert.ok(await cache.loadThread('a', 's'));
+  await cache.saveThread('a', 's', []);
+  assert.equal(await cache.loadThread('a', 's'), undefined);
+});
+
 test('a delete issued after a save lands after it', async () => {
   const { sqlite, cache } = memoryCache({ delayInserts: true });
   const operations = [cache.saveThread('a', 's', [saved(1)]), cache.removeThread('a', 's'), cache.saveThread('b', 's', [saved(1)]), cache.clearAgent('b')];
@@ -121,17 +130,19 @@ test('an unreadable database file is deleted and opened again', async (context) 
   assert.deepEqual(await cache.loadThread('a', 's'), [saved(1)]);
 });
 
-test('a failed open is tried again on the next call', async () => {
+test('a failed open is tried again on the next call, and only corruption deletes the file', async () => {
   const sqlite = new DatabaseSync(':memory:');
   let opens = 0;
+  let removes = 0;
   const cache = createThreadCache({
     open: async () => {
-      if (++opens <= 2) throw new Error('unavailable');
+      if (++opens === 1) throw new Error('unavailable');
       return adapter(sqlite);
     },
-    remove: async () => undefined,
+    remove: async () => { removes++; },
   });
   await assert.rejects(cache.loadThread('a', 's'), /unavailable/);
+  assert.equal(removes, 0);
   await cache.saveThread('a', 's', [saved(1)]);
   assert.deepEqual(await cache.loadThread('a', 's'), [saved(1)]);
 });
