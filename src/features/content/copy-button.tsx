@@ -3,6 +3,8 @@ import { SymbolView } from 'expo-symbols';
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Pressable } from 'react-native';
 
+import { haptics } from '@/lib/haptics';
+
 import { useColors } from '../relay/relay-ui';
 
 export function CopyButton({ text, label = 'Copy message' }: { text: string; label?: string }) {
@@ -16,6 +18,7 @@ export function CopyButton({ text, label = 'Copy message' }: { text: string; lab
     accessibilityLabel={copied ? 'Copied' : label}
     onPress={() => {
       void Clipboard.setStringAsync(text).then(() => {
+        haptics.light();
         if (!mounted.current) return;
         setCopied(true);
         clearTimeout(timeout.current);

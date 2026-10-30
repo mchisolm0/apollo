@@ -19,6 +19,7 @@ import { useSessionDraft } from '@/features/relay/use-session-draft';
 import { setVisibleNotificationSession } from '@/features/notifications/foreground';
 import { useApollo } from '@/lib';
 import { currentApproval, isRunActive, sessionRun } from '@/lib/run-state';
+import { useStreamTick } from '@/lib/haptics';
 import type { HermesMessage, HermesModel, HermesRunEvent, HermesSkill } from '@/lib';
 
 const noMessages: readonly HermesMessage[] = [];
@@ -170,6 +171,8 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   const live = runId ? allEvents.filter((event) => event.runId === runId) : noEvents;
   const history = resolvedId ? messages[`${agentId}:${resolvedId}`] ?? noMessages : noMessages;
   const events = project({ history, events: live, runId: run?.runId, runStartedAt: run?.createdAt, runEndedAt: run?.updatedAt, runStatus: run?.status, runOutput: run?.output, running });
+  const streaming = events.findLast((row) => row.kind === 'assistant' && row.status === 'running');
+  useStreamTick(streaming?.kind === 'assistant' ? { id: streaming.id, length: streaming.text.length } : undefined);
   const request = currentApproval(live, run);
   const command = typeof request?.command === 'string' ? request.command : typeof request?.preview === 'string' ? request.preview : undefined;
   const approval = command ? {

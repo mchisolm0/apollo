@@ -16,6 +16,7 @@ import { showSnoozeMenu, showThreadMenu } from './session-actions';
 import { UndoToast, useUndoToast } from './undo-toast';
 import { CustomSnoozeSheet } from '@/features/threads/custom-snooze-sheet';
 import { useApollo } from '@/lib';
+import { haptics } from '@/lib/haptics';
 import { BriefingCard, CardRow } from '@/features/cloud/card-ui';
 import { buildInboxRows, isCardSettled, NO_SETTLED, settleAction, type CollapsibleSectionId, type InboxCard, type SettledCards } from '@/features/cloud/inbox-rows';
 import type { CardAction, CardPick } from '../../../cloud/src/contract';
@@ -207,7 +208,7 @@ const SessionRow = memo(function SessionRow({ session, snoozed, onPress, onSettl
   const showPreview = !quiet && preview && !session.title.startsWith(preview.replace(/…$|\.\.\.$/u, '').slice(0, 40));
   // Swipe left settles (or reopens/unsnoozes), swipe right picks a snooze; a swipe past the threshold commits on release.
   return <Swipeable key={session.id} ref={swipe} overshootLeft={false} overshootRight={false} leftThreshold={SWIPE_COMMIT} rightThreshold={SWIPE_COMMIT} childrenContainerStyle={styles.swipeRow}
-    onSwipeableOpen={(direction) => direction === SwipeDirection.LEFT ? perform() : requestSnooze()}
+    onSwipeableOpen={(direction) => { haptics.medium(); if (direction === SwipeDirection.LEFT) perform(); else requestSnooze(); }}
     renderRightActions={action ? () => <Pressable accessibilityRole="button" accessibilityLabel={`${action.label} thread ${session.title}`} onPress={perform} style={styles.swipeAction}><Text style={styles.swipeText}>{action.label}</Text></Pressable> : undefined}
     renderLeftActions={snoozable ? () => <Pressable accessibilityRole="button" accessibilityLabel={`Snooze thread ${session.title}`} onPress={requestSnooze} style={[styles.swipeAction, styles.snoozeAction]}><Text style={styles.swipeText}>Snooze</Text></Pressable> : undefined}>
     <View style={styles.rowContainer}>
