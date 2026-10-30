@@ -11,6 +11,7 @@ import { createOutboxRuntime } from './outbox.ts';
 import * as runState from './run-state.ts';
 import * as attachments from './attachments.ts';
 import * as messageHistory from './message-history.ts';
+import * as threadCache from './thread-cache.ts';
 
 const { renderToString } = createRequire(import.meta.url)('react-dom/server') as { renderToString(element: React.ReactNode): string };
 
@@ -115,6 +116,8 @@ function providerFixture(sessions: readonly HermesSession[] = []) {
       if (id === './run-state') return runState;
       if (id === './attachments') return attachments;
       if (id === './message-history') return messageHistory;
+      if (id === './thread-cache') return threadCache;
+      if (id === 'expo-sqlite') return { openDatabaseAsync: async () => { throw new Error('No SQLite in tests'); } };
       if (id === './hermes-client') return { HermesClient: Client, HermesRequestError: class extends Error {}, parseSelectedModel: (value: HermesModel | null) => value ?? undefined, sessionModelChoice: (model: string | undefined, cached?: HermesModel) => model ? { id: model, provider: model === cached?.id ? cached.provider : undefined } : cached };
       return nativeRequire(id);
     },

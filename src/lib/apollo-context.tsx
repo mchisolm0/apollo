@@ -15,8 +15,10 @@ import {
 } from 'react';
 import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { openDatabaseAsync } from 'expo-sqlite';
 
 import { reconcileHistory } from './message-history';
+import { createThreadCache } from './thread-cache';
 import { errorMessage } from './protocol';
 import { AgentCatalog } from './catalog';
 import { eventTransportIdentity, isRunActive, statusAfterEvent } from './run-state';
@@ -99,6 +101,8 @@ async function loadModelSelection(agentId: string, sessionId: string) {
   return parseSelectedModel(saved === null ? null : JSON.parse(saved));
 }
 
+const threadCache = createThreadCache(() => openDatabaseAsync('apollo-thread-cache.db'));
+
 const ApolloContext = createContext<ApolloContextValue | undefined>(undefined);
 
 function emptyRuntime(): AgentRuntimeState {
@@ -137,6 +141,10 @@ export function ApolloProvider({
   const sessionDetailRequests = useRef(new Map<string, object>());
   const clients = useRef(new Map<string, HermesClient>());
   const subscriptions = useRef(new Map<string, RunEventSubscription & { runId: string }>());
+  // What the cache last held for each thread and list, so unchanged state is not written again.
+  const cachedThreads = useRef(new Map<string, readonly HermesMessage[]>());
+  const cachedLists = useRef(new Map<string, readonly HermesSession[]>());
+  const hydratedThreads = useRef(new Set<string>());
 
   const updateRuntime = useCallback((agentId: string, patch: Partial<AgentRuntimeState>) => {
     setRuntime((current) => ({
@@ -362,8 +370,21 @@ export function ApolloProvider({
   useEffect(() => {
     let cancelled = false;
     const activeSubscriptions = subscriptions.current;
-    void catalog.load().then((loadedAgents) => {
+    const savedLists = threadCache.loadLists().catch(() => new Map<string, readonly HermesSession[]>());
+    void Promise.all([catalog.load(), savedLists]).then(([loadedAgents, lists]) => {
       if (cancelled) return;
+      void threadCache.retainAgents(loadedAgents.map((agent) => agent.id)).catch(() => undefined);
+      // The cached list shows until the first live list replaces it.
+      setRuntime((current) => {
+        const next = { ...current };
+        for (const agent of loadedAgents) {
+          const sessions = lists.get(agent.id);
+          if (!sessions || next[agent.id]?.capabilities || next[agent.id]?.sessions.length) continue;
+          cachedLists.current.set(agent.id, sessions);
+          next[agent.id] = { ...(next[agent.id] ?? emptyRuntime()), sessions };
+        }
+        return next;
+      });
       setAgents(loadedAgents);
       setLoading(false);
       void Promise.all(loadedAgents.map((agent) => refreshAgent(agent.id)));
@@ -378,7 +399,27 @@ export function ApolloProvider({
       for (const subscription of activeSubscriptions.values()) subscription.close();
       activeSubscriptions.clear();
     };
-  }, [catalog, refreshAgent]);
+  }, [catalog, refreshAgent, setRuntime]);
+
+  // Saves each live thread list. A list counts as live once this launch has fetched capabilities.
+  useEffect(() => {
+    for (const [agentId, state] of Object.entries(runtime)) {
+      if (!state.capabilities || cachedLists.current.get(agentId) === state.sessions) continue;
+      cachedLists.current.set(agentId, state.sessions);
+      void threadCache.saveList(agentId, state.sessions).catch(() => undefined);
+    }
+  }, [runtime]);
+
+  // Saves threads whose history changed: loads, run recovery, and finished runs all land here.
+  useEffect(() => {
+    for (const [key, history] of Object.entries(messages)) {
+      if (cachedThreads.current.get(key) === history) continue;
+      cachedThreads.current.set(key, history);
+      // Agent ids are UUIDs, so the first colon ends the agent id.
+      const split = key.indexOf(':');
+      void threadCache.saveThread(key.slice(0, split), key.slice(split + 1), history).catch(() => undefined);
+    }
+  }, [messages]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
@@ -578,6 +619,8 @@ export function ApolloProvider({
     await client.deleteSession(sessionId);
     await AsyncStorage.removeItem(modelSelectionKey(agentId, sessionId)).catch(() => undefined);
     sessionDetailRequests.current.delete(`${agentId}:${sessionId}`);
+    cachedThreads.current.delete(`${agentId}:${sessionId}`);
+    void threadCache.removeThread(agentId, sessionId).catch(() => undefined);
     setRuntime((current) => {
       const state = current[agentId];
       if (!state) return current;
@@ -668,6 +711,16 @@ export function ApolloProvider({
   }, [setRuntime]);
 
   const sessionMessages = useCallback(async (agentId: string, sessionId: string): Promise<readonly HermesMessage[]> => {
+    // Show the cached copy right away, offline too. Live history that lands first wins.
+    const key = `${agentId}:${sessionId}`;
+    if (!hydratedThreads.current.has(key)) {
+      hydratedThreads.current.add(key);
+      void threadCache.loadThread(agentId, sessionId).then((cached) => {
+        if (!cached) return;
+        cachedThreads.current.set(key, cached);
+        setMessages((current) => current[key] ? current : { ...current, [key]: cached });
+      }).catch(() => undefined);
+    }
     let client = clients.current.get(agentId);
     if (!client) {
       await refreshAgent(agentId);
@@ -751,6 +804,10 @@ export function ApolloProvider({
     await AsyncStorage.multiRemove(modelKeys);
     closeSubscription(agentId);
     for (const key of sessionDetailRequests.current.keys()) if (key.startsWith(`${agentId}:`)) sessionDetailRequests.current.delete(key);
+    for (const key of cachedThreads.current.keys()) if (key.startsWith(`${agentId}:`)) cachedThreads.current.delete(key);
+    for (const key of hydratedThreads.current) if (key.startsWith(`${agentId}:`)) hydratedThreads.current.delete(key);
+    cachedLists.current.delete(agentId);
+    await threadCache.clearAgent(agentId).catch(() => undefined);
     clients.current.delete(agentId);
     await catalog.remove(agentId);
     posthog.capture('agent_removed', { agent_id: agentId });
