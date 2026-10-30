@@ -1,0 +1,189 @@
+import {
+  VOICE_RECORDING_LIMIT_SECONDS,
+  VoiceInputController,
+  voiceInputBlocksSubmission,
+  type VoiceDraftSnapshot,
+  type VoiceInputControllerDependencies,
+  type VoiceInputPhase,
+  type VoiceInputState,
+} from "./controller.ts";
+import { normalizeVoiceInputDecibels, VOICE_WAVEFORM_SAMPLE_COUNT } from "./voiceInputMetering.ts";
+
+const VOICE_METERING_INTERVAL_MS = 80;
+/** expo-audio stops reporting before it delivers a finished recording, so a gap must outlast that handoff. */
+const VOICE_INTERRUPTED_AFTER_SILENT_SAMPLES = 12;
+const IDLE_STATE: VoiceInputState = { phase: "idle", error: null, errorAction: null };
+const SILENT_LEVELS: readonly number[] = Array<number>(VOICE_WAVEFORM_SAMPLE_COUNT).fill(0);
+
+export type VoiceInputTarget = {
+  readonly ownerKey: string;
+  readonly readDraft: () => VoiceDraftSnapshot | null;
+  readonly commitDraft: VoiceInputControllerDependencies["commitDraft"];
+};
+
+export type VoiceInputSnapshot = {
+  readonly state: VoiceInputState;
+  readonly ownerKey: string | null;
+  readonly elapsedSeconds: number;
+};
+
+export type VoiceRecordingSample = {
+  readonly durationMillis: number;
+  readonly metering: number | undefined;
+};
+
+export type VoiceInputSessionDependencies = Omit<
+  VoiceInputControllerDependencies,
+  "readDraft" | "commitDraft" | "onStateChange"
+> & {
+  /** Reads the live recorder, or null when it is not capturing. */
+  readonly sampleRecording: () => VoiceRecordingSample | null;
+  /** Levels change every metering tick, so they bypass React state. */
+  readonly publishAudioLevels: (levels: readonly number[]) => void;
+  /** Holds the screen awake while recording; returns the release. */
+  readonly keepAwake: () => () => void;
+};
+
+/**
+ * Apollo freezes the editor while recording, so unlike T3 the draft has no
+ * revision counter: a changed text is the only staleness signal.
+ */
+export function createVoiceInputTarget(
+  ownerKey: string,
+  readText: () => string | null,
+  commitDraft: VoiceInputTarget["commitDraft"],
+  selection: VoiceDraftSnapshot["selection"],
+): VoiceInputTarget {
+  return {
+    ownerKey,
+    readDraft: () => {
+      const text = readText();
+      if (text === null) return null;
+      return { ownerKey, text, selection, revision: 0 };
+    },
+    commitDraft,
+  };
+}
+
+/**
+ * The app's single voice input: it owns the controller, the recording-only
+ * side effects (keep-awake, metering) and publishes what the UI renders.
+ */
+export class VoiceInputSession {
+  readonly controller: VoiceInputController;
+  private readonly dependencies: VoiceInputSessionDependencies;
+  private target: VoiceInputTarget | null = null;
+  private snapshot: VoiceInputSnapshot = { state: IDLE_STATE, ownerKey: null, elapsedSeconds: 0 };
+  private readonly listeners = new Set<() => void>();
+  private audioLevels = SILENT_LEVELS;
+  private releaseKeepAwake: (() => void) | null = null;
+  private meteringInterval: ReturnType<typeof setInterval> | null = null;
+  private sawRecordingSample = false;
+  private missedSamples = 0;
+
+  constructor(dependencies: VoiceInputSessionDependencies) {
+    this.dependencies = dependencies;
+    this.controller = new VoiceInputController({
+      ...dependencies,
+      onStateChange: (state) => this.handleStateChange(state),
+      readDraft: () => this.target?.readDraft() ?? null,
+      commitDraft: (text, selection) => this.target?.commitDraft(text, selection),
+    });
+  }
+
+  get ownerKey(): string | null {
+    return this.target?.ownerKey ?? null;
+  }
+
+  readonly subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+
+  readonly getSnapshot = (): VoiceInputSnapshot => this.snapshot;
+
+  /** Stops and discards anything the owner started, including a shown error. */
+  cancel(ownerKey: string | null): void {
+    if (ownerKey !== null && this.ownerKey === ownerKey) this.controller.cancel();
+  }
+
+  start(target: VoiceInputTarget): Promise<void> {
+    if (voiceInputBlocksSubmission(this.controller.currentState)) return Promise.resolve();
+    this.target = target;
+    return this.controller.start();
+  }
+
+  private handleStateChange(state: VoiceInputState): void {
+    const previousPhase = this.snapshot.state.phase;
+    let elapsedSeconds = this.snapshot.elapsedSeconds;
+    if (state.phase !== previousPhase) {
+      if (previousPhase === "recording") this.stopRecordingActivity();
+      if (capturesAudio(state.phase)) {
+        if (this.audioLevels.some((level) => level !== 0)) this.setAudioLevels(SILENT_LEVELS);
+        elapsedSeconds = 0;
+      }
+    }
+    this.publish({ state, ownerKey: this.ownerKey, elapsedSeconds });
+    if (state.phase === "recording" && previousPhase !== "recording") {
+      this.startRecordingActivity();
+    }
+  }
+
+  private startRecordingActivity(): void {
+    this.releaseKeepAwake = this.dependencies.keepAwake();
+    this.sawRecordingSample = false;
+    this.missedSamples = 0;
+    this.sampleRecording();
+    this.meteringInterval = setInterval(() => this.sampleRecording(), VOICE_METERING_INTERVAL_MS);
+  }
+
+  private stopRecordingActivity(): void {
+    if (this.meteringInterval !== null) clearInterval(this.meteringInterval);
+    this.meteringInterval = null;
+    this.releaseKeepAwake?.();
+    this.releaseKeepAwake = null;
+  }
+
+  private sampleRecording(): void {
+    if (this.controller.currentState.phase !== "recording") return;
+    const sample = this.dependencies.sampleRecording();
+    // expo-audio pauses for a call or Siri without a status event. A recorder
+    // that stops reporting after it started, for longer than a normal finish
+    // takes to arrive, is interrupted.
+    if (!sample) {
+      if (this.sawRecordingSample && ++this.missedSamples >= VOICE_INTERRUPTED_AFTER_SILENT_SAMPLES) {
+        void this.controller.interruptRecording();
+      }
+      return;
+    }
+    this.sawRecordingSample = true;
+    this.missedSamples = 0;
+
+    const level = normalizeVoiceInputDecibels(sample.metering);
+    if (level !== 0 || this.audioLevels.some((sample) => sample !== 0)) {
+      this.setAudioLevels([...this.audioLevels.slice(1), level]);
+    }
+
+    const elapsedSeconds = Math.min(
+      VOICE_RECORDING_LIMIT_SECONDS,
+      Math.max(0, Math.floor(sample.durationMillis / 1_000)),
+    );
+    if (elapsedSeconds !== this.snapshot.elapsedSeconds) {
+      this.publish({ ...this.snapshot, elapsedSeconds });
+    }
+  }
+
+  private setAudioLevels(levels: readonly number[]): void {
+    this.audioLevels = levels;
+    this.dependencies.publishAudioLevels(levels);
+  }
+
+  private publish(snapshot: VoiceInputSnapshot): void {
+    this.snapshot = snapshot;
+    for (const listener of this.listeners) listener();
+  }
+}
+
+function capturesAudio(phase: VoiceInputPhase): boolean {
+  return phase === "preparing" || phase === "recording";
+}

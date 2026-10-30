@@ -19,6 +19,9 @@ import { showSessionActions } from './session-actions';
 import { MessageContent } from './message-content';
 import { CronDeliveryEntry } from './cron-delivery-entry';
 import { ModelPicker, modelDisplayName } from './model-picker';
+import { ComposerDictationCancelAction, ComposerDictationPrimaryAction, ComposerDictationStartAction, ComposerDictationStatus, ComposerDictationToolbar } from '../voice-input/ComposerDictationControl';
+import { useVoiceInputController } from '../voice-input/useVoiceInputController';
+import { resolveVoiceComposerPresentation } from '../voice-input/voiceInputPresentation';
 import type { HermesModel, HermesSkill } from '../../lib/types';
 import type { ApprovalRequest, ConnectionState, RelaySession } from './types';
 import { elapsed, formatDuration, liveActivityLabel, readableOutput, settledActivityLabel, toolVerb } from './activity';
@@ -111,7 +114,21 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
     if (cron) return <CronDeliveryEntry delivery={cron} onDisclosure={suspendFollow} />;
     return <TranscriptEntry row={item} agentName={agentName ?? 'Hermes'} attachmentSource={attachmentSource} />;
   }, [suspendFollow, agentName, attachmentSource, connection]);
-  const canSend = connection !== 'revoked' && !sendDisabled && !isActing && !isPicking && Boolean(draft.trim() || attachments.length);
+  // Dictation belongs to the visible composer; the approval card hides it and discards any recording.
+  const voiceInput = useVoiceInputController({
+    ownerKey: approval ? null : session.id,
+    draftMessage: draft,
+    selection,
+    disabled: isActing,
+    onCommitDraft: (text, next) => {
+      onDraftChange?.(text);
+      setObservedSelection({ ...next, text });
+      setInputSelection(next);
+    },
+  });
+  const voicePresentation = resolveVoiceComposerPresentation(voiceInput.state, voiceInput.elapsedSeconds);
+  const isVoiceInputPresented = voicePresentation.statusLabel !== null;
+  const canSend = connection !== 'revoked' && !sendDisabled && !isActing && !isPicking && !voiceInput.blocksSubmission && Boolean(draft.trim() || attachments.length);
   const typedSkill = selection.start === selection.end ? skillTrigger(draft, selection.end) : undefined;
   const skillMenuTrigger: SkillTrigger | undefined = !skillsDismissed ? typedSkill ?? (skillsOpen ? { query: '', start: selection.end, end: selection.end } : undefined) : undefined;
   const skillMatches = matchingSkills(skillMenuTrigger, skills);
@@ -119,10 +136,17 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
   // Like T3: a one-line pill until the user is composing, then the full editor and toolbar.
   // Collapsed, the single line sits centered beside the action button.
   const pillHeight = Math.max(COLLAPSED_ACTION, 23 * factor + 8);
-  const expanded = focused || modelOpen || attachments.length > 0 || Boolean(skillMenuTrigger);
+  const expanded = focused || modelOpen || attachments.length > 0 || Boolean(skillMenuTrigger) || isVoiceInputPresented;
   const action = isSending && !draft.trim() && !attachments.length
     ? <ComposerAction kind="stop" size={expanded ? EXPANDED_ACTION : COLLAPSED_ACTION} disabled={isActing || connection !== 'connected'} onPress={() => onStop?.()} />
     : <ComposerAction kind="send" size={expanded ? EXPANDED_ACTION : COLLAPSED_ACTION} label={isActing ? 'Saving message' : connection !== 'connected' || isSending || queuedMessages.length ? 'Queue message' : 'Send message'} disabled={!canSend} onPress={() => onSend(draft.trim())} />;
+  // While dictating the toolbar flips to cancel, waveform and timer, and confirm.
+  const dictationToolbar = <View style={styles.toolbar}>
+    <ComposerDictationCancelAction presentation={voicePresentation} onCancel={voiceInput.cancel} />
+    <ComposerDictationStatus audioLevels={voiceInput.audioLevels} elapsedSeconds={voiceInput.elapsedSeconds} phase={voiceInput.state.phase} presentation={voicePresentation} onDismissError={voiceInput.cancel} />
+    <ComposerDictationPrimaryAction state={voiceInput.state} presentation={voicePresentation} isAvailable={voiceInput.isAvailable} disabled={isActing} size={EXPANDED_ACTION} onStart={voiceInput.start} onConfirm={() => void voiceInput.stop()} onCancel={voiceInput.cancel} />
+    {voicePresentation.showsSend ? action : null}
+  </View>;
   const chooseSkill = (skill: HermesSkill) => {
     if (!skillMenuTrigger) return;
     const result = insertSkill(draft, skillMenuTrigger, skill.name);
@@ -219,7 +243,7 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
               onFocus={() => setFocused(true)}
               onBlur={() => setFocused(false)}
               value={draft}
-              editable={!isActing}
+              editable={!isActing && !voiceInput.freezesEditor}
               onChangeText={(value) => { setObservedSelection((previous) => previous ? { start: Math.min(previous.start, value.length), end: Math.min(previous.end, value.length), text: value } : previous); setInputSelection(undefined); setSkillsOpen(false); setSkillsDismissed(false); onDraftChange?.(value); }}
               multiline
               scrollEnabled={expanded}
@@ -233,7 +257,7 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
               accessibilityHint={connection !== 'connected' ? 'Messages are saved in the outbox until this agent reconnects.' : undefined}
             />
             </TextInputWrapper>
-            {expanded ? <View style={styles.toolbar}>
+            {expanded ? <ComposerDictationToolbar showsDictation={isVoiceInputPresented} dictation={dictationToolbar}><View style={styles.toolbar}>
               {onPickAttachments && Platform.OS !== 'web' ? (
                 <MenuView
                   actions={[
@@ -268,8 +292,9 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
                 </Pressable>
               ) : null}
               <View style={styles.toolbarSpacer} />
+              <ComposerDictationStartAction state={voiceInput.state} isAvailable={voiceInput.isAvailable} disabled={isActing} onStart={voiceInput.start} onCancel={voiceInput.cancel} />
               {action}
-            </View> : action}
+            </View></ComposerDictationToolbar> : action}
           </View>
         </View>
       )}
