@@ -147,7 +147,7 @@ function useHighlightedCode(
   highlightCode: MarkdownCodeHighlighter,
 ): HighlightedCode | null {
   const scope = codeHighlightScope(language, theme, highlightCode);
-  const key = `${scope}:${code}`;
+  const key = codeHighlightCacheKey(code, language, theme, highlightCode);
   const [highlighted, setHighlighted] = useState<{
     readonly key: string;
     readonly scope: string;

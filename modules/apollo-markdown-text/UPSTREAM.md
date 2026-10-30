@@ -21,4 +21,5 @@ in `src/nativeMarkdownText.ts`, come from T3 Code commit
 `7bd7f99e6cab940892ff9240549c507bfd066aee`. Blocks key by start offset so a
 streaming code block keeps its state, and `useHighlightedCode` in
 `NativeMarkdownBlock.ios.tsx` seeds `pendingCodeHighlight` from its last result.
-Apollo skips T3's synchronous `read` path, since its Prism highlighter is async.
+Apollo keeps its highlighter API async, skips T3's synchronous `read` path and
+`session` parameter, and also requires a matching palette before reusing lines.
