@@ -1,0 +1,51 @@
+diff --git a/ios/AppDelegate.swift b/ios/AppDelegate.swift
+index 37558e006b606eae26e2e5be6e44afee93590547..8697b531f1dfc707a15b7644032ac1e51d6412bd 100644
+--- a/ios/AppDelegate.swift
++++ b/ios/AppDelegate.swift
+@@ -17,7 +17,13 @@ public class ExpoQuickActionsAppDelegate: ExpoAppDelegateSubscriber {
+   }
+ 
+   public func application(_ application: UIApplication, performActionFor shortcutItem: UIApplicationShortcutItem, completionHandler: @escaping (Bool) -> Void) {
+-    NotificationCenter.default.post(name: Notification.Name(onQuickAction), object: shortcutItem)
++    // Under the scene lifecycle a cold-start action arrives here before JS listens, so hold it for
++    // OnStartObserving. A launchOptions action is already exposed as `initial`.
++    if isObservingQuickActions {
++      NotificationCenter.default.post(name: Notification.Name(onQuickAction), object: shortcutItem)
++    } else if initialAction == nil {
++      pendingAction = shortcutItem
++    }
+     completionHandler(true)
+   }
+ }
+diff --git a/ios/ExpoQuickActionsModule.swift b/ios/ExpoQuickActionsModule.swift
+index 252da492ce374eef886d574a2c38af242de6d6c3..822e25e46a850f87778ce58bcb6b978e07c2c490 100644
+--- a/ios/ExpoQuickActionsModule.swift
++++ b/ios/ExpoQuickActionsModule.swift
+@@ -72,6 +72,9 @@ func toActionObject(item: UIApplicationShortcutItem?) -> ActionObject? {
+ }
+ 
+ var initialAction: UIApplicationShortcutItem?
++// Main thread only.
++var pendingAction: UIApplicationShortcutItem?
++var isObservingQuickActions = false
+ 
+ public class ExpoQuickActionsModule: Module {
+     
+@@ -109,9 +112,17 @@ public class ExpoQuickActionsModule: Module {
+                 name: Notification.Name(onQuickAction),
+                 object: nil
+             )
++            DispatchQueue.main.async {
++                isObservingQuickActions = true
++                if let item = pendingAction {
++                    pendingAction = nil
++                    NotificationCenter.default.post(name: Notification.Name(onQuickAction), object: item)
++                }
++            }
+         }
+         
+         OnStopObserving {
++            DispatchQueue.main.async { isObservingQuickActions = false }
+             NotificationCenter.default.removeObserver(
+                 self,
+                 name: Notification.Name(onQuickAction),

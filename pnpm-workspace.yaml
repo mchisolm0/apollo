@@ -13,3 +13,4 @@ patchedDependencies:
   '@react-native-ai/apple@0.12.0': 'patches/@react-native-ai__apple@0.12.0.patch'
   react-native-nitro-modules@0.35.9: patches/react-native-nitro-modules@0.35.9.patch
   react-native-screens@4.30.1: patches/react-native-screens@4.30.1.patch
+  expo-quick-actions@6.0.2: patches/expo-quick-actions@6.0.2.patch

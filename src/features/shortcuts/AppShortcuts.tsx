@@ -20,6 +20,10 @@ import {
 const icon = (kind: 'new' | 'thread') =>
   Platform.OS === 'ios' ? (kind === 'new' ? 'symbol:square.and.pencil' : 'symbol:bubble.left') : 'shortcut_icon';
 
+// `QuickActions.initial` lives as long as the JS context, which can outlast a remounted root (Android
+// activity recreation), so the launch action routes once.
+let launchActionRouted = false;
+
 /**
  * Owns the home-screen quick actions (long-press the app icon): keeps "New thread" plus the recently
  * opened threads in sync and routes taps, cold launch included, once agents and recents load.
@@ -31,14 +35,16 @@ export function AppShortcuts() {
   const params = useGlobalSearchParams<{ id?: string; agentId?: string }>();
   // null until the stored list loads, so the first thread opened after launch cannot clobber it.
   const [recents, setRecents] = useState<readonly RecentThread[] | null>(null);
-  // A failed load falls back to an empty list without persisting it over valid history.
+  // Only a successful load persists, so a failed one never overwrites valid history.
   const persistable = useRef(false);
   const saves = useRef(Promise.resolve());
   // The tapped action waits here until it can be routed; `taps` re-runs routing for background taps.
-  const pending = useRef<QuickActions.Action | undefined>(QuickActions.initial);
+  const pending = useRef<QuickActions.Action | undefined>(undefined);
   const [taps, setTaps] = useState(0);
   // Bumped per routed tap so a slow refresh for an older tap never overrides a newer one.
   const routed = useRef(0);
+  // A tapped thread the refresh did not find, judged on the next render, when `runtime` shows whether it connected.
+  const [missing, setMissing] = useState<RecentThread>();
 
   useEffect(() => {
     let live = true;
@@ -47,12 +53,22 @@ export function AppShortcuts() {
       persistable.current = true;
       setRecents(parseRecentThreads(stored));
     }, () => { if (live) setRecents([]); });
+    if (!launchActionRouted) {
+      launchActionRouted = true;
+      pending.current = QuickActions.initial;
+    }
     const subscription = QuickActions.addListener((action) => {
       pending.current = action;
       setTaps((count) => count + 1);
     });
     return () => { live = false; subscription.remove(); };
   }, []);
+
+  const thread = activeThread(pathname, params);
+  // Where the user is, so a slow refresh never navigates away from somewhere they went since the tap.
+  const here = `${pathname}\n${thread?.agentId ?? ''}`;
+  const location = useRef(here);
+  useEffect(() => { location.current = here; }, [here]);
 
   // A string so effects re-run only when the paired agents change, not on every agents update.
   const agentKey = loading ? undefined : agents.map((agent) => agent.id).join('\n');
@@ -62,37 +78,41 @@ export function AppShortcuts() {
     pending.current = undefined;
     routed.current += 1;
     const destination = shortcutDestination(action, agentKey ? agentKey.split('\n') : [], recents);
-    if (destination?.pathname !== '/session/[id]' || destination.params.id === 'new') {
-      if (destination) router.push(destination);
+    if (!destination) return;
+    if (destination.pathname === '/') {
+      router.dismissTo('/');
       return;
     }
     const { id: sessionId, agentId } = destination.params;
+    if (sessionId === 'new') {
+      router.push(destination);
+      return;
+    }
+    const from = location.current;
+    if (from === `/session/${sessionId}\n${agentId}`) return;
     const request = routed.current;
     void (async () => {
       if (!hasSession(agentId, sessionId)) await refreshAgent(agentId).catch(() => {});
-      if (request !== routed.current) return;
+      if (request !== routed.current || from !== location.current) return;
       if (hasSession(agentId, sessionId)) return router.push(destination);
-      // A deleted (or unreachable) thread leaves the launcher and opens its agent's inbox instead.
-      persistable.current = true;
-      setRecents((current) => current && current.filter((thread) => thread.agentId !== agentId || thread.sessionId !== sessionId));
+      setMissing({ agentId, sessionId, title: '' });
       router.dismissTo({ pathname: '/', params: { agentId } });
     })();
   }, [taps, agentKey, recents, router, hasSession, refreshAgent]);
 
-  const thread = activeThread(pathname, params);
-  const agentId = thread?.agentId;
-  const sessionId = thread?.sessionId;
-  const title = (agentId && runtime[agentId]?.sessions.find((session) => session.id === sessionId)?.title) || '';
-  const loaded = recents !== null;
-  useEffect(() => {
-    if (!loaded || !agentId || !sessionId) return;
-    setRecents((current) => {
-      if (!current) return current;
-      const next = withRecentThread(current, { agentId, sessionId, title });
-      if (next !== current) persistable.current = true;
-      return next;
-    });
-  }, [loaded, agentId, sessionId, title]);
+  // State adjusted while rendering (not in effects) so `runtime` and `recents` are current.
+  if (missing) {
+    setMissing(undefined);
+    // Only a reachable agent proves the thread is gone; an offline one keeps it in the launcher.
+    if (recents && runtime[missing.agentId]?.status === 'connected') {
+      setRecents(recents.filter((recent) => recent.agentId !== missing.agentId || recent.sessionId !== missing.sessionId));
+    }
+  } else if (recents && thread) {
+    const title = runtime[thread.agentId]?.sessions.find((session) => session.id === thread.sessionId)?.title ?? '';
+    // Same array when nothing changed, so this settles after one update.
+    const next = withRecentThread(recents, { ...thread, title });
+    if (next !== recents) setRecents(next);
+  }
 
   useEffect(() => {
     if (!recents || !persistable.current) return;
