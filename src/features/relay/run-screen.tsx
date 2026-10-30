@@ -1,4 +1,4 @@
-import { TextInputWrapper } from 'expo-paste-input';
+import { ComposerEditor, type ComposerEditorHandle } from '@apollo/native-composer-editor';
 import * as Clipboard from 'expo-clipboard';
 import { canSteerMessage, type QueuedMessage } from '../../lib/outbox';
 import { feedFollowOptions, followAfterScroll } from './feed-follow';
@@ -6,7 +6,7 @@ import { CopyButton } from '../content/copy-button';
 import { splitAttachmentMessage, type AttachmentSource, type DraftAttachment } from '../../lib/attachments';
 import { AttachmentStrip } from './attachment-strip';
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View, type TextInputInstance } from 'react-native';
+import { ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
 import { MenuView } from '@expo/ui/community/menu';
 import { LegendList, useRecyclingState, type LegendListRef } from '@legendapp/list/react-native';
@@ -14,7 +14,9 @@ import { LegendList, useRecyclingState, type LegendListRef } from '@legendapp/li
 import { ConnectionAction, ConnectionMark, IconButton, useTextScale, useThemedStyles, useColors, type RelayPalette } from './relay-ui';
 import { KeyboardFrame } from './keyboard-frame';
 import { RingSpinner } from './ring-spinner';
-import { insertSkill, matchingSkills, selectedSkillNames, skillTrigger, type SkillTrigger } from './composer-skills';
+import { insertSkill, matchingSkills, selectedSkillNames, skillTokens, skillTrigger, type SkillToken, type SkillTrigger } from './composer-skills';
+import { MAX_DRAFT_CHARS, PASTED_TEXT_ATTACHMENT_BYTES } from './composer-paste';
+import { useComposerEnterBehavior } from './composer-return';
 import { showSessionActions } from './session-actions';
 import { MessageContent } from './message-content';
 import { CronDeliveryEntry } from './cron-delivery-entry';
@@ -37,6 +39,8 @@ export type RunScreenProps = {
   isPicking?: boolean;
   onAddAttachments?: () => void;
   onPasteImages?: (uris: readonly string[]) => void;
+  /** A text paste too long for the draft, to save as an attachment. */
+  onPasteText?: (text: string) => void;
   queuedMessages?: readonly QueuedMessage[];
   onRetryQueued?: (id: string) => void;
   onRemoveQueued?: (id: string) => void;
@@ -73,13 +77,14 @@ export type RunScreenProps = {
   onDeny?: (approval: ApprovalRequest) => void;
 };
 
-export function RunScreen({ session, events, connection, approval, draft = '', attachments = [], isPicking = false, onAddAttachments, onPasteImages, queuedMessages = [], onRetryQueued, onRemoveQueued, onSteerQueued, sendDisabled = false, onRetryError, onPickAttachments, onRemoveAttachment, attachmentSource, agentName, isSending = false, isLoading = false, isActing = false, statusLabel, error, skills = [], skillsLoading = false, skillsError, onRefreshSkills, models = [], modelsLoading = false, defaultModel, selectedModel, selectedProvider, onSelectModel, onBack, onSessionActions, onDraftChange, onSend, onStop, onReconnect, onAgentDetails, onApprove, onDeny }: RunScreenProps) {
+export function RunScreen({ session, events, connection, approval, draft = '', attachments = [], isPicking = false, onAddAttachments, onPasteImages, onPasteText, queuedMessages = [], onRetryQueued, onRemoveQueued, onSteerQueued, sendDisabled = false, onRetryError, onPickAttachments, onRemoveAttachment, attachmentSource, agentName, isSending = false, isLoading = false, isActing = false, statusLabel, error, skills = [], skillsLoading = false, skillsError, onRefreshSkills, models = [], modelsLoading = false, defaultModel, selectedModel, selectedProvider, onSelectModel, onBack, onSessionActions, onDraftChange, onSend, onStop, onReconnect, onAgentDetails, onApprove, onDeny }: RunScreenProps) {
   const styles = useThemedStyles(createStyles);
   const colors = useColors();
   const { fontScale } = useWindowDimensions();
   const { factor } = useTextScale();
   const list = useRef<LegendListRef>(null);
-  const input = useRef<TextInputInstance>(null);
+  const input = useRef<ComposerEditorHandle>(null);
+  const enterBehavior = useComposerEnterBehavior();
   const dragging = useRef(false);
   const atEnd = useRef(true);
   const dragEndTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -129,7 +134,16 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
   const voicePresentation = resolveVoiceComposerPresentation(voiceInput.state, voiceInput.elapsedSeconds);
   const isVoiceInputPresented = voicePresentation.statusLabel !== null;
   const canSend = connection !== 'revoked' && !sendDisabled && !isActing && !isPicking && !voiceInput.blocksSubmission && Boolean(draft.trim() || attachments.length);
-  const typedSkill = selection.start === selection.end ? skillTrigger(draft, selection.end) : undefined;
+  // Chips keep their place when the space after a trailing one is deleted, so they are derived from the previous chips.
+  const [chips, setChips] = useState<{ draft: string; skills: readonly HermesSkill[]; tokens: readonly SkillToken[] }>(() => ({ draft, skills, tokens: skillTokens(draft, skills) }));
+  let tokens = chips.tokens;
+  if (chips.draft !== draft || chips.skills !== skills) {
+    tokens = skillTokens(draft, skills, chips.tokens);
+    setChips({ draft, skills, tokens });
+  }
+  const triggerAtCursor = selection.start === selection.end ? skillTrigger(draft, selection.end) : undefined;
+  // A caret just after a chip is not typing a skill name.
+  const typedSkill = triggerAtCursor && !tokens.some((token) => token.start === triggerAtCursor.start) ? triggerAtCursor : undefined;
   const skillMenuTrigger: SkillTrigger | undefined = !skillsDismissed ? typedSkill ?? (skillsOpen ? { query: '', start: selection.end, end: selection.end } : undefined) : undefined;
   const skillMatches = matchingSkills(skillMenuTrigger, skills);
   const selectedSkills = useMemo(() => selectedSkillNames(draft, skills), [draft, skills]);
@@ -233,30 +247,43 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
           {skillMenuTrigger ? <SkillMenu skills={skillMatches} loading={skillsLoading} error={skillsError} onRetry={onRefreshSkills} onSelect={chooseSkill} /> : null}
           <View style={expanded ? styles.composerField : styles.composerPill}>
             {expanded ? <AttachmentStrip files={attachments.map((file) => ({ ...file, source: { uri: file.uri } }))} onRemove={onRemoveAttachment} disabled={isActing || isPicking} /> : null}
-            <TextInputWrapper style={expanded ? undefined : { flex: 1 }} onPaste={(payload) => { if (payload.type === 'images' && !isActing && !isPicking && !sendDisabled) onPasteImages?.(payload.uris); }}>
-            <TextInput
+            <ComposerEditor
               ref={input}
               // A new thread opens ready to type.
               autoFocus={session.id === 'new'}
-              // Grows from one line to five before scrolling while expanded.
-              style={[expanded ? styles.input : styles.pillInput, { fontSize: 17 * factor, lineHeight: 23 * factor }, expanded ? { maxHeight: 23 * factor * 5 + 12 } : { height: pillHeight, paddingVertical: (pillHeight - 23 * factor) / 2 }]}
+              value={draft}
+              selection={inputSelection}
+              tokens={tokens}
+              theme={{ text: colors.primary, placeholder: colors.secondary, accent: colors.cyan, surface: colors.composer }}
+              fontSize={17 * factor}
+              lineHeight={23 * factor}
+              // Grows from one line to five before scrolling while expanded; collapsed, one centered line.
+              contentInsetVertical={expanded ? 6 : (pillHeight - 23 * factor) / 2}
+              minHeight={expanded ? 44 : pillHeight}
+              maxHeight={expanded ? 23 * factor * 5 + 12 : pillHeight}
+              style={expanded ? styles.input : styles.pillInput}
               onFocus={() => setFocused(true)}
               onBlur={() => setFocused(false)}
-              value={draft}
-              editable={!isActing && !voiceInput.freezesEditor}
-              onChangeText={(value) => { setObservedSelection((previous) => previous ? { start: Math.min(previous.start, value.length), end: Math.min(previous.end, value.length), text: value } : previous); setInputSelection(undefined); setSkillsOpen(false); setSkillsDismissed(false); onDraftChange?.(value); }}
-              multiline
+              editable={!isActing}
+              // Dictation freezes the text but keeps the keyboard and caret where the transcript lands.
+              readOnly={voiceInput.freezesEditor}
               scrollEnabled={expanded}
-              selection={inputSelection}
-              onSelectionChange={(event) => { setObservedSelection({ ...event.nativeEvent.selection, text: draft }); setInputSelection(undefined); setSkillsDismissed(false); }}
-              maxLength={8000}
+              enterBehavior={enterBehavior}
+              maxLength={MAX_DRAFT_CHARS}
+              textPasteThresholdBytes={PASTED_TEXT_ATTACHMENT_BYTES}
+              onChangeText={(value) => { setObservedSelection((previous) => previous ? { start: Math.min(previous.start, value.length), end: Math.min(previous.end, value.length), text: value } : previous); setInputSelection(undefined); setSkillsOpen(false); setSkillsDismissed(false); onDraftChange?.(value); }}
+              onSelectionChange={(next, text) => { setObservedSelection({ ...next, text }); setInputSelection(undefined); setSkillsDismissed(false); }}
+              onPasteImages={(uris) => { if (!isActing && !isPicking && !sendDisabled) onPasteImages?.(uris); }}
+              onPasteText={({ text }) => { if (!isActing && !isPicking && !sendDisabled) onPasteText?.(text); }}
+              onSubmit={() => {
+                // Return with a typed $skill picks the top match, like tapping it.
+                if (typedSkill && !skillsDismissed && skillMatches[0]) chooseSkill(skillMatches[0]);
+                else if (canSend) onSend(draft.trim());
+              }}
               placeholder="Message"
-              placeholderTextColor={colors.secondary}
-              selectionColor={colors.cyan}
               accessibilityLabel="Message Hermes"
               accessibilityHint={connection !== 'connected' ? 'Messages are saved in the outbox until this agent reconnects.' : undefined}
             />
-            </TextInputWrapper>
             {expanded ? <ComposerDictationToolbar showsDictation={isVoiceInputPresented} dictation={dictationToolbar}><View style={styles.toolbar}>
               {onPickAttachments && Platform.OS !== 'web' ? (
                 <MenuView
@@ -530,10 +557,10 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   composer: { paddingHorizontal: 12, paddingVertical: 8, gap: 8 },
   composerField: { backgroundColor: colors.composer, borderRadius: COMPOSER_RADIUS, paddingHorizontal: FIELD_INSET, paddingTop: 10, paddingBottom: FIELD_INSET },
   composerPill: { backgroundColor: colors.composer, borderRadius: COMPOSER_RADIUS, padding: PILL_INSET, paddingLeft: 14, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  // Its wrapper is a column, so flex would stretch the height its centering padding assumes.
-  pillInput: { color: colors.primary, paddingHorizontal: 0 },
+  pillInput: { flex: 1 },
   composerAction: { alignItems: 'center', justifyContent: 'center' },
-  input: { color: colors.primary, fontSize: 17, lineHeight: 23, minHeight: 44, paddingVertical: 6, paddingHorizontal: 8, textAlignVertical: 'top' },
+  // The native editor fills its frame, so side room is margin rather than padding.
+  input: { marginHorizontal: 8 },
   toolbar: { minHeight: EXPANDED_ACTION, flexDirection: 'row', alignItems: 'center', gap: 2 },
   toolbarSpacer: { flex: 1 },
   modelButton: { minHeight: 44, maxWidth: 140, paddingHorizontal: 10, justifyContent: 'center' },

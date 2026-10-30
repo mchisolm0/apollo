@@ -2,6 +2,7 @@ import { AppUpdateAbout } from '@/features/updates/update-ui';
 import { Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { useColors, useRelayTheme, RelaySlider, CODE_SIZE_MAX, CODE_SIZE_MIN, TEXT_SIZE_MAX, TEXT_SIZE_MIN, useTextScale, useRelayStyles, useThemedStyles, type RelayPalette } from './relay-ui';
+import { setComposerEnterBehavior, useComposerEnterBehavior } from './composer-return';
 import { SettingSection, SettingsHeader, useSettingStyles } from './settings-ui';
 import { THEMES, THEME_PALETTES } from './theme';
 
@@ -14,6 +15,7 @@ export function AppSettingsScreen({ onBack }: { onBack?: () => void }) {
   const { id: themeId, setTheme } = useRelayTheme();
   const colors = useColors();
   const monoSize = codeCustom ? codeSize : 13 * factor;
+  const enterBehavior = useComposerEnterBehavior();
   return (
     <View style={uiStyles.screen}>
       <SettingsHeader title="Settings" onBack={onBack} />
@@ -81,6 +83,23 @@ export function AppSettingsScreen({ onBack }: { onBack?: () => void }) {
             </>
           ) : null}
         </SettingSection>
+
+        {Platform.OS === 'ios' ? (
+          <SettingSection label="Hardware keyboard">
+            <View style={settingStyles.row}>
+              <Text style={settingStyles.rowLabel}>Return sends</Text>
+              <View style={styles.spacer} />
+              <Switch
+                value={enterBehavior === 'send'}
+                onValueChange={(next) => setComposerEnterBehavior(next ? 'send' : 'newline')}
+                trackColor={{ true: colors.cyan, false: colors.lineStrong }}
+                thumbColor={colors.primary}
+                accessibilityLabel="Return sends"
+                accessibilityHint="When off, Return adds a line and Command-Return sends."
+              />
+            </View>
+          </SettingSection>
+        ) : null}
 
         <SettingSection label="App">
           <AppUpdateAbout />
