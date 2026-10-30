@@ -182,9 +182,10 @@ export function ApolloProvider({
     }
   }, []);
 
-  // A 401 means this device lost access, so the agent's threads stop being readable here too.
+  // The connector's device-auth 401 (`unauthorized`) means this device lost access, so its threads stop being
+  // readable here too. Other 401s, like Hermes's own `gateway_auth_failed` after a key change, are outages.
   const markUnreachable = useCallback((agentId: string, error: unknown) => {
-    const revoked = error instanceof HermesRequestError && error.status === 401;
+    const revoked = error instanceof HermesRequestError && error.status === 401 && error.code === 'unauthorized';
     updateRuntime(agentId, { status: revoked ? 'revoked' : 'offline', error: errorText(error), ...(revoked ? { sessions: [] } : {}) });
     if (revoked) {
       clients.current.delete(agentId);
