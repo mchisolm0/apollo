@@ -10,7 +10,7 @@ beforeEach(() => {
 });
 afterEach(() => mock.timers.reset());
 
-test('a recording that stops reporting after it started is interrupted', async () => {
+test('a recording that stops reporting for longer than a finish takes is interrupted', async () => {
   const samples: (VoiceRecordingSample | null)[] = [null, null, { durationMillis: 1_000, metering: -30 }, null];
   const session = new VoiceInputSession({
     recorder: { uri: 'file:///voice.m4a', prepareToRecordAsync: async () => undefined, record: () => undefined, stop: async () => undefined },
@@ -33,6 +33,11 @@ test('a recording that stops reporting after it started is interrupted', async (
   assert.equal(phase(), 'recording');
   mock.timers.tick(80);
   assert.equal(session.getSnapshot().elapsedSeconds, 1);
+
+  // expo-audio stops reporting just before it delivers a finished recording.
+  mock.timers.tick(80 * 11);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(phase(), 'recording');
 
   mock.timers.tick(80);
   await new Promise((resolve) => setImmediate(resolve));

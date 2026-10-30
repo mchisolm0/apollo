@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { useFocusEffect } from "expo-router";
+import { useCallback, useLayoutEffect, useRef } from "react";
 
 import { voiceInputBlocksSubmission, type VoiceInputState } from "./controller";
 import { useGlobalVoiceInput } from "./VoiceInputProvider";
@@ -10,7 +11,8 @@ type Selection = { readonly start: number; readonly end: number };
 
 /**
  * One composer's view of the app's voice input. Unlike T3 there is no global
- * pill: a composer that unmounts, or whose owner changes, discards its dictation.
+ * pill: a composer that unmounts, loses focus, or whose owner changes, discards
+ * its dictation.
  */
 export function useVoiceInputController(input: {
   /** Null while the composer is hidden; dictation needs an owner. */
@@ -29,10 +31,13 @@ export function useVoiceInputController(input: {
     latestInput.current = input;
   });
 
-  useEffect(() => {
-    const ownerKey = input.ownerKey;
-    return () => session.cancel(ownerKey);
-  }, [input.ownerKey, session]);
+  // A pushed screen (agent settings) keeps this composer mounted, so blur cancels too.
+  useFocusEffect(
+    useCallback(() => {
+      const ownerKey = input.ownerKey;
+      return () => session.cancel(ownerKey);
+    }, [input.ownerKey, session]),
+  );
 
   const start = useCallback(() => {
     const captured = latestInput.current;

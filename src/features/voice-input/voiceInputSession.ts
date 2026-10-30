@@ -10,6 +10,8 @@ import {
 import { normalizeVoiceInputDecibels, VOICE_WAVEFORM_SAMPLE_COUNT } from "./voiceInputMetering.ts";
 
 const VOICE_METERING_INTERVAL_MS = 80;
+/** expo-audio stops reporting before it delivers a finished recording, so a gap must outlast that handoff. */
+const VOICE_INTERRUPTED_AFTER_SILENT_SAMPLES = 12;
 const IDLE_STATE: VoiceInputState = { phase: "idle", error: null, errorAction: null };
 const SILENT_LEVELS: readonly number[] = Array<number>(VOICE_WAVEFORM_SAMPLE_COUNT).fill(0);
 
@@ -77,6 +79,7 @@ export class VoiceInputSession {
   private releaseKeepAwake: (() => void) | null = null;
   private meteringInterval: ReturnType<typeof setInterval> | null = null;
   private sawRecordingSample = false;
+  private missedSamples = 0;
 
   constructor(dependencies: VoiceInputSessionDependencies) {
     this.dependencies = dependencies;
@@ -129,6 +132,7 @@ export class VoiceInputSession {
   private startRecordingActivity(): void {
     this.releaseKeepAwake = this.dependencies.keepAwake();
     this.sawRecordingSample = false;
+    this.missedSamples = 0;
     this.sampleRecording();
     this.meteringInterval = setInterval(() => this.sampleRecording(), VOICE_METERING_INTERVAL_MS);
   }
@@ -144,12 +148,16 @@ export class VoiceInputSession {
     if (this.controller.currentState.phase !== "recording") return;
     const sample = this.dependencies.sampleRecording();
     // expo-audio pauses for a call or Siri without a status event. A recorder
-    // that stops reporting after it started is interrupted, not still starting.
+    // that stops reporting after it started, for longer than a normal finish
+    // takes to arrive, is interrupted.
     if (!sample) {
-      if (this.sawRecordingSample) void this.controller.interruptRecording();
+      if (this.sawRecordingSample && ++this.missedSamples >= VOICE_INTERRUPTED_AFTER_SILENT_SAMPLES) {
+        void this.controller.interruptRecording();
+      }
       return;
     }
     this.sawRecordingSample = true;
+    this.missedSamples = 0;
 
     const level = normalizeVoiceInputDecibels(sample.metering);
     if (level !== 0 || this.audioLevels.some((sample) => sample !== 0)) {
