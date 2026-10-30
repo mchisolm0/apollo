@@ -3,7 +3,7 @@ import { useOutbox } from '../../lib/outbox-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 
-import { useApollo, type InboxConfig, type InboxSettledState } from '@/lib';
+import { useApollo, type AgentRuntimeState, type InboxConfig, type InboxSettledState } from '@/lib';
 
 import {
   canSettleSession,
@@ -186,7 +186,9 @@ export type SessionInboxResult = {
 
 /** Reads stay local; legacy settle entries migrate to the shared connector ledger. */
 export function useSessionInbox(agentId: string, state: SessionInboxState | undefined): SessionInboxResult {
-  const { saveInbox } = useApollo();
+  const { saveInbox, runtime } = useApollo();
+  // A cached list arrives before the agent connects; migrate against the live one.
+  const live = Boolean(runtime[agentId]?.capabilities);
   const { items } = useOutbox();
   const latestState = useRef(state);
   useLayoutEffect(() => { latestState.current = state; }, [state]);
@@ -211,7 +213,7 @@ export function useSessionInbox(agentId: string, state: SessionInboxState | unde
 
   useEffect(() => {
     const entry = entryFor(agentId);
-    if (!store.loaded || !state?.sessions.length || entry.migrating || !Object.keys(store.settled).length) return;
+    if (!store.loaded || !live || !state?.sessions.length || entry.migrating || !Object.keys(store.settled).length) return;
     const legacy = store.settled;
     entry.migrating = true;
     void saveInbox(agentId, legacy, true).then(async () => {
@@ -219,7 +221,7 @@ export function useSessionInbox(agentId: string, state: SessionInboxState | unde
       for (const [id, timestamp] of Object.entries(legacy)) if (remaining[id] === timestamp) delete remaining[id];
       await update(agentId, remaining);
     }).catch(reportError).finally(() => { entry.migrating = false; });
-  }, [agentId, state?.sessions, store.loaded, store.settled, saveInbox, reportError]);
+  }, [agentId, live, state?.sessions, store.loaded, store.settled, saveInbox, reportError]);
 
   // Keep runtime updates and read writes from re-triggering the focused screen's read effect.
   const markRead = useCallback(async (sessionId: string): Promise<void> => {
@@ -274,11 +276,13 @@ export function useSessionInbox(agentId: string, state: SessionInboxState | unde
 }
 
 /** Mounted once per paired agent by the root layout, independent of mounted screens. */
-export function SessionInboxAutoSettle({ agentId, state }: { agentId: string; state: SessionInboxState | undefined }) {
+export function SessionInboxAutoSettle({ agentId, state }: { agentId: string; state: (SessionInboxState & Pick<AgentRuntimeState, 'status'>) | undefined }) {
   const { sessions, loaded, settle } = useSessionInbox(agentId, state);
   const pending = useRef(new Set<string>());
+  // Settling needs the agent; a cached list can show while it is offline.
+  const connected = state?.status === 'connected';
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || !connected) return;
     const tick = () => {
       const now = Math.floor(Date.now() / 1000);
       for (const session of autoSettleSessionsDue(sessions, entryFor(agentId).read, now, pending.current)) {
@@ -289,7 +293,7 @@ export function SessionInboxAutoSettle({ agentId, state }: { agentId: string; st
     tick();
     const timer = setInterval(tick, 60_000);
     return () => clearInterval(timer);
-  }, [agentId, loaded, sessions, settle]);
+  }, [agentId, connected, loaded, sessions, settle]);
   return null;
 }
 
