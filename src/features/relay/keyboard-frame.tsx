@@ -1,5 +1,7 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { Keyboard, Platform, useWindowDimensions, View, type KeyboardEvent } from 'react-native';
+import type { ReactNode } from 'react';
+import { Platform } from 'react-native';
+import { useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
+import Animated, { useAnimatedStyle } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useRelayStyles } from './relay-ui';
@@ -8,28 +10,16 @@ import { useRelayStyles } from './relay-ui';
 const HOME_INDICATOR_CLEARANCE = 16;
 
 /**
- * Owns the bottom edge: docks rest just above the home indicator and ride the keyboard. Parents skip the bottom safe area.
+ * Owns the bottom edge: docks rest just above the home indicator and follow the keyboard, tracking it
+ * during interactive swipe-down dismiss. Parents skip the bottom safe area.
  * `edgeToEdge` content runs under a native toolbar to the screen edge and pads itself.
  */
 export function KeyboardFrame({ edgeToEdge = false, children }: { edgeToEdge?: boolean; children: ReactNode }) {
   const styles = useRelayStyles();
-  const { height } = useWindowDimensions();
   const { bottom } = useSafeAreaInsets();
-  const [keyboardTop, setKeyboardTop] = useState(() => Keyboard.metrics()?.screenY);
-  useEffect(() => {
-    if (Platform.OS !== 'ios') return;
-    const move = Keyboard.addListener('keyboardWillChangeFrame', (event: KeyboardEvent) => {
-      Keyboard.scheduleLayoutAnimation(event);
-      setKeyboardTop(event.endCoordinates.screenY);
-    });
-    const hide = Keyboard.addListener('keyboardWillHide', (event: KeyboardEvent) => {
-      Keyboard.scheduleLayoutAnimation(event);
-      setKeyboardTop(undefined);
-    });
-    return () => { move.remove(); hide.remove(); };
-  }, []);
-  const keyboardHeight = keyboardTop === undefined ? 0 : height - keyboardTop;
+  // Negative while the keyboard is up.
+  const { height } = useReanimatedKeyboardAnimation();
   const resting = edgeToEdge ? 0 : Platform.OS === 'ios' ? Math.min(bottom, HOME_INDICATOR_CLEARANCE) : bottom;
-  const paddingBottom = Math.max(keyboardHeight, resting);
-  return <View style={[styles.screen, { paddingBottom }]}>{children}</View>;
+  const padding = useAnimatedStyle(() => ({ paddingBottom: Math.max(-height.value, resting) }));
+  return <Animated.View style={[styles.screen, padding]}>{children}</Animated.View>;
 }
