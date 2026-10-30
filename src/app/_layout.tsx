@@ -12,6 +12,7 @@ import { OutboxProvider } from '@/lib/outbox-context';
 import { CloudProvider } from '@/features/cloud/cloud-context';
 import { IncomingShareProvider } from '@/features/sharing';
 import { NotificationNavigation } from '@/features/notifications';
+import { AppShortcuts } from '@/features/shortcuts/AppShortcuts';
 import { AppUpdateProvider } from '@/features/updates/update-provider';
 import { UpdateReadyNotice } from '@/features/updates/update-ui';
 
@@ -34,6 +35,7 @@ function InnerStack() {
       <StatusBar style="light" />
       <ScreenTracker />
       <NotificationNavigation />
+      <AppShortcuts />
       <InboxAutoSettle />
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }} />
     </ThemeProvider>

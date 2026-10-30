@@ -25,6 +25,9 @@ export default function configure({ config }: ConfigContext): ExpoConfig {
     plugins: [...(config.plugins ?? []), 'expo-notifications', ['expo-sharing', {
       ios: { enabled: true, extensionBundleIdentifier: `com.matthewchisolm.apollo${suffix}.sharing`, appGroupId: `group.com.matthewchisolm.apollo${suffix}`, activationRule: { supportsText: true, supportsWebUrlWithMaxCount: 1, supportsImageWithMaxCount: 4, supportsFileWithMaxCount: 4 } },
       android: { enabled: true, singleShareMimeTypes: ['*/*'], multipleShareMimeTypes: ['*/*'] },
+    }], ['expo-quick-actions', {
+      // Android launcher-shortcut icon, referenced by name from src/features/shortcuts. iOS uses SF Symbols.
+      androidIcons: { shortcut_icon: { foregroundImage: './assets/images/android-icon-foreground.png', backgroundColor: '#E6F4FE' } },
     }]],
     ios: {
       ...config.ios,
