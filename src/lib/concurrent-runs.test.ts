@@ -117,6 +117,7 @@ function providerFixture(sessions: readonly HermesSession[] = []) {
       if (id === './attachments') return attachments;
       if (id === './message-history') return messageHistory;
       if (id === './thread-cache') return threadCache;
+      if (id === 'expo-file-system') return { Paths: {}, Directory: class { uri = ''; } };
       if (id === 'expo-sqlite') return { openDatabaseAsync: async () => { throw new Error('No SQLite in tests'); } };
       if (id === './hermes-client') return { HermesClient: Client, HermesRequestError: class extends Error {}, parseSelectedModel: (value: HermesModel | null) => value ?? undefined, sessionModelChoice: (model: string | undefined, cached?: HermesModel) => model ? { id: model, provider: model === cached?.id ? cached.provider : undefined } : cached };
       return nativeRequire(id);

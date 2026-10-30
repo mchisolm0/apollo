@@ -15,6 +15,7 @@ import {
 } from 'react';
 import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Directory, Paths } from 'expo-file-system';
 import { openDatabaseAsync } from 'expo-sqlite';
 
 import { reconcileHistory } from './message-history';
@@ -101,7 +102,8 @@ async function loadModelSelection(agentId: string, sessionId: string) {
   return parseSelectedModel(saved === null ? null : JSON.parse(saved));
 }
 
-const threadCache = createThreadCache(() => openDatabaseAsync('apollo-thread-cache.db'));
+// Caches is excluded from device backups and the OS may purge it, which a cache can afford.
+const threadCache = createThreadCache(() => openDatabaseAsync('apollo-thread-cache.db', undefined, new Directory(Paths.cache, 'SQLite').uri));
 
 const ApolloContext = createContext<ApolloContextValue | undefined>(undefined);
 
@@ -145,6 +147,8 @@ export function ApolloProvider({
   const cachedThreads = useRef(new Map<string, readonly HermesMessage[]>());
   const cachedLists = useRef(new Map<string, readonly HermesSession[]>());
   const hydratedThreads = useRef(new Set<string>());
+  // A late load for a deleted thread must not cache it again.
+  const deletedThreads = useRef(new Set<string>());
 
   const updateRuntime = useCallback((agentId: string, patch: Partial<AgentRuntimeState>) => {
     setRuntime((current) => ({
@@ -404,22 +408,24 @@ export function ApolloProvider({
   // Saves each live thread list. A list counts as live once this launch has fetched capabilities.
   useEffect(() => {
     for (const [agentId, state] of Object.entries(runtime)) {
-      if (!state.capabilities || cachedLists.current.get(agentId) === state.sessions) continue;
+      if (!state.capabilities || !catalog.get(agentId) || cachedLists.current.get(agentId) === state.sessions) continue;
       cachedLists.current.set(agentId, state.sessions);
       void threadCache.saveList(agentId, state.sessions).catch(() => undefined);
     }
-  }, [runtime]);
+  }, [catalog, runtime]);
 
   // Saves threads whose history changed: loads, run recovery, and finished runs all land here.
   useEffect(() => {
     for (const [key, history] of Object.entries(messages)) {
-      if (cachedThreads.current.get(key) === history) continue;
-      cachedThreads.current.set(key, history);
+      if (cachedThreads.current.get(key) === history || deletedThreads.current.has(key)) continue;
       // Agent ids are UUIDs, so the first colon ends the agent id.
       const split = key.indexOf(':');
-      void threadCache.saveThread(key.slice(0, split), key.slice(split + 1), history).catch(() => undefined);
+      const agentId = key.slice(0, split);
+      if (!catalog.get(agentId)) continue;
+      cachedThreads.current.set(key, history);
+      void threadCache.saveThread(agentId, key.slice(split + 1), history).catch(() => undefined);
     }
-  }, [messages]);
+  }, [catalog, messages]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
@@ -619,6 +625,7 @@ export function ApolloProvider({
     await client.deleteSession(sessionId);
     await AsyncStorage.removeItem(modelSelectionKey(agentId, sessionId)).catch(() => undefined);
     sessionDetailRequests.current.delete(`${agentId}:${sessionId}`);
+    deletedThreads.current.add(`${agentId}:${sessionId}`);
     cachedThreads.current.delete(`${agentId}:${sessionId}`);
     void threadCache.removeThread(agentId, sessionId).catch(() => undefined);
     setRuntime((current) => {
@@ -716,7 +723,7 @@ export function ApolloProvider({
     if (!hydratedThreads.current.has(key)) {
       hydratedThreads.current.add(key);
       void threadCache.loadThread(agentId, sessionId).then((cached) => {
-        if (!cached) return;
+        if (!cached || deletedThreads.current.has(key)) return;
         cachedThreads.current.set(key, cached);
         setMessages((current) => current[key] ? current : { ...current, [key]: cached });
       }).catch(() => undefined);
@@ -804,10 +811,6 @@ export function ApolloProvider({
     await AsyncStorage.multiRemove(modelKeys);
     closeSubscription(agentId);
     for (const key of sessionDetailRequests.current.keys()) if (key.startsWith(`${agentId}:`)) sessionDetailRequests.current.delete(key);
-    for (const key of cachedThreads.current.keys()) if (key.startsWith(`${agentId}:`)) cachedThreads.current.delete(key);
-    for (const key of hydratedThreads.current) if (key.startsWith(`${agentId}:`)) hydratedThreads.current.delete(key);
-    cachedLists.current.delete(agentId);
-    await threadCache.clearAgent(agentId).catch(() => undefined);
     clients.current.delete(agentId);
     await catalog.remove(agentId);
     posthog.capture('agent_removed', { agent_id: agentId });
@@ -822,6 +825,11 @@ export function ApolloProvider({
       for (const key of Object.keys(next)) if (key.startsWith(`${agentId}:`)) delete next[key];
       return next;
     });
+    // Last, so no save from state that still held this agent lands after the clear.
+    for (const key of cachedThreads.current.keys()) if (key.startsWith(`${agentId}:`)) cachedThreads.current.delete(key);
+    for (const key of hydratedThreads.current) if (key.startsWith(`${agentId}:`)) hydratedThreads.current.delete(key);
+    cachedLists.current.delete(agentId);
+    await threadCache.clearAgent(agentId).catch(() => undefined);
   }, [catalog, closeSubscription, notificationClient, setRuntime]);
 
   const hasSession = useCallback((agentId: string, sessionId: string) => runtimeRef.current[agentId]?.sessions.some((session) => session.id === sessionId) ?? false, []);

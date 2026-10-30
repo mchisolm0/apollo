@@ -186,7 +186,9 @@ export type SessionInboxResult = {
 
 /** Reads stay local; legacy settle entries migrate to the shared connector ledger. */
 export function useSessionInbox(agentId: string, state: SessionInboxState | undefined): SessionInboxResult {
-  const { saveInbox } = useApollo();
+  const { saveInbox, runtime } = useApollo();
+  // A cached list arrives before the agent connects; migrate against the live one.
+  const live = Boolean(runtime[agentId]?.capabilities);
   const { items } = useOutbox();
   const latestState = useRef(state);
   useLayoutEffect(() => { latestState.current = state; }, [state]);
@@ -211,7 +213,7 @@ export function useSessionInbox(agentId: string, state: SessionInboxState | unde
 
   useEffect(() => {
     const entry = entryFor(agentId);
-    if (!store.loaded || !state?.sessions.length || entry.migrating || !Object.keys(store.settled).length) return;
+    if (!store.loaded || !live || !state?.sessions.length || entry.migrating || !Object.keys(store.settled).length) return;
     const legacy = store.settled;
     entry.migrating = true;
     void saveInbox(agentId, legacy, true).then(async () => {
@@ -219,7 +221,7 @@ export function useSessionInbox(agentId: string, state: SessionInboxState | unde
       for (const [id, timestamp] of Object.entries(legacy)) if (remaining[id] === timestamp) delete remaining[id];
       await update(agentId, remaining);
     }).catch(reportError).finally(() => { entry.migrating = false; });
-  }, [agentId, state?.sessions, store.loaded, store.settled, saveInbox, reportError]);
+  }, [agentId, live, state?.sessions, store.loaded, store.settled, saveInbox, reportError]);
 
   // Keep runtime updates and read writes from re-triggering the focused screen's read effect.
   const markRead = useCallback(async (sessionId: string): Promise<void> => {
