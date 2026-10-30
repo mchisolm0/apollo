@@ -16,8 +16,9 @@ Apollo ported that T3 Code module at commit
 as `T3CODE_LICENSE`. Native identifiers retain the `T3MarkdownText` name so the
 port remains easy to audit and update.
 
-`src/pendingCodeHighlight.ts` and its test come from T3 Code commit
-`7bd7f99e6cab940892ff9240549c507bfd066aee`
-(`apps/mobile/modules/t3-markdown-text/src/pendingCodeHighlight.ts`). Apollo
-wires it into `useHighlightedCode` in `NativeMarkdownBlock.ios.tsx` without
-T3's synchronous `read` path, since Apollo's Prism highlighter is async only.
+`src/pendingCodeHighlight.ts` and its test, and `nativeMarkdownNodePosition`
+in `src/nativeMarkdownText.ts`, come from T3 Code commit
+`7bd7f99e6cab940892ff9240549c507bfd066aee`. Blocks key by start offset so a
+streaming code block keeps its state, and `useHighlightedCode` in
+`NativeMarkdownBlock.ios.tsx` seeds `pendingCodeHighlight` from its last result.
+Apollo skips T3's synchronous `read` path, since its Prism highlighter is async.
