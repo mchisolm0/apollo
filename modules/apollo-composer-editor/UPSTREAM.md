@@ -23,3 +23,10 @@ Apollo changes:
   re-created view adopts the JS revision. T3 dropped mismatched echoes, which lost a restored
   draft when Fabric coalesced the parent edit with the echo render after it.
 - The text view carries the accessibility label and hint, so the editor is not one opaque element.
+- Attachments other than chips, such as iOS dictation's placeholder, serialize as nothing and take
+  no source offset. T3 serialized them as U+FFFC, which reached the draft and could be sent.
+- Only text or chips that differ from what the editor shows rebuild it. T3 rebuilt whenever the
+  token offsets changed, so typing before a chip broke IME composition and dictation. A rebuild
+  also waits while marked text or the dictation placeholder is present.
+- The text view is created on TextKit 1, since chip hit testing reads `layoutManager`.
+- The long-paste threshold counts UTF-16 characters (`textPasteThresholdChars`), not UTF-8 bytes.

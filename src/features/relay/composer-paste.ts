@@ -1,9 +1,15 @@
 /**
- * Text pastes at least this large become a `.txt` attachment instead of draft text. T3 uses 32 KB;
- * Apollo's draft holds 8000 characters, so a paste that would not fit is folded too.
+ * Text pastes at least this many characters (UTF-16, like the draft limit) become a `.txt`
+ * attachment instead of draft text. T3 uses 32 KB; Apollo's draft holds 8000 characters, so a paste
+ * that would not fit is folded too.
  */
 export const MAX_DRAFT_CHARS = 8000;
-export const PASTED_TEXT_ATTACHMENT_BYTES = MAX_DRAFT_CHARS;
+export const PASTED_TEXT_ATTACHMENT_CHARS = MAX_DRAFT_CHARS;
+
+/** Drops U+FFFC, the object replacement character iOS uses for attachments such as the dictation placeholder. It is never draft text. */
+export function withoutAttachmentCharacters(text: string): string {
+  return text.replaceAll('\uFFFC', '');
+}
 
 /** Stable, readable names when a draft holds several folded pastes. */
 export function pastedTextFileName(existingNames: readonly string[]): string {

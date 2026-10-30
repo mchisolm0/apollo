@@ -216,6 +216,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
     if (pickerLock.current || actionLock.current || !draftLoaded || incoming) { setLocalError('Could not paste right now. Try again.'); return; }
     pickerLock.current = true;
     setPicking(true);
+    setLocalError(undefined);
     try { setAttachments([...attachments, ...await persist()]); }
     catch (error) { setLocalError(error instanceof Error ? error.message : 'Could not paste. Try again.'); }
     finally { pickerLock.current = false; setPicking(false); }

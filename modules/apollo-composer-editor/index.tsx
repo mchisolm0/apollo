@@ -1,4 +1,4 @@
-import { requireNativeView } from 'expo';
+import { requireNativeView, requireOptionalNativeModule } from 'expo';
 import { useCallback, useEffect, useImperativeHandle, useRef, useState, type ComponentType, type Ref } from 'react';
 import { Platform, TextInput, type NativeSyntheticEvent, type StyleProp, type TextInputInstance, type ViewProps, type ViewStyle } from 'react-native';
 
@@ -48,8 +48,8 @@ export type ComposerEditorProps = {
   readonly autoFocus?: boolean;
   readonly enterBehavior?: ComposerEnterBehavior;
   readonly maxLength: number;
-  /** Text pastes this large, or that would pass `maxLength`, go to `onPasteText` instead of the draft. */
-  readonly textPasteThresholdBytes?: number;
+  /** Text pastes this many UTF-16 characters long, or that would pass `maxLength`, go to `onPasteText` instead of the draft. */
+  readonly textPasteThresholdChars?: number;
   readonly style?: StyleProp<ViewStyle>;
   readonly accessibilityLabel?: string;
   readonly accessibilityHint?: string;
@@ -88,7 +88,7 @@ type NativeComposerEditorProps = ViewProps & {
   readonly autoFocus: boolean;
   readonly autoCorrect: boolean;
   readonly spellCheck: boolean;
-  readonly textPasteThresholdBytes: number;
+  readonly textPasteThresholdChars: number;
   readonly maxInputChars: number;
   readonly textAccessibilityLabel: string;
   readonly textAccessibilityHint: string;
@@ -107,12 +107,9 @@ let NativeView: ComponentType<NativeComposerEditorProps> | null | undefined;
 /** Null on Android, web, and builds made before this module existed. */
 function nativeEditor(): ComponentType<NativeComposerEditorProps> | null {
   if (NativeView !== undefined) return NativeView;
-  if (Platform.OS !== 'ios') return NativeView = null;
-  try {
-    return NativeView = requireNativeView<NativeComposerEditorProps>('T3ComposerEditor');
-  } catch {
-    return NativeView = null;
-  }
+  // requireNativeView does not throw for a missing view, it renders a broken one, so check the module first.
+  if (Platform.OS !== 'ios' || !requireOptionalNativeModule('T3ComposerEditor')) return NativeView = null;
+  return NativeView = requireNativeView<NativeComposerEditorProps>('T3ComposerEditor');
 }
 
 /**
@@ -193,7 +190,7 @@ function NativeComposerEditor({ Native, ref, value, selection, tokens = [], them
     autoFocus={props.autoFocus ?? false}
     autoCorrect
     spellCheck
-    textPasteThresholdBytes={onPasteText ? (props.textPasteThresholdBytes ?? 0) : 0}
+    textPasteThresholdChars={onPasteText ? (props.textPasteThresholdChars ?? 0) : 0}
     maxInputChars={props.maxLength}
     textAccessibilityLabel={props.accessibilityLabel ?? ''}
     textAccessibilityHint={props.accessibilityHint ?? ''}

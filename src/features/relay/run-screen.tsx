@@ -15,7 +15,7 @@ import { ConnectionAction, ConnectionMark, IconButton, useTextScale, useThemedSt
 import { KeyboardFrame } from './keyboard-frame';
 import { RingSpinner } from './ring-spinner';
 import { insertSkill, matchingSkills, selectedSkillNames, skillTokens, skillTrigger, type SkillToken, type SkillTrigger } from './composer-skills';
-import { MAX_DRAFT_CHARS, PASTED_TEXT_ATTACHMENT_BYTES } from './composer-paste';
+import { MAX_DRAFT_CHARS, PASTED_TEXT_ATTACHMENT_CHARS, withoutAttachmentCharacters } from './composer-paste';
 import { useComposerEnterBehavior } from './composer-return';
 import { showSessionActions } from './session-actions';
 import { MessageContent } from './message-content';
@@ -77,11 +77,13 @@ export type RunScreenProps = {
   onDeny?: (approval: ApprovalRequest) => void;
 };
 
-export function RunScreen({ session, events, connection, approval, draft = '', attachments = [], isPicking = false, onAddAttachments, onPasteImages, onPasteText, queuedMessages = [], onRetryQueued, onRemoveQueued, onSteerQueued, sendDisabled = false, onRetryError, onPickAttachments, onRemoveAttachment, attachmentSource, agentName, isSending = false, isLoading = false, isActing = false, statusLabel, error, skills = [], skillsLoading = false, skillsError, onRefreshSkills, models = [], modelsLoading = false, defaultModel, selectedModel, selectedProvider, onSelectModel, onBack, onSessionActions, onDraftChange, onSend, onStop, onReconnect, onAgentDetails, onApprove, onDeny }: RunScreenProps) {
+export function RunScreen({ session, events, connection, approval, draft = '', attachments = [], isPicking = false, onAddAttachments, onPasteImages, onPasteText, queuedMessages = [], onRetryQueued, onRemoveQueued, onSteerQueued, sendDisabled = false, onRetryError, onPickAttachments, onRemoveAttachment, attachmentSource, agentName, isSending = false, isLoading = false, isActing = false, statusLabel, error, skills = NO_SKILLS, skillsLoading = false, skillsError, onRefreshSkills, models = [], modelsLoading = false, defaultModel, selectedModel, selectedProvider, onSelectModel, onBack, onSessionActions, onDraftChange, onSend, onStop, onReconnect, onAgentDetails, onApprove, onDeny }: RunScreenProps) {
   const styles = useThemedStyles(createStyles);
   const colors = useColors();
   const { fontScale } = useWindowDimensions();
   const { factor } = useTextScale();
+  // The native editor takes a fixed point size, so it applies the system text size itself, as TextInput does.
+  const composerScale = factor * fontScale;
   const list = useRef<LegendListRef>(null);
   const input = useRef<ComposerEditorHandle>(null);
   const enterBehavior = useComposerEnterBehavior();
@@ -134,7 +136,9 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
   });
   const voicePresentation = resolveVoiceComposerPresentation(voiceInput.state, voiceInput.elapsedSeconds);
   const isVoiceInputPresented = voicePresentation.statusLabel !== null;
-  const canSend = connection !== 'revoked' && !sendDisabled && !isActing && !isPicking && !voiceInput.blocksSubmission && Boolean(draft.trim() || attachments.length);
+  // A draft saved before placeholders were dropped can still hold one.
+  const sendText = withoutAttachmentCharacters(draft).trim();
+  const canSend = connection !== 'revoked' && !sendDisabled && !isActing && !isPicking && !voiceInput.blocksSubmission && Boolean(sendText || attachments.length);
   // Chips keep their place when the space after a trailing one is deleted, so they are derived from the previous chips.
   const [chips, setChips] = useState<{ draft: string; skills: readonly HermesSkill[]; tokens: readonly SkillToken[] }>(() => ({ draft, skills, tokens: skillTokens(draft, skills) }));
   let tokens = chips.tokens;
@@ -150,11 +154,11 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
   const selectedSkills = useMemo(() => selectedSkillNames(draft, skills), [draft, skills]);
   // Like T3: a one-line pill until the user is composing, then the full editor and toolbar.
   // Collapsed, the single line sits centered beside the action button.
-  const pillHeight = Math.max(COLLAPSED_ACTION, 23 * factor + 8);
+  const pillHeight = Math.max(COLLAPSED_ACTION, 23 * composerScale + 8);
   const expanded = focused || modelOpen || attachments.length > 0 || Boolean(skillMenuTrigger) || isVoiceInputPresented;
-  const action = isSending && !draft.trim() && !attachments.length
+  const action = isSending && !sendText && !attachments.length
     ? <ComposerAction kind="stop" size={expanded ? EXPANDED_ACTION : COLLAPSED_ACTION} disabled={isActing || connection !== 'connected'} onPress={() => onStop?.()} />
-    : <ComposerAction kind="send" size={expanded ? EXPANDED_ACTION : COLLAPSED_ACTION} label={isActing ? 'Saving message' : connection !== 'connected' || isSending || queuedMessages.length ? 'Queue message' : 'Send message'} disabled={!canSend} onPress={() => onSend(draft.trim())} />;
+    : <ComposerAction kind="send" size={expanded ? EXPANDED_ACTION : COLLAPSED_ACTION} label={isActing ? 'Saving message' : connection !== 'connected' || isSending || queuedMessages.length ? 'Queue message' : 'Send message'} disabled={!canSend} onPress={() => onSend(sendText)} />;
   // While dictating the toolbar flips to cancel, waveform and timer, and confirm.
   const dictationToolbar = <View style={styles.toolbar}>
     <ComposerDictationCancelAction presentation={voicePresentation} onCancel={voiceInput.cancel} />
@@ -256,12 +260,12 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
               selection={inputSelection?.text === draft ? { start: inputSelection.start, end: inputSelection.end } : undefined}
               tokens={tokens}
               theme={{ text: colors.primary, placeholder: colors.secondary, accent: colors.cyan, surface: colors.composer }}
-              fontSize={17 * factor}
-              lineHeight={23 * factor}
+              fontSize={17 * composerScale}
+              lineHeight={23 * composerScale}
               // Grows from one line to five before scrolling while expanded; collapsed, one centered line.
-              contentInsetVertical={expanded ? 6 : (pillHeight - 23 * factor) / 2}
-              minHeight={expanded ? 44 : pillHeight}
-              maxHeight={expanded ? 23 * factor * 5 + 12 : pillHeight}
+              contentInsetVertical={expanded ? 6 : (pillHeight - 23 * composerScale) / 2}
+              minHeight={expanded ? Math.max(44, 23 * composerScale + 12) : pillHeight}
+              maxHeight={expanded ? 23 * composerScale * 5 + 12 : pillHeight}
               style={expanded ? styles.input : styles.pillInput}
               onFocus={() => setFocused(true)}
               onBlur={() => setFocused(false)}
@@ -271,8 +275,8 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
               scrollEnabled={expanded}
               enterBehavior={enterBehavior}
               maxLength={MAX_DRAFT_CHARS}
-              textPasteThresholdBytes={PASTED_TEXT_ATTACHMENT_BYTES}
-              onChangeText={(value) => { setObservedSelection((previous) => previous ? { start: Math.min(previous.start, value.length), end: Math.min(previous.end, value.length), text: value } : previous); setInputSelection(undefined); setSkillsOpen(false); setSkillsDismissed(false); onDraftChange?.(value); }}
+              textPasteThresholdChars={PASTED_TEXT_ATTACHMENT_CHARS}
+              onChangeText={(value) => { setObservedSelection((previous) => previous ? { start: Math.min(previous.start, value.length), end: Math.min(previous.end, value.length), text: value } : previous); setInputSelection(undefined); setSkillsOpen(false); setSkillsDismissed(false); onDraftChange?.(withoutAttachmentCharacters(value)); }}
               onSelectionChange={(next, text) => { setObservedSelection({ ...next, text }); setInputSelection(undefined); setSkillsDismissed(false); }}
               // The editor refuses pastes while frozen; the screen reports any other paste it cannot take.
               onPasteImages={onPasteImages}
@@ -280,7 +284,7 @@ export function RunScreen({ session, events, connection, approval, draft = '', a
               onSubmit={() => {
                 // Return with a typed $skill picks the top match, like tapping it.
                 if (typedSkill && !skillsDismissed && skillMatches[0]) chooseSkill(skillMatches[0]);
-                else if (canSend) onSend(draft.trim());
+                else if (canSend) onSend(sendText);
               }}
               placeholder="Message"
               accessibilityLabel="Message Hermes"
@@ -355,6 +359,8 @@ function ComposerIcon({ name, label, disabled = false, selected = false, onPress
     <SymbolView name={{ ios: name, android: name === 'plus' ? 'add' : 'deployed_code', web: name === 'plus' ? 'add' : 'deployed_code' }} size={20} tintColor={selected ? colors.primary : colors.secondary} />
   </Pressable>;
 }
+
+const NO_SKILLS: readonly HermesSkill[] = [];
 
 // The composer's corner radius; action buttons sit inset by their padding so their curves stay concentric.
 const COMPOSER_RADIUS = 22;

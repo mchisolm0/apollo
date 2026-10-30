@@ -86,7 +86,7 @@ private final class ComposerTextView: UITextView {
   var onAttributedMutation: (() -> Void)?
   var onSubmit: (() -> Void)?
   var isReadOnly = false
-  var textPasteThresholdBytes = 0
+  var textPasteThresholdChars = 0
   var maxInputChars = Int.max
   var enterBehavior: ComposerEnterBehavior = .send
   private var bypassTextPasteInterception = false
@@ -121,7 +121,7 @@ private final class ComposerTextView: UITextView {
       newline.wantsPriorityOverSystemBehavior = true
       commands.append(newline)
     }
-    if textPasteThresholdBytes > 0 {
+    if textPasteThresholdChars > 0 {
       let pasteAsText = UIKeyCommand(
         input: "v",
         modifierFlags: [.command, .shift],
@@ -204,9 +204,10 @@ private final class ComposerTextView: UITextView {
   }
 
   private func shouldInterceptTextPaste(_ text: String) -> Bool {
-    guard textPasteThresholdBytes > 0, !text.isEmpty else { return false }
+    guard textPasteThresholdChars > 0, !text.isEmpty else { return false }
+    // UTF-16 length, the unit of the draft limit.
     let pastedLength = (text as NSString).length
-    if pastedLength >= textPasteThresholdBytes || text.utf8.count >= textPasteThresholdBytes {
+    if pastedLength >= textPasteThresholdChars {
       return true
     }
     // Chips occupy one display character but expand to their source in the
@@ -317,9 +318,10 @@ private final class ComposerTextView: UITextView {
       }
       if let attachment = value as? ComposerTextAttachment {
         source.append(attachment.source)
-      } else {
+      } else if !(value is NSTextAttachment) {
         source.append(nsString.substring(with: attachmentRange))
       }
+      // Any other attachment, such as iOS dictation's placeholder, is not draft text.
       cursor = NSMaxRange(attachmentRange)
     }
     if cursor < end {
@@ -339,11 +341,62 @@ private final class ComposerTextView: UITextView {
     attributedText.enumerateAttribute(.attachment, in: range) { value, attributeRange, _ in
       if let attachment = value as? ComposerTextAttachment {
         sourceOffset += (attachment.source as NSString).length
-      } else {
+      } else if !(value is NSTextAttachment) {
         sourceOffset += attributeRange.length
       }
     }
     return sourceOffset
+  }
+
+  /// The inverse of `sourceOffset` over the text shown. An offset inside a chip's source lands after the chip.
+  func displayOffset(forSourceOffset sourceOffset: Int) -> Int {
+    var remaining = max(0, sourceOffset)
+    var displayOffset = 0
+    attributedText.enumerateAttribute(.attachment, in: NSRange(location: 0, length: attributedText.length)) { value, range, stop in
+      guard remaining > 0 else {
+        stop.pointee = true
+        return
+      }
+      if let attachment = value as? ComposerTextAttachment {
+        remaining -= (attachment.source as NSString).length
+        displayOffset = NSMaxRange(range)
+      } else if value is NSTextAttachment {
+        displayOffset = NSMaxRange(range)
+      } else {
+        let step = min(remaining, range.length)
+        remaining -= step
+        displayOffset = range.location + step
+      }
+    }
+    return displayOffset
+  }
+
+  /// Chips as shown, in source offsets.
+  func renderedChips() -> [(start: Int, source: String, label: String)] {
+    var chips: [(start: Int, source: String, label: String)] = []
+    var sourceOffset = 0
+    attributedText.enumerateAttribute(.attachment, in: NSRange(location: 0, length: attributedText.length)) { value, range, _ in
+      if let attachment = value as? ComposerTextAttachment {
+        chips.append((sourceOffset, attachment.source, attachment.label))
+        sourceOffset += (attachment.source as NSString).length
+      } else if !(value is NSTextAttachment) {
+        sourceOffset += range.length
+      }
+    }
+    return chips
+  }
+
+  /// IME composition or a dictation placeholder is in the text. Replacing `attributedText` would end either.
+  var isComposing: Bool {
+    if markedTextRange != nil { return true }
+    var found = false
+    attributedText.enumerateAttribute(.attachment, in: NSRange(location: 0, length: attributedText.length)) { value, _, stop in
+      if value is NSTextAttachment, !(value is ComposerTextAttachment) {
+        found = true
+        stop.pointee = true
+      }
+    }
+    return found
   }
 
   private static func writeTemporaryImage(_ image: UIImage) -> String? {
@@ -393,7 +446,9 @@ private final class ComposerTextView: UITextView {
 }
 
 public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDropDelegate, UIGestureRecognizerDelegate {
-  private let textView = ComposerTextView()
+  // TextKit 1 up front: the chip hit testing and accessibility frames read `layoutManager`, which
+  // would otherwise switch a TextKit 2 view over mid-edit.
+  private let textView = ComposerTextView(usingTextLayoutManager: false)
   private let placeholderLabel = UILabel()
   private var value = ""
   private var tokensJson = "[]"
@@ -417,7 +472,8 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
   private var nativeEventCount = 0
   private var hasAppliedDocument = false
   private var lastContentSize = CGSize.zero
-  private var tokensNeedRebuild = false
+  // A rebuild that waited for composition to end, and whether it was forced.
+  private var deferredRebuild: (force: Bool, eventCount: Int)?
 
   let onComposerChange = EventDispatcher()
   let onComposerSelectionChange = EventDispatcher()
@@ -588,15 +644,14 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
     if tokensJson != document.tokensJson {
       tokensJson = document.tokensJson
       tokens = decode([ComposerTokenPayload].self, from: document.tokensJson) ?? []
-      tokensNeedRebuild = true
     }
     value = document.value
     requestedSelection = document.selection
-    applyControlledDocument(force: tokensNeedRebuild)
+    // Apollo change: T3 rebuilt whenever tokensJson changed, so typing before a chip (which shifts
+    // its offsets) replaced the text every keystroke and broke IME composition. Only text or chips
+    // that differ from what the editor shows rebuild now.
+    applyControlledDocument(force: deferredRebuild?.force ?? false)
     applyRequestedSelection()
-    if tokensMatchCurrentValue() {
-      tokensNeedRebuild = false
-    }
   }
 
   func setThemeJson(_ themeJson: String) {
@@ -676,8 +731,8 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
     textView.enterBehavior = ComposerEnterBehavior(rawValue: behavior) ?? .send
   }
 
-  func setTextPasteThresholdBytes(_ threshold: Int) {
-    textView.textPasteThresholdBytes = threshold
+  func setTextPasteThresholdChars(_ threshold: Int) {
+    textView.textPasteThresholdChars = threshold
   }
 
   func setMaxInputChars(_ maxInputChars: Int) {
@@ -712,6 +767,7 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
     guard self.textView.serializedText() == value else {
       return
     }
+    applyDeferredRebuild()
     emitSelection()
   }
 
@@ -785,6 +841,11 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
       updatePlaceholderVisibility()
       return
     }
+    guard !textView.isComposing else {
+      deferredRebuild = (force || deferredRebuild?.force == true, nativeEventCount)
+      return
+    }
+    deferredRebuild = nil
 
     let previousSelection = sourceSelection()
     isApplyingControlledValue = true
@@ -798,21 +859,38 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
     emitContentSizeIfNeeded()
   }
 
+  /// Composition ended with the document's text still shown and no native edit since: apply what waited.
+  /// After an edit, the next controlled document carries fresh chips instead.
+  private func applyDeferredRebuild() {
+    guard let deferred = deferredRebuild, !textView.isComposing else { return }
+    guard deferred.eventCount == nativeEventCount else {
+      if !deferred.force { deferredRebuild = nil }
+      return
+    }
+    applyControlledDocument(force: deferred.force)
+  }
+
+  /// The tokens that match `value` and do not overlap, in order: the chips the document draws.
+  private func drawableTokens() -> [ComposerTokenPayload] {
+    let source = value as NSString
+    var cursor = 0
+    return tokens.filter {
+      guard $0.start >= cursor,
+            $0.end > $0.start,
+            $0.end <= source.length,
+            source.substring(with: NSRange(location: $0.start, length: $0.end - $0.start)) == $0.source else {
+        return false
+      }
+      cursor = $0.end
+      return true
+    }
+  }
+
   private func makeAttributedDocument() -> NSAttributedString {
     let result = NSMutableAttributedString()
     let source = value as NSString
     var cursor = 0
-    let validTokens = tokens.filter {
-      $0.start >= cursor &&
-        $0.end > $0.start &&
-        $0.end <= source.length &&
-        source.substring(with: NSRange(location: $0.start, length: $0.end - $0.start)) == $0.source
-    }
-
-    for token in validTokens {
-      if token.start < cursor {
-        continue
-      }
+    for token in drawableTokens() {
       if token.start > cursor {
         appendPlainText(
           source.substring(with: NSRange(location: cursor, length: token.start - cursor)),
@@ -1017,32 +1095,17 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
   }
 
   private func displayRange(for selection: ComposerSelectionPayload) -> NSRange {
-    let start = displayOffset(forSourceOffset: selection.start)
-    let end = displayOffset(forSourceOffset: selection.end)
+    let start = textView.displayOffset(forSourceOffset: selection.start)
+    let end = textView.displayOffset(forSourceOffset: selection.end)
     return NSRange(location: start, length: max(0, end - start))
   }
 
-  private func displayOffset(forSourceOffset sourceOffset: Int) -> Int {
-    let boundedOffset = max(0, min((value as NSString).length, sourceOffset))
-    var collapsedLength = 0
-    for token in tokens where token.end <= boundedOffset {
-      collapsedLength += max(0, token.end - token.start - 1)
-    }
-    if let token = tokens.first(where: { $0.start < boundedOffset && boundedOffset < $0.end }) {
-      return token.start - collapsedLength + 1
-    }
-    return boundedOffset - collapsedLength
-  }
-
   private func applyRequestedSelection() {
-    guard let requestedSelection else {
+    // The selection is for `value`; it waits while the editor shows other text or is composing.
+    guard let requestedSelection, !textView.isComposing, textView.serializedText() == value else {
       return
     }
     let nextRange = displayRange(for: requestedSelection)
-    guard nextRange.location <= textView.attributedText.length,
-          NSMaxRange(nextRange) <= textView.attributedText.length else {
-      return
-    }
     self.requestedSelection = nil
     // Programmatically assigning selectedRange resets the keyboard's
     // autocorrect and predictive-text context even when the range is
@@ -1076,39 +1139,13 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
     return try? JSONDecoder().decode(type, from: data)
   }
 
-  private func tokensMatchCurrentValue() -> Bool {
-    let source = value as NSString
-    return tokens.allSatisfy {
-      $0.start >= 0 &&
-        $0.end > $0.start &&
-        $0.end <= source.length &&
-        source.substring(with: NSRange(location: $0.start, length: $0.end - $0.start)) == $0.source
-    }
-  }
-
+  /// The editor shows exactly the chips the document draws, at the same source offsets.
   private func documentMatchesExpectedTokens() -> Bool {
-    let source = value as NSString
-    let expectedSources = tokens.compactMap { token -> String? in
-      guard token.start >= 0,
-            token.end > token.start,
-            token.end <= source.length,
-            source.substring(
-              with: NSRange(location: token.start, length: token.end - token.start)
-            ) == token.source else {
-        return nil
-      }
-      return token.source
+    let expected = drawableTokens()
+    let rendered = textView.renderedChips()
+    return expected.count == rendered.count && zip(expected, rendered).allSatisfy {
+      $0.start == $1.start && $0.source == $1.source && $0.label == $1.label
     }
-    var renderedSources: [String] = []
-    textView.attributedText.enumerateAttribute(
-      .attachment,
-      in: NSRange(location: 0, length: textView.attributedText.length)
-    ) { value, _, _ in
-      if let attachment = value as? ComposerTextAttachment {
-        renderedSources.append(attachment.source)
-      }
-    }
-    return renderedSources == expectedSources
   }
 }
 
