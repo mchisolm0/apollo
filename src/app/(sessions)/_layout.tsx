@@ -34,18 +34,22 @@ function Sidebar() {
   const pathname = usePathname();
   const params = useGlobalSearchParams<{ id?: string; agentId?: string }>();
   const inThread = pathname.startsWith('/session/');
-  // Screens pushed over the whole app carry their own params; only the inbox and threads choose the list.
-  const routeAgentId = inThread || pathname === '/' ? params.agentId : undefined;
-  const [agentId, setAgentId] = useState(routeAgentId);
-  const [seenRouteAgentId, setSeenRouteAgentId] = useState(routeAgentId);
-  if (routeAgentId !== seenRouteAgentId) {
-    setSeenRouteAgentId(routeAgentId);
-    if (routeAgentId) setAgentId(routeAgentId);
+  const selectedId = inThread ? params.id : undefined;
+  const [agentId, setAgentId] = useState(params.agentId);
+  // Screens pushed over the whole app carry their own params, so only the inbox and threads choose the list,
+  // and only when the open destination changes: returning from Settings keeps an agent picked here.
+  const destination = inThread || pathname === '/' ? `${selectedId ?? ''}\n${params.agentId ?? ''}` : undefined;
+  const [seenDestination, setSeenDestination] = useState(destination);
+  if (destination !== undefined && destination !== seenDestination) {
+    setSeenDestination(destination);
+    if (params.agentId) setAgentId(params.agentId);
   }
-  return <InboxPane sidebar agentId={agentId} selectedId={inThread ? params.id : undefined}
+  return <InboxPane sidebar agentId={agentId} selectedId={selectedId}
     onSelectAgent={setAgentId}
-    onOpen={(params) => {
-      const href = { pathname: '/session/[id]', params } as const;
+    onOpen={(thread) => {
+      // Replacing the open thread with itself would reload it and drop the composer's focus.
+      if (thread.id === selectedId && thread.agentId === params.agentId) return;
+      const href = { pathname: '/session/[id]', params: thread } as const;
       if (sidebarOpenAction(pathname) === 'replace') router.replace(href);
       else router.push(href);
     }} />;

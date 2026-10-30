@@ -116,6 +116,7 @@ export function SessionList({ sessions, connection = 'connected', onSessionPress
       style={styles.list}
       data={rows}
       recycleItems
+      extraData={selectedId}
       keyExtractor={(row) => `${row.kind}:${row.id}`}
       getItemType={(row) => row.kind}
       estimatedItemSize={48}

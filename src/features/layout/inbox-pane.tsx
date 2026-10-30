@@ -122,7 +122,8 @@ export function InboxPane({ agentId, selectedId, sidebar = false, onSelectAgent,
       ],
     }} /> : <View style={styles.header}>
       <View style={styles.identity}>{picker}</View>
-      <View style={styles.statusSlot}>{statusAction}</View>
+      {/* The sidebar is too narrow to hold the slot open, so its agent name gives way only while a status shows. */}
+      {sidebar && !statusAction ? null : <View style={styles.statusSlot}>{statusAction}</View>}
       {hasFeedback ? <Pressable accessibilityRole="button" accessibilityLabel="Feedback" onPress={() => router.push('/feedback')} style={({ pressed }) => [styles.dockButton, pressed && { opacity: 0.6 }]}>
         <SymbolView name={{ ios: 'bubble.left.and.text.bubble.right', android: 'forum', web: 'forum' }} size={22} tintColor={colors.primary} />
       </Pressable> : null}

@@ -46,8 +46,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   const router = useRouter();
   const closeThread = () => { Keyboard.dismiss(); router.dismissTo({ pathname: '/', params: { agentId } }); };
   // Beside the sidebar the inbox is already on screen, so leaving the thread is for deletes only.
-  const split = useSidebarWidth() !== undefined;
-  const openInbox = split ? () => {} : closeThread;
+  const openInbox = useSidebarWidth() === undefined ? closeThread : undefined;
   const [localError, setLocalError] = useState<string>();
   const [loadError, setLoadError] = useState<string>();
   const [loading, setLoading] = useState(id !== 'new');
@@ -327,13 +326,13 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
             }
           }
         })}
-        onBack={split ? undefined : openInbox}
+        onBack={openInbox}
         onSessionActions={() => {
           const item = inbox.sessions.find((candidate) => candidate.id === resolvedId);
           const lastUserText = [...history].reverse().find((message) => message.role === 'user' && message.content?.trim())?.content?.trim();
           const titleInput = lastUserText ?? session?.title?.trim() ?? '';
           showSessionActions(session?.title ?? 'Thread', [
-            ...(item?.settled ? [{ label: 'Reopen thread', onPress: () => { void inbox.reopen(item.id); } }] : item && canSettleSession(item) ? [{ label: 'Finish thread', onPress: () => { void inbox.settle(item.id); openInbox(); } }] : []),
+            ...(item?.settled ? [{ label: 'Reopen thread', onPress: () => { void inbox.reopen(item.id); } }] : item && canSettleSession(item) ? [{ label: 'Finish thread', onPress: () => { void inbox.settle(item.id); openInbox?.(); } }] : []),
             ...(item && !item.settled && inbox.loaded ? [{ label: `Auto-settle ${item.autoSettleDisabled ? 'On' : 'Off'}`, onPress: () => { void inbox.setAutoSettle(item.id, item.autoSettleDisabled); } }] : []),
             ...(resolvedId && titleInput ? [{ label: 'Regenerate title', onPress: () => { void act(() => regenerateTitle(agentId, resolvedId, titleInput)); } }] : []),
             ...(resolvedId ? [{ label: 'Delete thread', destructive: true, onPress: () => Alert.alert('Delete thread?', `"${session?.title ?? 'Thread'}" will be permanently removed.`, [
