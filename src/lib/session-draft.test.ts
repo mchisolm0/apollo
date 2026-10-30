@@ -229,3 +229,14 @@ test('a dictation placeholder in a saved draft is never sent', async () => {
   await wait();
   await assert.rejects(store.prepareSend(), /Draft cannot be empty/);
 });
+
+test('a draft saved with a dictation placeholder loads without it', async () => {
+  const storage = memory();
+  const saved = new SessionDraftStore('placeholder-load', 'new', { storage, uuid: () => 'id' });
+  await saved.load();
+  saved.setDraft('hello￼');
+  await saved.flush();
+  const restored = new SessionDraftStore('placeholder-load', 'new', { storage, uuid: () => 'id' });
+  await restored.load();
+  assert.equal(restored.getSnapshot().draft, 'hello');
+});

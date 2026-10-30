@@ -162,6 +162,8 @@ export class SessionDraftStore {
         const parsed: unknown = JSON.parse(saved);
         if (!validRecord(parsed)) throw new Error('Saved draft is invalid.');
         validateDraft(parsed.draft, parsed.attachments);
+        // Older builds could save iOS's dictation placeholder; a draft mid-send keeps its text to match its receipt.
+        if (!parsed.prepared) parsed.draft = withoutAttachmentCharacters(parsed.draft);
         if (parsed.prepared && (parsed.prepared.text !== parsed.draft || !sameAttachments(parsed.prepared.attachments, parsed.attachments))) parsed.prepared = undefined;
         this.record = this.edited
           ? { ...parsed, draft: this.record.draft, attachments: this.record.attachments, prepared: undefined }

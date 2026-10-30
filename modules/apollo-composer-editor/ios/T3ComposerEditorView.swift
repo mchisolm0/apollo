@@ -1113,7 +1113,8 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
   }
 
   private func updatePlaceholderVisibility() {
-    placeholderLabel.isHidden = !value.isEmpty
+    // The text storage also holds dictation's placeholder, which `value` drops; hide behind it too.
+    placeholderLabel.isHidden = textView.textStorage.length > 0
   }
 
   private func emitContentSizeIfNeeded() {
