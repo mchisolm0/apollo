@@ -3,6 +3,7 @@ import { PostHogProvider } from 'posthog-react-native';
 import { posthog } from '@/config/posthog';
 import { DarkTheme, Stack, ThemeProvider, usePathname } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { StatusBar } from 'expo-status-bar';
 
 import { TextScaleProvider, useColors } from '@/features/relay/relay-ui';
@@ -56,6 +57,7 @@ function ScreenTracker() {
 export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
+    <KeyboardProvider>
     <PostHogProvider client={posthog} autocapture={false}>
     <ApolloProvider>
       <OutboxProvider>
@@ -72,6 +74,7 @@ export default function RootLayout() {
       </OutboxProvider>
     </ApolloProvider>
     </PostHogProvider>
+    </KeyboardProvider>
     </GestureHandlerRootView>
   );
 }

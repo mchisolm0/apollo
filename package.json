@@ -49,6 +49,7 @@
     "react-native": "0.88.1",
     "react-native-enriched-markdown": "^1.0.2",
     "react-native-gesture-handler": "~3.3.0",
+    "react-native-keyboard-controller": "1.22.9",
     "react-native-nitro-markdown": "0.5.8",
     "react-native-nitro-modules": "0.35.9",
     "react-native-reanimated": "4.7.1",
@@ -115,6 +116,11 @@
     ]
   },
   "expo": {
+    "install": {
+      "exclude": [
+        "react-native-keyboard-controller"
+      ]
+    },
     "autolinking": {
       "buildFromSource": [
         "react-native-screens"
