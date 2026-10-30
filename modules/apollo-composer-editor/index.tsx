@@ -238,6 +238,8 @@ function FallbackComposerEditor({ ref, value, selection, theme, minHeight, maxHe
     onChangeText={onChangeText}
     onSelectionChange={(event) => onSelectionChange?.(event.nativeEvent.selection, value)}
     multiline
+    // The caller's sizes already include the system text size.
+    allowFontScaling={false}
     autoFocus={props.autoFocus}
     editable={(props.editable ?? true) && !props.readOnly}
     scrollEnabled={props.scrollEnabled}

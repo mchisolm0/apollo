@@ -217,3 +217,15 @@ test('a new composer after promotion cannot overwrite the previous thread draft'
   assert.equal(JSON.parse(storage.values['apollo.draft.v2.promotion.thread-one']).draft, '');
   assert.equal(JSON.parse(storage.values['apollo.draft.v2.promotion.new']).draft, 'second');
 });
+
+test('a dictation placeholder in a saved draft is never sent', async () => {
+  const store = new SessionDraftStore('placeholder', 'new', { storage: memory(), uuid: () => 'id' });
+  await store.load();
+  store.setDraft('fix the build￼');
+  await wait();
+  assert.equal((await store.prepareSend()).text, 'fix the build');
+  assert.equal((await store.prepareSend()).id, 'id');
+  store.setDraft('￼');
+  await wait();
+  await assert.rejects(store.prepareSend(), /Draft cannot be empty/);
+});

@@ -472,8 +472,8 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
   private var nativeEventCount = 0
   private var hasAppliedDocument = false
   private var lastContentSize = CGSize.zero
-  // A rebuild that waited for composition to end, and whether it was forced.
-  private var deferredRebuild: (force: Bool, eventCount: Int)?
+  // A forced rebuild (theme, typography) that waited for composition to end.
+  private var deferredForcedRebuild = false
 
   let onComposerChange = EventDispatcher()
   let onComposerSelectionChange = EventDispatcher()
@@ -650,7 +650,7 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
     // Apollo change: T3 rebuilt whenever tokensJson changed, so typing before a chip (which shifts
     // its offsets) replaced the text every keystroke and broke IME composition. Only text or chips
     // that differ from what the editor shows rebuild now.
-    applyControlledDocument(force: deferredRebuild?.force ?? false)
+    applyControlledDocument(force: deferredForcedRebuild)
     applyRequestedSelection()
   }
 
@@ -767,7 +767,6 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
     guard self.textView.serializedText() == value else {
       return
     }
-    applyDeferredRebuild()
     emitSelection()
   }
 
@@ -841,14 +840,20 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
       updatePlaceholderVisibility()
       return
     }
-    guard !textView.isComposing else {
-      deferredRebuild = (force || deferredRebuild?.force == true, nativeEventCount)
+    // Replacing the text ends IME composition and dictation. A rebuild that changes only chips or
+    // styling waits; any native event brings a new controlled document that checks again. A real JS
+    // edit (Send clearing, a skill pick) applies now, as in T3.
+    if currentSource == value, textView.isComposing {
+      deferredForcedRebuild = deferredForcedRebuild || force
       return
     }
-    deferredRebuild = nil
+    deferredForcedRebuild = false
 
     let previousSelection = sourceSelection()
     isApplyingControlledValue = true
+    if textView.markedTextRange != nil {
+      textView.unmarkText()
+    }
     textView.attributedText = makeAttributedDocument()
     let targetSelection = requestedSelection ?? previousSelection
     requestedSelection = nil
@@ -857,17 +862,6 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
     isApplyingControlledValue = false
     updatePlaceholderVisibility()
     emitContentSizeIfNeeded()
-  }
-
-  /// Composition ended with the document's text still shown and no native edit since: apply what waited.
-  /// After an edit, the next controlled document carries fresh chips instead.
-  private func applyDeferredRebuild() {
-    guard let deferred = deferredRebuild, !textView.isComposing else { return }
-    guard deferred.eventCount == nativeEventCount else {
-      if !deferred.force { deferredRebuild = nil }
-      return
-    }
-    applyControlledDocument(force: deferred.force)
   }
 
   /// The tokens that match `value` and do not overlap, in order: the chips the document draws.

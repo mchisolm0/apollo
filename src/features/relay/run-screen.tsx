@@ -4,6 +4,7 @@ import { canSteerMessage, type QueuedMessage } from '../../lib/outbox';
 import { feedFollowOptions, followAfterScroll } from './feed-follow';
 import { CopyButton } from '../content/copy-button';
 import { splitAttachmentMessage, type AttachmentSource, type DraftAttachment } from '../../lib/attachments';
+import { withoutAttachmentCharacters } from '../../lib/session-draft';
 import { AttachmentStrip } from './attachment-strip';
 import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
@@ -15,7 +16,7 @@ import { ConnectionAction, ConnectionMark, IconButton, useTextScale, useThemedSt
 import { KeyboardFrame } from './keyboard-frame';
 import { RingSpinner } from './ring-spinner';
 import { insertSkill, matchingSkills, selectedSkillNames, skillTokens, skillTrigger, type SkillToken, type SkillTrigger } from './composer-skills';
-import { MAX_DRAFT_CHARS, PASTED_TEXT_ATTACHMENT_CHARS, withoutAttachmentCharacters } from './composer-paste';
+import { MAX_DRAFT_CHARS, PASTED_TEXT_ATTACHMENT_CHARS } from './composer-paste';
 import { useComposerEnterBehavior } from './composer-return';
 import { showSessionActions } from './session-actions';
 import { MessageContent } from './message-content';

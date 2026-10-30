@@ -6,11 +6,6 @@
 export const MAX_DRAFT_CHARS = 8000;
 export const PASTED_TEXT_ATTACHMENT_CHARS = MAX_DRAFT_CHARS;
 
-/** Drops U+FFFC, the object replacement character iOS uses for attachments such as the dictation placeholder. It is never draft text. */
-export function withoutAttachmentCharacters(text: string): string {
-  return text.replaceAll('\uFFFC', '');
-}
-
 /** Stable, readable names when a draft holds several folded pastes. */
 export function pastedTextFileName(existingNames: readonly string[]): string {
   const names = new Set(existingNames.map((name) => name.toLowerCase()));
