@@ -19,3 +19,7 @@ Apollo changes:
 - Chips take Apollo's theme (accent blended over the composer surface) and the
   system font.
 - Typing past `maxInputChars` is refused, standing in for `TextInput.maxLength`.
+- A controlled document that passes the revision guard always applies, echo or not, and a
+  re-created view adopts the JS revision. T3 dropped mismatched echoes, which lost a restored
+  draft when Fabric coalesced the parent edit with the echo render after it.
+- The text view carries the accessibility label and hint, so the editor is not one opaque element.

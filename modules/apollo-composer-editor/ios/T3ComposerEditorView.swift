@@ -415,6 +415,7 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
   private var isReadOnly = false
   private var isApplyingControlledValue = false
   private var nativeEventCount = 0
+  private var hasAppliedDocument = false
   private var lastContentSize = CGSize.zero
   private var tokensNeedRebuild = false
 
@@ -569,12 +570,20 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
   }
 
   func setControlledDocumentJson(_ documentJson: String) {
-    guard let document = decode(ComposerControlledDocumentPayload.self, from: documentJson),
-          document.mostRecentEventCount >= nativeEventCount else {
+    guard let document = decode(ComposerControlledDocumentPayload.self, from: documentJson) else {
       return
     }
-    if document.isNativeEcho && textView.serializedText() != document.value {
-      return
+    // Apollo change: T3 also dropped an echo whose value differed from the text shown. Fabric can
+    // coalesce a parent edit and the echo render after it into one prop update, so a restored draft
+    // arrived only as an echo and was dropped. Past the revision guard, a mismatched echo can only
+    // mean this view missed an update, so it applies.
+    if hasAppliedDocument {
+      guard document.mostRecentEventCount >= nativeEventCount else { return }
+    } else {
+      // React can re-create this view (fast refresh, a remounted parent) while the JS side keeps its
+      // revision history. The new view continues from the JS revision instead of zero.
+      nativeEventCount = max(nativeEventCount, document.mostRecentEventCount)
+      hasAppliedDocument = true
     }
     if tokensJson != document.tokensJson {
       tokensJson = document.tokensJson
