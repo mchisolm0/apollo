@@ -18,7 +18,7 @@ const MATCHES = {
   all: () => true,
 } satisfies Record<FeedbackFilter, (card: Card) => boolean>;
 
-/** Feedback cards for one filter, newest report first. Producers never close them, so the inbox holds every one. */
+/** Feedback cards for one filter, newest report first. Only Archive closes one, so the inbox holds every report but those archived over 7 days ago. */
 export function feedbackRows<C extends Card>(cards: readonly C[], filter: FeedbackFilter): C[] {
   return cards
     .filter((card) => card.source === 'feedback' && MATCHES[filter](card))

@@ -182,9 +182,11 @@ export class Inbox extends DurableObject<Env> {
     if (who.scope && input.source !== who.scope.source) return fail(403, 'out_of_scope', `this token only writes ${who.scope.source} cards`);
     if (who.scope && !linksAllowed(input, who.scope.urls)) return fail(403, 'link_not_allowed', `a link on this card is outside the token's allowed prefixes`);
 
-    const { push, replaces, ...fields } = input;
+    const { push, replaces, reopen, ...fields } = input;
     const { card, superseded, created, changed, pushing } = this.ctx.storage.transactionSync(() => {
-      const existing = this.#cardBy('source = ? AND key = ?', input.source, input.key);
+      const stored = this.#cardBy('source = ? AND key = ?', input.source, input.key);
+      // `reopen` brings a closed card back as if it had stayed open, with its answer cleared.
+      const existing = stored && reopen && stored.state !== 'open' ? { ...stored, state: 'open' as const, resolution: undefined } : stored;
       if (existing && existing.state !== 'open') return { card: existing, superseded: [], created: false, changed: false, pushing: false };
 
       const id = existing?.id ?? crypto.randomUUID();
@@ -199,7 +201,7 @@ export class Inbox extends DurableObject<Env> {
         state: existing.state, resolution: existing.resolution, replacedBy: existing.replacedBy, createdAt: existing.createdAt,
       };
       // Producers re-post on every sync, and each write counts against the Durable Object row quota.
-      if (existing && next && !earlier && sameCard(next, existing)) return { card: existing, superseded: [], created: false, changed: false, pushing: false };
+      if (stored && existing === stored && next && !earlier && sameCard(next, stored)) return { card: existing, superseded: [], created: false, changed: false, pushing: false };
       const card = next ? this.#commit(next) : this.#commit({ ...fields, ...link, ...plain, id, push: push ?? DEFAULT_PUSH[input.kind], state: 'open', createdAt: iso() });
 
       // A new phase drops whatever the last one still owed, so an old alert can't retry after it.

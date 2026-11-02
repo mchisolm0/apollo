@@ -67,6 +67,7 @@ export const CardInput = type({
   'phase?': '0 < string <= 40',
   'progress?': progress,
   'keepOpen?': 'boolean',
+  'reopen?': 'boolean',
   'replaces?': '0 < string <= 200',
   'expiresAt?': isoTime,
   '+': 'delete',
