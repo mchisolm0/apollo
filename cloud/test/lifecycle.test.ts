@@ -58,6 +58,23 @@ describe('keepOpen', () => {
   });
 });
 
+describe('reopen', () => {
+  it('brings a closed card back open with its answer cleared, pushing for the new phase', async () => {
+    const expo = mockExpo();
+    const report = (phase: string, reopen?: boolean): CardInput => ({ source: 'feedback', key: 'scryve:r1', kind: 'approval', title: 'Bug: x', phase, actions: [{ id: 'archive', label: 'Archive' }], ...(reopen ? { reopen } : {}) });
+    const card = await postCard(producer, report('player:1'));
+    await vi.waitFor(() => expect(expo).toHaveBeenCalledTimes(1));
+    expect(await (await respond(device, card.id, { actionId: 'archive' })).json()).toMatchObject({ state: 'resolved' });
+
+    expect(await postCard(producer, report('player:2'))).toMatchObject({ state: 'resolved', phase: 'player:1' });
+    const reopened = await postCard(producer, report('player:2', true));
+    expect(reopened).toMatchObject({ id: card.id, state: 'open', phase: 'player:2' });
+    expect(reopened).not.toHaveProperty('resolution');
+    expect(reopened).not.toHaveProperty('reopen');
+    await vi.waitFor(() => expect(expo).toHaveBeenCalledTimes(2));
+  });
+});
+
 describe('phase', () => {
   it('pushes again only when the phase changes, at the level it sends', async () => {
     const expo = mockExpo();

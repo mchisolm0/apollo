@@ -22,7 +22,7 @@ export function cardActions(card: Card): readonly CardAction[] {
 
 export function actionLabel(card: Card, actionId: string): string {
   const label = cardActions(card).find((action) => action.id === actionId)?.label;
-  return actionId === 'approve' ? 'Approved' : actionId === 'reject' ? 'Rejected' : label ?? actionId;
+  return actionId === 'approve' ? 'Approved' : actionId === 'reject' ? 'Rejected' : actionId === 'archive' ? 'Archived' : label ?? actionId;
 }
 
 /** What a morning card answer did ("Working on these", "No picks today"), or the action's own label for anything else. */
