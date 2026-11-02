@@ -109,7 +109,9 @@ export interface CardInput {
   /**
    * Reopens the card if it was closed, clearing its resolution, e.g. when a
    * player replies to a feedback report that was archived. Without it, an
-   * upsert to a closed card changes nothing.
+   * upsert to a closed card changes nothing. It reopens a card however it
+   * closed, so a replaced card keeps its `replacedBy` and a past `expiresAt`
+   * settles it again.
    */
   reopen?: boolean;
   /** Key of an earlier card from the same source that this one supersedes. It settles, and the two link. */

@@ -14,19 +14,20 @@ const cards = [
   card('new-bug', { title: 'Bug: sync', createdAt: '2026-10-20T08:00:00Z' }),
   card('fixed-bug', { title: 'Bug: timer', meta: { fixed: 'abcdef1 · update' }, createdAt: '2026-10-15T08:00:00Z' }),
   card('blank-fix', { title: 'Idea: themes', meta: { fixed: '' }, createdAt: '2026-10-02T08:00:00Z' }),
+  card('archived-bug', { title: 'Bug: not a bug', kind: 'approval', state: 'resolved', createdAt: '2026-09-30T08:00:00Z' }),
   card('preview', { source: 'preview', kind: 'approval' }),
 ];
 const ids = (rows: readonly Card[]) => rows.map((row) => row.id);
 
 test('lists only feedback, newest report first', () => {
-  assert.deepEqual(ids(feedbackRows(cards, 'all')), ['new-bug', 'fixed-bug', 'idea', 'blank-fix', 'old-bug']);
+  assert.deepEqual(ids(feedbackRows(cards, 'all')), ['new-bug', 'fixed-bug', 'idea', 'blank-fix', 'old-bug', 'archived-bug']);
 });
 
 test('waiting means the player spoke last', () => {
   assert.deepEqual(ids(feedbackRows(cards, 'waiting')), ['old-bug']);
 });
 
-test('bugs and ideas split by title prefix, and fixed reports leave them', () => {
+test('bugs and ideas split by title prefix, and fixed or archived reports leave them', () => {
   assert.deepEqual(ids(feedbackRows(cards, 'bugs')), ['new-bug', 'old-bug']);
   assert.deepEqual(ids(feedbackRows(cards, 'ideas')), ['idea']);
   assert.deepEqual(ids(feedbackRows(cards, 'fixed')), ['fixed-bug', 'blank-fix']);
