@@ -222,7 +222,8 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
   // The worker starts deliveries without awaiting them, so one stuck send cannot hold up other threads.
   const dispatch = Effect.gen(function* () {
     yield* load;
-    const ready = readyMessages(snapshot.items, now()).filter((item) => !inFlight.has(item.id));
+    const env = yield* OutboxEnvironment;
+    const ready = readyMessages(snapshot.items, now()).filter((item) => !inFlight.has(item.id) && (item.acceptedRunId || env.canSend(item)));
     yield* Effect.forEach(ready.slice(0, Math.max(0, MAX_DELIVERIES - inFlight.size)), (item) => Effect.fork(deliver(item).pipe(Effect.catchAll(recordError))), { discard: true });
   }).pipe(Effect.catchAll(recordError));
 

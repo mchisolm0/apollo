@@ -332,6 +332,19 @@ test('a delivery that never settles does not hold up other threads', async () =>
   } finally { await outbox.dispose(); }
 });
 
+test('messages for an offline agent do not take delivery slots from a connected one', async () => {
+  const setup = fixture({ canSend: (message) => message.agentId === 'agent-two' });
+  const outbox = createOutboxRuntime(setup.dependencies);
+  try {
+    for (const thread of ['one', 'two', 'three']) await outbox.enqueue({ ...first, id: `offline-${thread}`, sessionId: thread });
+    await outbox.enqueue({ ...first, id: 'online', agentId: 'agent-two' });
+    outbox.start();
+    const deadline = Date.now() + 5000;
+    while (!setup.sent.length && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual(setup.sent, ['online']);
+  } finally { await outbox.dispose(); }
+});
+
 test('retries ambiguous delivery with the same key, but stops before server retention expires', async () => {
   const keys: string[] = [];
   const setup = fixture({ deliver: async (message) => { keys.push(message.id); throw new Error('Connection lost'); } });
