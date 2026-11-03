@@ -16,6 +16,7 @@ import { isIP } from "node:net";
 const execFileAsync = promisify(execFile);
 const VERSION = "0.1.0";
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
+const LAST_USED_INTERVAL_MS = 10 * 60 * 1000;
 const PUBLIC_DESCRIPTOR_PATH = "/.well-known/apollo/agent";
 const EXCHANGE_PATH = "/v1/pair/exchange";
 
@@ -79,6 +80,11 @@ export class StateStore {
 
   async read() {
     await this.#queue;
+    return this.#state;
+  }
+
+  /** In-memory state, including mutations whose writes are still pending. Never waits on disk. */
+  current() {
     return this.#state;
   }
 
@@ -313,16 +319,23 @@ export function createConnectorServer(options = {}) {
     return error(res, 404, "Attachment route not found.");
   }
 
+  // Authentication never waits on a state write, so one stuck write cannot block every request.
+  // last_used_at is recorded at most every 10 minutes, with one pending write per device.
+  const touching = new Set();
   async function authenticateDevice(req) {
     const presented = bearer(req.headers);
     if (!presented) return null;
     const presentedHash = hash(presented);
-    return store.update((state) => {
-      const device = state.devices.find((candidate) => !candidate.revoked_at && secureEqual(candidate.token_hash, presentedHash));
-      if (!device) return null;
-      device.last_used_at = isoNow();
-      return { id: device.id, name: device.name };
-    });
+    const device = store.current().devices.find((candidate) => !candidate.revoked_at && secureEqual(candidate.token_hash, presentedHash));
+    if (!device) return null;
+    if (!touching.has(device.id) && !(Date.now() - Date.parse(device.last_used_at ?? "") < LAST_USED_INTERVAL_MS)) {
+      touching.add(device.id);
+      void store.update((state) => {
+        const current = state.devices.find((candidate) => candidate.id === device.id);
+        if (current) current.last_used_at = isoNow();
+      }).catch(() => {}).finally(() => touching.delete(device.id));
+    }
+    return { id: device.id, name: device.name };
   }
 
   function authenticateAdmin(req) {

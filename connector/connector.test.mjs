@@ -128,6 +128,25 @@ test("pairing is single-use, device tokens are hashed, and revocation works", as
   assert.equal(after.response.status, 401);
 });
 
+test("device requests neither wait on a stuck state write nor write on every request", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "apollo-connector-"));
+  const store = new StateStore(join(directory, "state.json"), "Test Hermes");
+  let updates = 0;
+  const update = store.update.bind(store);
+  store.update = (mutator) => { updates++; return update(mutator); };
+  const f = await fixture({ store }); t.after(async () => { await f.connector.close(); await f.hermes.close(); });
+  const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: JSON.stringify({ public_base_url: "https://agent.example" }) }));
+  const { body: device } = await req(f.base, "/v1/pair/exchange", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: pair.body.pairing_token }) });
+  const authed = { headers: { authorization: `Bearer ${device.access_token}` }, signal: AbortSignal.timeout(2000) };
+  assert.equal((await req(f.base, "/v1/health", authed)).response.status, 200);
+  const settled = updates;
+  let release;
+  void update(() => new Promise((resolve) => { release = resolve; }));
+  for (let index = 0; index < 3; index++) assert.equal((await req(f.base, "/v1/health", { ...authed, signal: AbortSignal.timeout(2000) })).response.status, 200);
+  release();
+  assert.equal(updates, settled);
+});
+
 test("admin API is loopback-authenticated and proxy strips sensitive caller headers", async (t) => {
   const f = await fixture(); t.after(async () => { await f.connector.close(); await f.hermes.close(); });
   const forbidden = await req(f.base, "/admin/devices");
