@@ -119,6 +119,7 @@ describe('scoped tokens', () => {
     expect(await status({ ...approval('scoped:2') })).toBe(403);
     expect(await status(ready({ url: 'https://github.com/HashingSeedsEvil/x' }))).toBe(403);
     expect(await status(ready({ url: 'https://github.com/HashingSeeds/../elsewhere' }))).toBe(403);
+    expect(await status(ready({ key: 'scoped:4', picks: [{ n: 1, text: 'x', url: 'https://example.test/', done: false }] }))).toBe(403);
     // Body links aren't checked: the card is plain text, so none can be opened.
     const plain = await (await call('/v1/cards', { token: scoped, body: ready({ key: 'scoped:3', body: 'See [this](javascript:alert(1)) or //evil.example' }) })).json<Card>();
     expect(plain.plainText).toBe(true);

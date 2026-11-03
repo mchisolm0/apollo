@@ -29,6 +29,7 @@ const pick = type({
   n: 'number.integer >= 0',
   text: '0 < string <= 200',
   'sub?': 'string <= 200',
+  'url?': 'string.url',
   done: 'boolean',
   '+': 'delete',
 });
@@ -59,7 +60,7 @@ export const CardInput = type({
   'body?': 'string <= 4000',
   'url?': 'string.url',
   'actions?': action.array().atMostLength(8),
-  'picks?': pick.array().atMostLength(3),
+  'picks?': pick.array().atMostLength(200),
   'meta?': meta,
   'metrics?': metric.array().atMostLength(4),
   'push?': "'urgent' | 'alert' | 'passive' | 'none'",
@@ -71,7 +72,10 @@ export const CardInput = type({
   'replaces?': '0 < string <= 200',
   'expiresAt?': isoTime,
   '+': 'delete',
-}).narrow((card, ctx) => card.picks === undefined || card.kind === 'briefing' || ctx.reject({ path: ['picks'], description: 'only on briefing cards' }));
+}).narrow((card, ctx) => card.picks === undefined
+  || (card.kind === 'briefing' && card.picks.length <= 3)
+  || card.kind === 'update'
+  || ctx.reject({ path: ['picks'], description: 'only on update cards, or at most 3 on briefing cards' }));
 
 export const CardPatch = type({
   'title?': '0 < string <= 200',

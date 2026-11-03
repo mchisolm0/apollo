@@ -132,25 +132,43 @@ export function CardSwipe({ card, action, onRun, children }: { card: InboxCard; 
   </Swipeable>;
 }
 
-export function CardPicks({ card, onPick, inset = 0 }: { card: InboxCard; onPick: (card: InboxCard, pick: CardPick) => void; inset?: number }) {
+/**
+ * A card's checklist. A pick without a link toggles from anywhere on its row. A pick with a
+ * link splits: the check mark toggles it, and the text opens the link, so tapping a job
+ * title never checks it off by accident. `limit` caps how many show (the morning card's 3).
+ */
+export function CardPicks({ card, onPick, inset = 0, limit }: { card: InboxCard; onPick: (card: InboxCard, pick: CardPick) => void; inset?: number; limit?: number }) {
   const styles = useThemedStyles(createStyles);
   const { factor } = useTextScale();
-  const picks = card.picks?.slice(0, 3) ?? [];
+  const picks = card.picks?.slice(0, limit) ?? [];
+  const label = (pick: CardPick) => `${pick.text}${pick.sub ? `, ${pick.sub}` : ''}`;
+  const mark = (pick: CardPick) => <View style={[styles.pickMark, pick.done && styles.pickMarkDone]}><Text style={[styles.pickNumber, pick.done && styles.pickNumberDone]}>{pick.n}</Text></View>;
+  const text = (pick: CardPick) => <>
+    <Text style={[styles.pickTitle, pick.url && styles.pickLink, pick.done && styles.pickTitleDone, { fontSize: 16 * factor, lineHeight: 22 * factor }]}>{pick.text}</Text>
+    {pick.sub ? <Text style={[styles.pickSub, { fontSize: 13 * factor, lineHeight: 17 * factor }]}>{pick.sub}</Text> : null}
+  </>;
   return <View>
-    {picks.map((pick) => <Pressable
+    {picks.map((pick) => { const url = pick.url; return url ? <View key={pick.n} style={[styles.pick, { paddingLeft: inset }]}>
+      <Pressable
+        accessibilityRole="checkbox"
+        accessibilityState={{ checked: pick.done }}
+        accessibilityLabel={label(pick)}
+        hitSlop={{ top: 10, bottom: 10, left: 10, right: 6 }}
+        onPress={() => onPick(card, pick)}
+        style={({ pressed }) => [styles.pickHit, pressed && styles.pressed]}
+      >{mark(pick)}</Pressable>
+      <Pressable accessibilityRole="link" accessibilityLabel={label(pick)} onPress={() => { void openCardLink(url); }} style={({ pressed }) => [styles.pickText, pressed && styles.pressed]}>{text(pick)}</Pressable>
+    </View> : <Pressable
       key={pick.n}
       accessibilityRole="checkbox"
       accessibilityState={{ checked: pick.done }}
-      accessibilityLabel={`${pick.text}${pick.sub ? `, ${pick.sub}` : ''}`}
+      accessibilityLabel={label(pick)}
       onPress={() => onPick(card, pick)}
       style={({ pressed }) => [styles.pick, { paddingLeft: inset }, pressed && styles.pressed]}
     >
-      <View style={[styles.pickMark, pick.done && styles.pickMarkDone]}><Text style={[styles.pickNumber, pick.done && styles.pickNumberDone]}>{pick.n}</Text></View>
-      <View style={styles.pickText}>
-        <Text style={[styles.pickTitle, pick.done && styles.pickTitleDone, { fontSize: 16 * factor, lineHeight: 22 * factor }]}>{pick.text}</Text>
-        {pick.sub ? <Text style={[styles.pickSub, { fontSize: 13 * factor, lineHeight: 17 * factor }]}>{pick.sub}</Text> : null}
-      </View>
-    </Pressable>)}
+      {mark(pick)}
+      <View style={styles.pickText}>{text(pick)}</View>
+    </Pressable>; })}
   </View>;
 }
 
@@ -189,7 +207,7 @@ export const BriefingCard = memo(function BriefingCard({ card, onOpen, onPick, o
           {calendar ? <Text style={[styles.secondary, { fontSize: 14 * factor, lineHeight: 19 * factor }]} numberOfLines={1}>{calendar}</Text> : null}
         </View>
       </Pressable>
-      <CardPicks card={card} onPick={onPick} inset={GLYPH_INSET} />
+      <CardPicks card={card} onPick={onPick} inset={GLYPH_INSET} limit={3} />
       {Object.entries(meta).map(([label, value]) => <Text key={label} style={[styles.secondary, styles.inset, { fontSize: 14 * factor, lineHeight: 19 * factor }]} numberOfLines={2}><Text style={styles.metaLabel}>{label} </Text>{value}</Text>)}
       {summary ? <Text style={[styles.summary, styles.inset, { fontSize: 14 * factor, lineHeight: 19 * factor }]} numberOfLines={1}>{summary}</Text>
         : actions.length ? <View style={[styles.actions, styles.inset]}>{actions.map((action) => <CardButton key={action.id} action={action} label={`${action.label} morning card`} onPress={() => action.input ? onOpen(card) : onAction(card, action)} />)}</View> : null}
@@ -216,7 +234,8 @@ export const CardRow = memo(function CardRow({ card, settled, swipe, onPress, on
   const { factor } = useTextScale();
   const approval = card.kind === 'approval' && !settled;
   const source = SOURCE_STYLES[card.source].label;
-  const preview = previewLine(card.body);
+  // A checklist card's progress says more than its body, e.g. "2 of 14 checked".
+  const preview = card.picks?.length ? `${card.picks.filter((pick) => pick.done).length} of ${card.picks.length} checked` : previewLine(card.body);
   // A keepOpen card stays open once answered, so its answer stands in for the buttons.
   const answer = card.pendingAction ?? (card.state === 'open' ? card.resolution?.actionId : undefined);
   const actions = approval && !answer ? cardActions(card).filter((action) => !action.url) : [];
@@ -294,6 +313,8 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   pickText: { flex: 1, minWidth: 0 },
   pickTitle: { color: colors.primary },
   pickTitleDone: { color: colors.muted, textDecorationLine: 'line-through' },
+  pickLink: { color: colors.cyan },
+  pickHit: { borderRadius: 11 },
   pickSub: { color: colors.muted },
   // Gesture Handler 3 keeps actions behind the row, so the row must paint over them.
   swipeRow: { backgroundColor: colors.background },

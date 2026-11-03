@@ -53,6 +53,8 @@ export interface CardPick {
   n: number;
   text: string;
   sub?: string;
+  /** Opens when the text is tapped. Only the check mark toggles `done`. */
+  url?: string;
   done: boolean;
 }
 
@@ -79,7 +81,7 @@ export interface CardInput {
   body?: string;
   url?: string;
   actions?: CardAction[];
-  /** Briefing cards only, at most 3. */
+  /** Briefing (at most 3) and update (at most 200) cards only. */
   picks?: CardPick[];
   /** Short labeled lines, e.g. { calendar: '10:00 · 14:30', waiting: 'Scryve #335' }. */
   meta?: Record<string, string>;

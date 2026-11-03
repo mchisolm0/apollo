@@ -89,9 +89,17 @@ describe('upsert', () => {
     expect(edited.rev).toBeGreaterThan(first.rev);
   });
 
-  it('rejects picks on non-briefing cards', async () => {
-    const response = await call('/v1/cards', { token: producer, body: { ...approval('bad'), picks: [{ n: 1, text: 'x', done: false }] } });
-    expect(response.status).toBe(400);
+  it('rejects picks on approval cards and more than 3 on a briefing', async () => {
+    const picks = (count: number) => Array.from({ length: count }, (_, i) => ({ n: i + 1, text: `x${i}`, done: false }));
+    expect((await call('/v1/cards', { token: producer, body: { ...approval('bad'), picks: picks(1) } })).status).toBe(400);
+    expect((await call('/v1/cards', { token: producer, body: briefing(picks(4)) })).status).toBe(400);
+  });
+
+  it('lets update cards carry linked picks that toggle without resolving the card', async () => {
+    const url = 'https://jobs.ashbyhq.com/zed/1';
+    const card = await postCard(producer, { source: 'jobs', key: '2026-11-04', kind: 'update', title: '1 new job match', picks: [{ n: 1, text: 'Zed: Engineer', url, done: false }] });
+    const picked = await (await respond(device, card.id, { pick: 1, done: true })).json<Card>();
+    expect(picked).toMatchObject({ state: 'open', picks: [{ n: 1, url, done: true }] });
   });
 });
 

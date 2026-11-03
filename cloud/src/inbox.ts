@@ -739,7 +739,7 @@ function parseScope(column: string | null): { scope?: TokenScope } {
 }
 
 /**
- * A scoped token's tappable links, `url` and action URLs, stay under its
+ * A scoped token's tappable links, `url`, action and pick URLs, stay under its
  * prefixes and must be canonical (what `new URL` prints), so a path like
  * `/HashingSeeds/../elsewhere` can't pass the prefix and then resolve outside
  * it. Links in the body aren't checked: the card is marked `plainText`, so
@@ -747,7 +747,7 @@ function parseScope(column: string | null): { scope?: TokenScope } {
  */
 function linksAllowed(input: CardInput, prefixes: readonly string[]) {
   const canonical = (link: string) => URL.canParse(link) && new URL(link).href === link;
-  return [input.url, ...(input.actions ?? []).map((action) => action.url)]
+  return [input.url, ...(input.actions ?? []).map((action) => action.url), ...(input.picks ?? []).map((pick) => pick.url)]
     .filter((link) => link !== undefined)
     .every((link) => canonical(link) && prefixes.some((prefix) => link.startsWith(prefix)));
 }
