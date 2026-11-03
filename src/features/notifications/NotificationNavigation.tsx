@@ -2,7 +2,7 @@ import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
 import type { DevicePushToken } from 'expo-notifications';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { AppState, Platform } from 'react-native';
 
 import { useApollo } from '@/lib';
@@ -10,6 +10,7 @@ import { cloudOpenRequests } from '@/features/cloud/cloud-runtime';
 
 import { allowsNotifications, useNotificationResponseNavigation } from './notifications';
 import type { NotificationDestination } from './navigation';
+import { singleFlight } from './single-flight';
 
 const projectId = (Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId) as string | undefined;
 
@@ -52,13 +53,16 @@ export function NotificationNavigation() {
 
   }, [agents, loading, notificationClient]);
 
+  // Reconnects, foregrounding and token changes can fire together; run one refresh at a time.
+  const [refreshOnce] = useState(singleFlight<DevicePushToken>);
+
   useEffect(() => {
-    const refresh = (token?: DevicePushToken) => { void refreshRegistrations(token).catch(() => {}); };
+    const refresh = (token?: DevicePushToken) => { void refreshOnce(refreshRegistrations, token).catch(() => {}); };
     refresh();
     if (loading) return;
     const subscription = Notifications.addPushTokenListener(refresh);
     const foreground = AppState.addEventListener('change', (state) => { if (state === 'active') refresh(); });
     return () => { subscription.remove(); foreground.remove(); };
-  }, [loading, refreshRegistrations]);
+  }, [loading, refreshRegistrations, refreshOnce]);
   return null;
 }

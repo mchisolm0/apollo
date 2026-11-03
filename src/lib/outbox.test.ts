@@ -311,6 +311,27 @@ test('blocks later messages in a failed thread while another thread can send', a
   await outbox.dispose();
 });
 
+test('a delivery that never settles does not hold up other threads', async () => {
+  const sent: string[] = [];
+  const setup = fixture({ deliver: (message) => {
+    sent.push(message.id);
+    return message.id === first.id ? new Promise<string>(() => {}) : Promise.resolve('accepted');
+  } });
+  const outbox = createOutboxRuntime(setup.dependencies);
+  try {
+    const until = async (done: () => boolean) => {
+      const deadline = Date.now() + 5000;
+      while (!done() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+    };
+    outbox.start();
+    await outbox.enqueue(first);
+    await until(() => sent.includes(first.id));
+    await outbox.enqueue({ ...first, id: 'message-two', sessionId: 'another-thread' });
+    await until(() => sent.includes('message-two'));
+    assert.deepEqual(sent, [first.id, 'message-two']);
+  } finally { await outbox.dispose(); }
+});
+
 test('retries ambiguous delivery with the same key, but stops before server retention expires', async () => {
   const keys: string[] = [];
   const setup = fixture({ deliver: async (message) => { keys.push(message.id); throw new Error('Connection lost'); } });

@@ -239,35 +239,57 @@ function createIdempotencyKey(): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export type AttachmentUpload = (url: string, headers: Record<string, string>) => Promise<{ status: number; body: string }>;
+const NO_RESPONSE = 'The agent did not respond. Check that the connector is running.';
+
+export type AttachmentUpload =(url: string, headers: Record<string, string>) => Promise<{ status: number; body: string }>;
 
 export class HermesClient {
   private readonly baseUrl: string;
   private readonly token: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly timeoutMs: number;
 
-  constructor(options: { endpoint: string; token: string; fetchImpl?: typeof fetch }) {
+  constructor(options: { endpoint: string; token: string; fetchImpl?: typeof fetch; timeoutMs?: number }) {
     this.baseUrl = normalizeEndpoint(options.endpoint);
     this.token = options.token;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.timeoutMs = options.timeoutMs ?? 30_000;
   }
 
+  /** A connector can accept a request and never answer, so every request gives up after `timeoutMs`. */
   private async request(path: string, init: RequestInit = {}): Promise<unknown> {
-    if (init.signal?.aborted) throw new Error('Sending was interrupted.');
-    const response = await this.fetchImpl(`${this.baseUrl}/${path.replace(/^\/+/, '')}`, {
-      ...init,
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${this.token}`,
-        ...(init.headers ?? {}),
-      },
-    });
-    const body: unknown = await response.json().catch(() => undefined);
-    if (!response.ok) {
-      const code = isJsonObject(body) && isJsonObject(body.error) ? stringValue(body.error.code) : undefined;
-      throw new HermesRequestError(errorMessage(body, `Hermes request failed (${response.status})`), response.status, code);
+    const caller = init.signal;
+    if (caller?.aborted) throw new Error('Sending was interrupted.');
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    caller?.addEventListener('abort', abort, { once: true });
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; abort(); }, this.timeoutMs);
+    try {
+      const response = await this.fetchImpl(`${this.baseUrl}/${path.replace(/^\/+/, '')}`, {
+        ...init,
+        signal: controller.signal,
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${this.token}`,
+          ...(init.headers ?? {}),
+        },
+      });
+      const body: unknown = await response.json().catch(() => undefined);
+      // An aborted body read resolves as undefined above, so check before trusting it.
+      if (timedOut) throw new Error(NO_RESPONSE);
+      if (!response.ok) {
+        const code = isJsonObject(body) && isJsonObject(body.error) ? stringValue(body.error.code) : undefined;
+        throw new HermesRequestError(errorMessage(body, `Hermes request failed (${response.status})`), response.status, code);
+      }
+      return body;
+    } catch (error) {
+      if (timedOut) throw new Error(NO_RESPONSE);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      caller?.removeEventListener('abort', abort);
     }
-    return body;
   }
 
   async capabilities(): Promise<HermesCapabilities> {
