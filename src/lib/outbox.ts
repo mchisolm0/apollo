@@ -42,6 +42,7 @@ export type OutboxDependencies = {
 
 const OUTBOX_KEY = 'apollo.outbox.v1';
 const MAX_QUEUED_MESSAGES = 100;
+const MAX_DELIVERIES = 3;
 // Hermes retains idempotency records for 24 hours. Leave an hour for clock skew.
 const SAFE_REPLAY_AGE = 23 * 60 * 60 * 1000;
 const NEEDS_REVIEW = 'Delivery could not be confirmed. Check this thread before sending this message again.';
@@ -216,7 +217,14 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
 
   const drain = Effect.gen(function* () {
     yield* load;
-    yield* Effect.forEach(readyMessages(snapshot.items, now()), (item) => deliver(item).pipe(Effect.catchAll(recordError)), { concurrency: 3 });
+    yield* Effect.forEach(readyMessages(snapshot.items, now()), (item) => deliver(item).pipe(Effect.catchAll(recordError)), { concurrency: MAX_DELIVERIES });
+  }).pipe(Effect.catchAll(recordError));
+  // The worker starts deliveries without awaiting them, so one stuck send cannot hold up other threads.
+  const dispatch = Effect.gen(function* () {
+    yield* load;
+    const env = yield* OutboxEnvironment;
+    const ready = readyMessages(snapshot.items, now()).filter((item) => !inFlight.has(item.id) && (item.acceptedRunId || env.canSend(item)));
+    yield* Effect.forEach(ready.slice(0, Math.max(0, MAX_DELIVERIES - inFlight.size)), (item) => Effect.fork(deliver(item).pipe(Effect.catchAll(recordError))), { discard: true });
   }).pipe(Effect.catchAll(recordError));
 
   function run<A, E>(effect: Effect.Effect<A, E, OutboxEnvironment>) {
@@ -248,7 +256,7 @@ export function createOutboxRuntime(dependencies: OutboxDependencies) {
       }
     },
     start: () => {
-      if (!worker && !disposed) worker = runtime.runFork(Effect.forever(drain.pipe(Effect.andThen(Effect.sleep('1 second')))));
+      if (!worker && !disposed) worker = runtime.runFork(Effect.forever(dispatch.pipe(Effect.andThen(Effect.sleep('1 second')))));
     },
     drain: () => run(drain),
     enqueue: (input: Pick<QueuedMessage, 'id' | 'agentId' | 'sessionId' | 'createsSession' | 'text' | 'attachments' | 'model' | 'provider' | 'instructions'>) => run(Effect.gen(function* () {

@@ -23,6 +23,9 @@ function loadClient() {
   } = {};
   runInNewContext(source, {
     exports,
+    setTimeout,
+    clearTimeout,
+    AbortController,
     require: (id: string) => {
       if (id === 'react-native-sse') return { default: class {} };
       if (id === './attachments') return attachments;
@@ -196,7 +199,7 @@ test('steer posts text to the active run and requires acceptance', async () => {
   const client = clientWith({ run_id: 'a/b', accepted: true }, seen);
   const controller = new AbortController();
   await client.steerRun('a/b', '[QA] stop at 5', controller.signal);
-  assert.equal(seen[0]?.init?.signal, controller.signal);
+  assert.equal(seen[0]?.init?.signal?.aborted, false);
   assert.equal(seen[0]?.url, 'https://agent.example.ts.net/v1/runs/a%2Fb/steer');
   assert.equal(seen[0]?.init?.method, 'POST');
   assert.deepEqual(JSON.parse(String(seen[0]?.init?.body)), { input: '[QA] stop at 5' });
@@ -205,6 +208,18 @@ test('steer posts text to the active run and requires acceptance', async () => {
   for (const body of [{ run_id: 'a/b', accepted: false }, { run_id: 'other', accepted: true }, {}]) {
     await assert.rejects(clientWith(body).steerRun('a/b', 'stop'), /did not accept/);
   }
+});
+
+test('a request the agent never answers fails after the timeout, and a caller abort still cancels', async () => {
+  const silent = ((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+  })) as unknown as typeof fetch;
+  const client = new HermesClient({ endpoint: 'https://agent.example.ts.net', token: 'token', fetchImpl: silent, timeoutMs: 20 });
+  await assert.rejects(client.capabilities(), /did not respond/);
+  const caller = new AbortController();
+  const pending = new HermesClient({ endpoint: 'https://agent.example.ts.net', token: 'token', fetchImpl: silent }).session('abc', caller.signal);
+  caller.abort();
+  await assert.rejects(pending, /^Error: aborted$/);
 });
 
 test('deleteSession issues DELETE against the session path', async () => {
