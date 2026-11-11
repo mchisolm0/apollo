@@ -172,6 +172,16 @@ test("allowlisted SSE route is streamed", async (t) => {
   assert.match(await response.text(), /run\.completed/u);
 });
 
+test("run events asked for as bytes keep their SSE frames under a byte content type", async (t) => {
+  const f = await fixture(); t.after(async () => { await f.connector.close(); await f.hermes.close(); });
+  const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
+  const exchanged = await req(f.base, "/v1/pair/exchange", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: pair.body.pairing_token }) });
+  const response = await fetch(`${f.base}/v1/runs/demo/events`, { headers: { authorization: `Bearer ${exchanged.body.access_token}`, accept: "application/octet-stream" } });
+  assert.equal(response.headers.get("content-type"), "application/octet-stream");
+  assert.equal(await response.text(), "event: run.completed\ndata: {}\n\n");
+  assert.equal(f.hermes.seen.at(-1).url, "/v1/runs/demo/events");
+});
+
 test("model inventory is device-authenticated and GET-only", async (t) => {
   const f = await fixture(); t.after(async () => { await f.connector.close(); await f.hermes.close(); });
   assert.equal((await req(f.base, "/api/model/options")).response.status, 401);
