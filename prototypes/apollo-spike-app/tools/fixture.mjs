@@ -2,7 +2,7 @@
 // PROTOTYPE, throwaway. A fake Hermes behind Apollo's real connector, for the Exact spike.
 // Forked from scripts/test-mobile-fixture.mjs with its own ports and state dir, word-by-word
 // deltas, reasoning, tool call ids, and a "storm" input that floods 2,000 deltas to check
-// whether Exact's SSE reader drops any. GET /__spike/credential hands the app a paired token.
+// whether Exact's SSE reader drops any. POST /__spike/pair on the fake Hermes port mints a pairing link.
 import { createServer } from "node:http";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -28,7 +28,6 @@ const messages = new Map([["spike-session", [
 const runs = new Map();
 const idempotency = new Map();
 const subscribers = new Map();
-let credential;
 
 function json(res, status, body) {
   res.writeHead(status, { "content-type": "application/json" });
@@ -91,7 +90,7 @@ function schedule(run) {
 
 const hermes = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
-  if (url.pathname === "/__spike/credential") return json(res, 200, credential);
+  if (url.pathname === "/__spike/pair" && req.method === "POST") return json(res, 200, { link: await pairingLink() });
   if (url.pathname === "/v1/capabilities") return json(res, 200, { object: "hermes.api_server.capabilities", platform: "fixture", model: "fixture", features: ["runs", "sessions"] });
   if (url.pathname === "/v1/health") return json(res, 200, { status: "ok" });
   if (url.pathname === "/api/sessions" && req.method === "GET") return json(res, 200, { data: [...sessions.values()] });
@@ -118,10 +117,7 @@ const hermes = createServer(async (req, res) => {
     const run = runs.get(runMatch[1]); if (!run) return json(res, 404, { error: { message: "Unknown run" } });
     if (!runMatch[2] && req.method === "GET") return json(res, 200, runStatus(run));
     if (runMatch[2] === "events" && req.method === "GET") {
-      // Stands in for the connector change Exact would need: a client that asks for bytes gets the
-      // same SSE frames labelled as bytes, which Exact reads losslessly.
-      const bytes = req.headers.accept === "application/octet-stream";
-      res.writeHead(200, { "content-type": bytes ? "application/octet-stream" : "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
       for (const event of run.events) res.write(`data: ${event}\n\n`);
       if (["completed", "cancelled"].includes(run.status)) return res.end();
       const active = subscribers.get(run.id) ?? new Set(); active.add(res); subscribers.set(run.id, active); req.on("close", () => active.delete(res)); return;
@@ -143,10 +139,13 @@ await new Promise((resolve, reject) => hermes.listen(HERMES_PORT, HOST, (error) 
 const connector = createConnectorServer({ host: HOST, port: CONNECTOR_PORT, hermesUrl: `http://${HOST}:${HERMES_PORT}`, hermesApiKey: "fixture-hermes", adminSecret: ADMIN_SECRET, statePath: join(ROOT, "connector-state.json"), label: "Exact spike fixture", generateThreadTitle: async (input) => `Spike: ${input.slice(0, 36)}` });
 await connector.start();
 const base = `http://${HOST}:${CONNECTOR_PORT}`;
-const pair = await (await fetch(`${base}/admin/pair`, { method: "POST", headers: { "x-apollo-admin-secret": ADMIN_SECRET, "content-type": "application/json" }, body: JSON.stringify({ device_name: "Exact spike" }) })).json();
-const exchange = await (await fetch(`${base}/v1/pair/exchange`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: pair.pairing_token, device_name: "Exact spike" }) })).json();
-credential = { endpoint: base, token: exchange.access_token };
+async function pairingLink() {
+  const pair = await (await fetch(`${base}/admin/pair`, { method: "POST", headers: { "x-apollo-admin-secret": ADMIN_SECRET, "content-type": "application/json" }, body: JSON.stringify({ public_base_url: base, ttl_seconds: 900 }) })).json();
+  return pair.pairing_url;
+}
 
 console.log(`Connector: ${base}  Fake Hermes: http://${HOST}:${HERMES_PORT}`);
+console.log(`Pairing link (15 min, once): ${await pairingLink()}`);
+console.log(`Another: curl -s -X POST http://${HOST}:${HERMES_PORT}/__spike/pair`);
 console.log(`Inputs: "approval" asks to run a command, "hold" never finishes, "storm" floods 2,000 deltas.`);
 process.on("SIGINT", async () => { await connector.close(); await new Promise((resolve) => hermes.close(resolve)); process.exit(0); });

@@ -1,13 +1,13 @@
 {
   "$schema": "../../../../../../code/exact/scripts/app.schema.json",
-  "name": "Apollo Spike",
-  "short_name": "Apollo Spike",
+  "name": "Apollo Exact",
+  "short_name": "Apollo X",
   "id": "com.matthewchisolm.apollo.exactspike",
   "start_url": "/",
   "display": "standalone",
   "app": {
     "id": "com.matthewchisolm.apollo.exactspike",
-    "name": "Apollo Spike"
+    "name": "Apollo X"
   },
   "host": {
     "web": {},
@@ -32,5 +32,12 @@
       "ios": "0",
       "macos": "0"
     }
-  }
+  },
+  "icons": [
+    {
+      "src": "assets/icon-1024.png",
+      "sizes": "1024x1024",
+      "type": "image/png"
+    }
+  ]
 }

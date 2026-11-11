@@ -1,14 +1,26 @@
-// PROTOTYPE, throwaway. Apollo's thread list and session screen on Exact: a transcript that
-// streams one run's events, a composer, Stop, and an approval card. app.ts holds the data.
+// PROTOTYPE. Apollo on Exact: pair with an Apollo connector, browse Hermes threads, start one,
+// and follow a run live with Stop and approvals. app.ts holds the data and the connection.
 
 routes nav
   home "/"
     session "/s/:id"
+    compose "/new"
+
+shape Account
+  paired: bool
+  label: string
+  endpoint: string
 
 shape SessionRow
   id: string
   title: string
   preview: string
+  time: string
+  running: bool
+
+shape Threads
+  error: string
+  rows: SessionRow[]
 
 shape Step
   key: string
@@ -18,12 +30,31 @@ shape Step
   running: bool
   failed: bool
 
+shape Cell
+  key: string
+  text: string
+  align: string
+  first: bool
+
+shape TableRow
+  key: string
+  head: bool
+  cells: Cell[]
+
+shape Part
+  key: string
+  table: bool
+  text: string
+  rows: TableRow[]
+
 shape Row
   id: string
   kind: string
   text: string
+  parts: Part[]
   status: string
   summary: string
+  running: bool
   steps: Step[]
 
 shape Thread
@@ -38,134 +69,267 @@ shape Thread
   approvalTitle: string
   approvalCommand: string
   approvalReason: string
-  events: number
-  deltas: number
-  coalesced: number
-  lastRun: string
 
-shape Started
-  runId: string
+shape Created
+  id: string
   error: string
 
 shape Ack
   error: string
 
+shape Page
+  visibilityState: string
+  onLine: bool
+  canShare: bool
+  canShareFiles: bool
+
+shape Time
+  epochAtZero: number
+  utcOffset: number
+
 component Apollo
   state draft = ""
-  state runId = ""
+  state link = ""
   state revision = 0
+  state accountRevision = 0
+  state tick = 0
   state notice = ""
+  state opened = []
+  state chasing = false
+  state wasHidden = false
   derive selected = match stack(nav).filter(e => e.name == "session").at(-1) { case some(e) => e.params.id, case none => "" }
-  resource sessions = listSessions(revision) as shape SessionRow[] else empty()
-  resource thread = transcript(selected, runId, revision) as shape Thread
-  mutation sent as shape Started then afterSend
+  resource page = exactPage() as shape Page
+  resource time = exactTime() as shape Time
+  resource account = account(accountRevision) as shape Account
+  resource threads = listSessions(revision, account.paired, top(nav).name == "home") with time.epochAtZero + tick as shape Threads
+  resource thread = transcript(selected, revision) as shape Thread
+  mutation paired as shape Ack then afterPair
+  mutation unpaired as shape Ack then afterPair
+  mutation created as shape Created then afterCreate
+  mutation sent as shape Ack then afterSend
   mutation stopped as shape Ack
   mutation answered as shape Ack
-  derive canSend = draft.trim() != "" and not thread.active and not pending(sent)
+  derive canSend = draft.trim() != "" and not thread.active and not pending(sent) and not pending(created)
   derive lastId = match thread.rows.at(-1) { case some(r) => r.id, case none => "" }
+  derive shownError = notice != "" ? notice : top(nav).name == "home" ? threads.error : thread.error
 
   // A finished run hands back to durable history, as Apollo reloads messages after a terminal event.
-  task settle when thread.ended and runId != ""
-    after(300, settle)
-  action settle
-    runId = ""
+  task settle when thread.ended and thread.runId != ""
+    after(300, refreshAll)
+  // The thread list stays fresh while it is on screen.
+  task poll when account.paired and top(nav).name == "home" and page.visibilityState == "visible"
+    every(15000, refreshAll)
+  // A return from the background reconnects: the stream does not survive suspension.
+  task hid when page.visibilityState == "hidden"
+    after(1, markHidden)
+  task returned when wasHidden and page.visibilityState == "visible"
+    after(1, onReturn)
+  task chase when chasing
+    after(350, toEnd)
+
+  action refreshAll
+    tick = performanceNow()
     revision = revision + 1
+  action markHidden
+    wasHidden = true
+  action onReturn
+    wasHidden = false
+    refreshAll()
+  action toEnd
+    chasing = false
+    scrollIntoView("transcript", lastId, block="end")
 
   action follow(url: string)
     nav = go(nav, url)
-    runId = ""
     draft = ""
+    notice = ""
   action back
     nav = back(nav)
+  action openNew
+    draft = ""
+    notice = ""
+    nav = top(nav).name == "compose" ? nav : push(nav, "/new")
+
+  action editLink(v: string)
+    link = v
+  action pair
+    if link.trim() != "" and not pending(paired)
+      send paired = pair(link.trim())
+  action askUnpair
+    showModal("unpair")
+  action unpair
+    send unpaired = unpair()
+  action afterPair
+    match paired
+      case some(p)
+        notice = p.error
+        if p.error == ""
+          link = ""
+      case none
+        notice = ""
+    accountRevision = accountRevision + 1
+    refreshAll()
+
   action edit(v: string)
     draft = v
-  action post
-    if canSend
-      send sent = startRun(selected, draft.trim())
-      draft = ""
   action composerKey(k: string, e: KeyboardEvent)
-    if k == "Enter" and not e.shiftKey
+    if k == "Enter" and (e.metaKey or e.ctrlKey)
       preventDefault()
-      post()
+      submit()
+  action submit
+    if canSend
+      if top(nav).name == "compose"
+        send created = createThread(draft.trim())
+      else
+        send sent = startRun(selected, draft.trim())
+      draft = ""
+  action afterCreate
+    match created
+      case some(c)
+        notice = c.error
+        if c.id != ""
+          nav = replace(nav, path("session", c.id))
+          chasing = true
+      case none
+        notice = ""
   action afterSend
     match sent
       case some(s)
         notice = s.error
-        if s.runId != ""
-          runId = s.runId
-          scrollIntoView("transcript", lastId, block="end")
       case none
         notice = ""
+    refreshAll()
+    chasing = true
   action stop
-    if runId != ""
-      send stopped = stopRun(runId)
+    if thread.runId != ""
+      send stopped = stopRun(thread.runId)
   action approve
-    send answered = answerApproval(runId, thread.approvalId, "once")
+    send answered = answerApproval(thread.runId, thread.approvalId, "once")
   action deny
-    send answered = answerApproval(runId, thread.approvalId, "deny")
+    send answered = answerApproval(thread.runId, thread.approvalId, "deny")
+  action toggle(id: string)
+    opened = opened.includes(id) ? opened.filter(x => x != id) : opened.concat([id])
 
   view
     main navigationKey=`${top(nav).id}` navigationBack="back" navigate=follow testId="app" width="100%" height="100%"
       for e in stack(nav) key=e.id
         if e.name == "home"
           column navigationKey=`${e.id}` navigationScroll="threads" position="absolute" inset=0 display="flex" flex-direction="column"
-            header padding="8px 16px"
-              text "Threads" role="heading" aria-level=1
-            list id="threads" appearance="auto" listStyle="plain" flex=1 min-height=0 testId="threads"
-              section
-                for s in sessions key=s.id
-                  link href=path("session", s.id) testId=`thread-${s.id}`
-                    column flex=1 min-width=0 gap=2 padding-top=6 padding-bottom=6
-                      text s.title font="-exact-headline" line-clamp=1
-                      text s.preview font="-exact-subheadline" color="-exact-secondary-label" line-clamp=2
-                    image "symbol:forward-chevron"
-        if e.name == "session"
+            header display="flex" align-items="center" gap=8 padding="8px 16px"
+              text (account.paired ? account.label : "Apollo") role="heading" aria-level=1 flex=1
+              if account.paired
+                button press=askUnpair aria-label="Unpair" testId="unpair"
+                  image "symbol:link"
+                button press=openNew aria-label="New Thread" aria-keyshortcuts="Meta+N" testId="new"
+                  image "symbol:compose"
+            if account.paired
+              if shownError != ""
+                text shownError font="-exact-footnote" color="-exact-system-red" padding="4px 16px" testId="error"
+              list id="threads" appearance="auto" listStyle="plain" flex=1 min-height=0 testId="threads"
+                section
+                  for s in threads.rows key=s.id
+                    link href=path("session", s.id) testId=`thread-${s.id}`
+                      column flex=1 min-width=0 gap=2 padding-top=6 padding-bottom=6
+                        row gap=8 align-items="baseline"
+                          text s.title font="-exact-headline" line-clamp=1 flex=1 min-width=0
+                          if s.running
+                            text "Working" font="-exact-footnote" color="AccentColor"
+                          text s.time font="-exact-footnote" color="-exact-secondary-label"
+                        if s.preview != ""
+                          text s.preview font="-exact-subheadline" color="-exact-secondary-label" line-clamp=2
+            else
+              list id="pair-form" appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+                section
+                  header
+                    text "Pair with Hermes"
+                  row
+                    input value=link input=editLink placeholder="apollo://pair?host=…" aria-label="Pairing link" autocapitalize="off" autocorrect="off" spellcheck=false flex=1 min-width=0 testId="pair-link"
+                  footer
+                    text "Paste the apollo://pair link from the connector. It works once and expires after five minutes."
+                section
+                  button press=pair disabled=(link.trim() == "" or pending(paired)) testId="pair"
+                    text (pending(paired) ? "Pairing…" : "Pair")
+                if notice != ""
+                  section
+                    row
+                      text notice color="-exact-system-red" testId="pair-error"
+        if e.name == "session" or e.name == "compose"
           column navigationKey=`${e.id}` navigationScroll="transcript" position="absolute" inset=0 display="flex" flex-direction="column"
             interactive-widget="resizes-content"
             header display="flex" flex-direction="column" padding="8px 16px" gap=2
-              text (thread.title == "" ? "Thread" : thread.title) role="heading" aria-level=2 testId="title"
-              text (thread.runId == "" ? (thread.lastRun == "" ? "idle" : thread.lastRun) : `${thread.status} · events ${thread.events} · deltas ${thread.deltas} · coalesced ${thread.coalesced}`)
-                font="-exact-caption1" color="-exact-secondary-label" testId="debug"
-            list id="transcript" appearance="none" virtualized=true scroll-start="end" scrollFollowEnd=true flex=1 min-height=0 padding-top=8 padding-bottom=16 testId="transcript"
-              for r in thread.rows key=r.id
-                column padding="4px 16px" testId=`row-${r.id}`
-                  if r.kind == "user"
-                    row justify-content="flex-end" padding-left=48
-                      text r.text padding="8px 12px" border-radius=18 overflow-wrap="anywhere" user-select="text"
-                        background-color="AccentColor" color="AccentColorText"
-                  if r.kind == "assistant"
-                    text r.text markup="markdown" user-select="text" overflow-wrap="anywhere" testId=`text-${r.id}`
-                  if r.kind == "system"
-                    text r.text font="-exact-footnote" color="-exact-secondary-label"
-                  if r.kind == "error"
-                    text r.text font="-exact-footnote" color="-exact-system-red"
-                  if r.kind == "activity"
-                    column gap=4 padding="6px 10px" border-left="2px solid -exact-separator"
-                      text r.summary font="-exact-footnote" color="-exact-secondary-label" testId=`activity-${r.id}`
-                      for s in r.steps key=s.key
-                        row gap=6 align-items="baseline"
-                          text (s.running ? "…" : s.failed ? "✕" : "✓") font="-exact-caption1" color=(s.failed ? "-exact-system-red" : "-exact-secondary-label")
-                          text `${s.label}  ${s.detail}` font="-exact-caption1" font-family="ui-monospace" color="-exact-secondary-label" line-clamp=2 flex=1 min-width=0
-            if thread.approvalCommand != ""
+              text (e.name == "compose" ? "New Thread" : thread.title == "" ? "Thread" : thread.title) role="heading" aria-level=2 line-clamp=1 testId="title"
+              if thread.active and e.name == "session"
+                text (thread.status == "waiting_for_approval" ? "Needs approval" : thread.status == "stopping" ? "Stopping" : "Working") font="-exact-caption1" color="AccentColor" testId="status"
+            if e.name == "compose"
+              column flex=1 display="flex" justify-content="center" align-items="center" padding=24 gap=6
+                image "symbol:sparkles" width=28 height=28 color="AccentColor"
+                text "What should Hermes do?" font="-exact-title3" text-align="center"
+            else
+              list id="transcript" appearance="none" virtualized=true scroll-start="end" scrollFollowEnd=true flex=1 min-height=0 padding-top=8 padding-bottom=16 testId="transcript"
+                for r in thread.rows key=r.id
+                  column padding="5px 16px" testId=`row-${r.id}`
+                    if r.kind == "user"
+                      row justify-content="flex-end" padding-left=48
+                        text r.text padding="8px 12px" border-radius=18 overflow-wrap="anywhere" user-select="text"
+                          background-color="AccentColor" color="AccentColorText"
+                    if r.kind == "assistant"
+                      column gap=10 testId=`text-${r.id}`
+                        for p in r.parts key=p.key
+                          if p.table
+                            column border-width=1 border-style="solid" border-color="-exact-separator" border-radius=8 overflow="hidden"
+                              for t in p.rows key=t.key
+                                row border-top-width=(t.head ? 0 : 1) border-right-width=0 border-bottom-width=0 border-left-width=0 border-style="solid" border-color="-exact-separator"
+                                  background-color=(t.head ? "-exact-secondary-background" : "transparent")
+                                  for c in t.cells key=c.key
+                                    text c.text markup="markdown" user-select="text" overflow-wrap="anywhere" flex="1 1 0" min-width=0 font="-exact-subheadline"
+                                      padding="6px 8px" text-align=c.align border-top-width=0 border-right-width=0 border-bottom-width=0 border-left-width=(c.first ? 0 : 1) border-style="solid" border-color="-exact-separator"
+                          else
+                            text p.text markup="markdown" user-select="text" overflow-wrap="anywhere"
+                    if r.kind == "system"
+                      text r.text font="-exact-footnote" color="-exact-secondary-label" user-select="text"
+                    if r.kind == "error"
+                      text r.text font="-exact-footnote" color="-exact-system-red" user-select="text"
+                    if r.kind == "activity"
+                      column gap=4
+                        button appearance="none" press=toggle(r.id) display="flex" flex-direction="row" align-items="center" gap=6 align-self="flex-start" padding="2px 0" testId=`activity-${r.id}`
+                          image (opened.includes(r.id) ? "symbol:sf/chevron.down" : "symbol:forward-chevron") font-size=10
+                          text r.summary font="-exact-footnote" color=(r.running ? "AccentColor" : "-exact-secondary-label") line-clamp=1
+                        if opened.includes(r.id)
+                          column gap=4 padding="2px 0 2px 10px" border-left="2px solid -exact-separator"
+                            for s in r.steps key=s.key
+                              row gap=6 align-items="baseline"
+                                text (s.running ? "…" : s.failed ? "✕" : s.kind == "tool" ? "✓" : "·") font="-exact-caption1" color=(s.failed ? "-exact-system-red" : "-exact-secondary-label")
+                                text (s.kind == "tool" ? `${s.label}  ${s.detail}` : s.detail) font="-exact-caption1"
+                                  color="-exact-secondary-label" line-clamp=4 flex=1 min-width=0 user-select="text"
+            if thread.approvalCommand != "" and e.name == "session"
               column margin="0 12px" padding=12 gap=8 border-radius=12 background-color="-exact-secondary-background" testId="approval"
                 text thread.approvalTitle font="-exact-headline"
                 if thread.approvalReason != ""
                   text thread.approvalReason font="-exact-subheadline" color="-exact-secondary-label"
-                text thread.approvalCommand font-family="ui-monospace" font="-exact-footnote" user-select="text"
+                text thread.approvalCommand font-family="ui-monospace" font="-exact-footnote" user-select="text" line-clamp=8
                 row gap=8 justify-content="flex-end"
                   button press=deny buttonStyle="bordered" disabled=pending(answered) testId="deny"
                     text "Deny"
                   button press=approve buttonStyle="filled" disabled=pending(answered) testId="approve"
                     text "Approve"
-            if thread.error != "" or notice != ""
-              text (notice != "" ? notice : thread.error) font="-exact-footnote" color="-exact-system-red" padding="4px 16px" testId="error"
+            if shownError != ""
+              row gap=8 align-items="center" padding="4px 16px"
+                text shownError font="-exact-footnote" color="-exact-system-red" flex=1 min-width=0 testId="error"
+                button press=refreshAll buttonStyle="bordered" testId="retry"
+                  text "Retry"
             row align-items="flex-end" margin="6px 12px" padding="0 4px 0 12px" border-radius=20 border="1px solid -exact-separator"
-              textarea id="composer" value=draft input=edit key=composerKey rows=1 field-sizing="content" max-height=140
+              textarea id="composer" value=draft input=edit key=composerKey rows=1 field-sizing="content" max-height=160
                 placeholder="Message" aria-label="Message" testId="composer" flex=1 min-width=0 padding="10px 0"
-                border="none" background-color="transparent"
-              if thread.active
+                border="none" background-color="transparent" autofocus=(e.name == "compose")
+              if thread.active and e.name == "session"
                 button press=stop buttonStyle="bordered" margin="4px 0" aria-label="Stop" testId="stop"
                   image "symbol:stop-fill"
               else
-                button press=post disabled=(not canSend) buttonStyle="filled" margin="4px 0" retainFocus=true aria-label="Send" testId="send"
+                button press=submit disabled=(not canSend) buttonStyle="filled" margin="4px 0" retainFocus=true aria-label="Send" testId="send"
                   image "symbol:send"
+      dialog id="unpair" role="alertdialog" aria-label="Unpair this phone?"
+        text "You'll need a new pairing link to connect again."
+        button press=unpair destructive=true commandfor="unpair" command="close" testId="unpair-confirm"
+          text "Unpair"
+        button commandfor="unpair" command="close" testId="unpair-cancel"
+          text "Cancel"
