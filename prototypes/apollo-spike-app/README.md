@@ -6,8 +6,16 @@ lists Hermes threads, starts new ones, and follows runs live with Stop and appro
 
 ## On the phone
 
-The iPhone build installs from the AppDrop link in `.exact/appdrop.json` (`bun exact.mjs share`
-republishes it). It pairs with a second connector on the mini, separate from the live one:
+The iPhone build is signed with the team's wildcard development profile and installed from the
+mini (`bun exact.mjs share` uses AppDrop, which wants an Apple ID sign-in and a VPN; skip it):
+
+```sh
+DEVELOPMENT_TEAM=69V3522FCX EXACT_PROFILE=<iOS Team Provisioning Profile: *> \
+  bun exact.mjs ios --device --phone <udid> --release --no-install --json
+AGENT_DEVICE_MINI_DAILY_DRIVER=1 agent-device-mini install com.matthewchisolm.apollo.exactspike "<path>.app" --udid <udid>
+```
+
+It pairs with a second connector on the mini, separate from the live one:
 
 | | |
 |---|---|
