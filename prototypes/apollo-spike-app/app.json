@@ -1,0 +1,36 @@
+{
+  "$schema": "../../../../../../code/exact/scripts/app.schema.json",
+  "name": "Apollo Spike",
+  "short_name": "Apollo Spike",
+  "id": "com.matthewchisolm.apollo.exactspike",
+  "start_url": "/",
+  "display": "standalone",
+  "app": {
+    "id": "com.matthewchisolm.apollo.exactspike",
+    "name": "Apollo Spike"
+  },
+  "host": {
+    "web": {},
+    "ios": {
+      "minimumOS": "17.0",
+      "deviceFamily": [
+        "iphone",
+        "ipad"
+      ]
+    },
+    "macos": {
+      "minimumOS": "14.0",
+      "window": {
+        "width": 900,
+        "height": 700
+      }
+    }
+  },
+  "deploy": {
+    "store": {
+      "web": "0",
+      "ios": "0",
+      "macos": "0"
+    }
+  }
+}
