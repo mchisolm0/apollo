@@ -11,6 +11,7 @@ routes nav
     session "/s/:id"
     compose "/new"
     settings "/settings"
+    share "/share"
     card "/c/:id"
 
 shape Account
@@ -264,6 +265,9 @@ component Apollo
   derive interim = match heard.interim { case some(i) => i.alternatives.slice(0, 1).map(a => a.transcript).join(""), case none => "" }
   derive dictated = [dictationBase.trim(), spoken.trim(), interim.trim()].filter(t => t != "").join(" ")
   derive dictationError = match failure(micOpened) { case some(e) => `Microphone: ${e.message}`, case none => match failure(listening) { case some(e) => `Dictation: ${e.message}`, case none => "" } }
+  derive shareText = [searchParam(top(nav), "title"), searchParam(top(nav), "text"), searchParam(top(nav), "url")].filter(t => t != "").join(" · ")
+  derive shareIncoming = sharedFiles(top(nav), "files")
+  derive shareThreads = inbox.items.filter(i => i.kind == "session" and not i.settled).slice(0, 8)
   derive shownError = notice != "" ? notice : dictationError != "" ? dictationError : onHome ? inbox.error : top(nav).name == "card" ? card.error : thread.error
 
   // A finished run hands back to durable history, as Apollo reloads messages after a terminal event.
@@ -501,6 +505,12 @@ component Apollo
       case none
         notice = ""
     refreshAll()
+  // Share to Apollo: what another app shared becomes the draft of a new or open thread, as in
+  // Apollo; nothing is sent until the person sends it.
+  action useShare(e: Entry, target: string)
+    draft = [searchParam(e, "title"), searchParam(e, "text"), searchParam(e, "url")].filter(t => t != "").join("\n\n")
+    files = sharedFiles(e, "files").files.map(f => Draft(name=f.name, type=f.type, size=f.size, path=f.path)).slice(0, 10)
+    nav = replace(nav, target == "" ? "/new" : path("session", target))
   action openSettings
     nav = push(nav, "/settings")
   action afterCreate
@@ -842,6 +852,29 @@ component Apollo
               for m in options.models key=m.key
                 button press=pickModel(m.key) role="menuitemradio" aria-checked=(currentModel == m.key) popovertarget="model-menu" popovertargetaction="hide" testId=`model-${m.key}`
                   text m.label
+        if e.name == "share"
+          column navigationKey=`${e.id}` navigationScroll="share" position="absolute" inset=0 display="flex" flex-direction="column"
+            header display="flex" align-items="center" padding="8px 16px"
+              text "Share to Apollo" role="heading" aria-level=2
+            list id="share" appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+              section
+                if shareText != ""
+                  text shareText line-clamp=4 overflow-wrap="anywhere" testId="share-text"
+                if shareIncoming.files.length > 0 or shareIncoming.pending > 0
+                  text `${shareIncoming.files.length + shareIncoming.pending} ${shareIncoming.files.length + shareIncoming.pending == 1 ? "file" : "files"}` color="-exact-secondary-label" testId="share-files"
+              section
+                button press=useShare(e, "") disabled=(shareIncoming.pending > 0) testId="share-new"
+                  text "New thread"
+              if shareThreads.length > 0
+                section
+                  header
+                    text "Add to a thread"
+                  for t in shareThreads key=t.id
+                    button press=useShare(e, t.id) disabled=(shareIncoming.pending > 0) testId=`share-to-${t.id}`
+                      text t.title line-clamp=1
+              section
+                button press=back destructive=true testId="share-discard"
+                  text "Discard"
         if e.name == "settings"
           column navigationKey=`${e.id}` navigationScroll="settings" position="absolute" inset=0 display="flex" flex-direction="column"
             header display="flex" align-items="center" padding="8px 16px"
