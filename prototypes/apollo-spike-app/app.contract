@@ -4,7 +4,8 @@
 
 use setAppShortcuts, ShortcutItem, AppleShortcutItem from "@exact/quick-actions"
 use getUserMedia, stopTrack, MediaStream, MediaStreamTrack from "@exact/media-capture"
-use startSpeechRecognition, stopSpeechRecognition, speechRecognitionState, speechRecognitionAvailability, installSpeechRecognition, SpeechRecognitionInfo, SpeechRecognitionState, SpeechRecognitionAvailability, SpeechRecognitionInstall from "@exact/speech-recognition"
+use audioLevel, AudioLevel from "@exact/recording"
+use startSpeechRecognition, stopSpeechRecognition, abortSpeechRecognition, speechRecognitionState, speechRecognitionAvailability, installSpeechRecognition, SpeechRecognitionInfo, SpeechRecognitionState, SpeechRecognitionAvailability, SpeechRecognitionInstall from "@exact/speech-recognition"
 
 routes nav
   home "/"
@@ -222,6 +223,9 @@ component Apollo
   state files: Draft[] = []
   state recognitionId = ""
   state dictating = false
+  // The voice bar is up from the mic tap until the words land (or are thrown away).
+  state voicing = false
+  state voiceCancelled = false
   state dictationBase = ""
   state trackId = ""
   state aimed = ""
@@ -246,6 +250,9 @@ component Apollo
   mutation micClosed as shape MediaStreamTrack
   mutation listening as shape SpeechRecognitionInfo then dictationStarted
   mutation stoppedListening as shape SpeechRecognitionInfo
+  mutation abortedListening as shape SpeechRecognitionInfo
+  // Only for the bar's clock: the waveform view meters the track itself.
+  resource level = audioLevel(track=trackId, interval=250, history=1) as shape AudioLevel else empty()
   mutation removed as shape Ack then afterDelete
   mutation paired as shape Ack then afterPair
   mutation unpaired as shape Ack then afterPair
@@ -264,6 +271,10 @@ component Apollo
   derive modelLabel = match options.models.filter(m => m.key == currentModel).at(0) { case some(m) => m.label, case none => "Default model" }
   derive spoken = heard.results.map(r => r.alternatives.slice(0, 1).map(a => a.transcript).join("")).join(" ")
   derive interim = match heard.interim { case some(i) => i.alternatives.slice(0, 1).map(a => a.transcript).join(""), case none => "" }
+  derive hearing = dictating and heard.audio
+  derive voiceSeconds = floor(level.totalSamplesDuration)
+  derive voiceClock = `${floor(voiceSeconds / 60)}:${voiceSeconds % 60 < 10 ? "0" : ""}${voiceSeconds % 60}`
+  derive voiceBar = voicing and dictationError == ""
   derive dictated = [dictationBase.trim(), spoken.trim(), interim.trim()].filter(t => t != "").join(" ")
   derive dictationError = match failure(micOpened) { case some(e) => `Microphone: ${e.message}`, case none => match failure(listening) { case some(e) => `Dictation: ${e.message}`, case none => match failure(voiceInstalled) { case some(e) => `Speech model: ${e.message}`, case none => "" } } }
   derive shareText = [searchParam(top(nav), "title"), searchParam(top(nav), "text"), searchParam(top(nav), "url")].filter(t => t != "").join(" · ")
@@ -471,55 +482,78 @@ component Apollo
   action unattach(path: string)
     files = files.filter(f => f.path != path)
   // Voice: on-device recognition, as Apollo's; the words join the draft when it stops.
+  // Voice, as T3 Code does it: the mic swaps the composer for a bar (cancel, waveform and time,
+  // done); the words join the draft when it's done.
   action dictate
-    if dictating
-      send stoppedListening = stopSpeechRecognition(recognition=recognitionId)
+    voicing = true
+    voiceCancelled = false
+    notice = ""
+    dictationBase = draft
+    // iOS 26 transcribes on the device only once its English model is installed.
+    if voice.availability == "available"
+      send micOpened = getUserMedia(audio=true)
     else
-      dictationBase = draft
-      // iOS 26 transcribes on the device only once its English model is installed.
-      if voice.availability == "available"
-        send micOpened = getUserMedia(audio=true)
-      else
-        send voiceInstalled = installSpeechRecognition(langs=["en-US"], processLocally=true)
+      send voiceInstalled = installSpeechRecognition(langs=["en-US"], processLocally=true)
+  action finishVoice
+    send stoppedListening = stopSpeechRecognition(recognition=recognitionId)
+  action cancelVoice
+    voiceCancelled = true
+    if dictating
+      send abortedListening = abortSpeechRecognition(recognition=recognitionId)
+    else
+      voicing = false
+      closeMic()
+  action closeMic
+    if trackId != ""
+      send micClosed = stopTrack(track=trackId)
+    trackId = ""
   action afterVoiceInstall
     match voiceInstalled
       case some(i)
-        if i.installed
+        if not voicing
+          notice = ""
+        else if i.installed
           send micOpened = getUserMedia(audio=true)
         else
+          voicing = false
           notice = "Dictation: this iPhone could not install the English speech model"
       case none
-        notice = ""
+        voicing = false
   action micReady
     match micOpened
       case some(m)
         let id = match m.tracks.at(0) { case some(t) => t.id, case none => "" }
         trackId = id
-        send listening = startSpeechRecognition(track=id, lang="en-US", continuous=true, interimResults=true, processLocally=true)
+        if voicing
+          send listening = startSpeechRecognition(track=id, lang="en-US", continuous=true, interimResults=true, processLocally=true)
+        else if id != ""
+          send micClosed = stopTrack(track=id)
       case none
+        voicing = false
         trackId = ""
   action dictationStarted
     match listening
       case some(r)
         match r.error
           case some(e)
+            voicing = false
             notice = `Dictation stopped: ${e}`
-            if trackId != ""
-              send micClosed = stopTrack(track=trackId)
-            trackId = ""
+            closeMic()
           case none
             recognitionId = r.id
             dictating = true
+            if not voicing
+              send abortedListening = abortSpeechRecognition(recognition=r.id)
       case none
-        dictating = false
+        voicing = false
+        closeMic()
   action finishDictation
-    notice = match heard.error { case some(e) => `Dictation stopped: ${match heard.message { case some(m) => m, case none => e }}`, case none => "" }
-    draft = dictated
+    notice = voiceCancelled ? "" : match heard.error { case some(e) => `Dictation stopped: ${match heard.message { case some(m) => m, case none => e }}`, case none => "" }
+    draft = voiceCancelled ? dictationBase : dictated
     dictating = false
+    voicing = false
     recognitionId = ""
-    if trackId != ""
-      send micClosed = stopTrack(track=trackId)
-    trackId = ""
+    closeMic()
   action askDelete(id: string)
     aimed = id
     showModal("delete-thread")
@@ -833,35 +867,49 @@ component Apollo
                 text shownError font="-exact-footnote" color="-exact-system-red" flex=1 min-width=0 testId="error"
                 button press=refreshAll buttonStyle="bordered" testId="retry"
                   text "Retry"
-            column margin="6px 12px" border-radius=20 border="1px solid -exact-separator"
-              if files.length > 0
-                row gap=6 flex-wrap="wrap" padding="8px 10px 0"
-                  for f in files key=f.path
-                    button appearance="none" press=unattach(f.path) aria-label=`Remove ${f.name}` display="flex" flex-direction="row" align-items="center" gap=4
-                      padding="4px 8px" border-radius=12 background-color="-exact-secondary-background" max-width="100%" testId=`file-${f.name}`
-                      text f.name font="-exact-footnote" line-clamp=1 min-width=0
-                      image "symbol:close" font-size=11 color="-exact-secondary-label"
-              row align-items="flex-end" padding="0 4px 0 12px"
-                textarea id="composer" value=(dictating ? dictated : draft) input=edit key=composerKey rows=1 field-sizing="content" max-height=160
-                  placeholder=(dictating ? "Listening" : pending(voiceInstalled) ? "Getting the speech model" : pending(micOpened) or pending(listening) ? "Starting dictation" : "Message") aria-label="Message" readonly=dictating testId="composer" flex=1 min-width=0 padding="10px 0"
-                  border="none" background-color="transparent" autofocus=(e.name == "compose")
-                if thread.active and e.name == "session"
-                  button press=stop buttonStyle="bordered" margin="4px 0" aria-label="Stop" testId="stop"
-                    image "symbol:stop-fill"
+            if voiceBar
+              row margin="6px 12px" min-height=48 padding="4px 6px" gap=6 align-items="center" border-radius=24 background-color="-exact-secondary-background" testId="voice-bar"
+                button press=cancelVoice appearance="none" padding=8 aria-label="Cancel dictation" testId="voice-cancel"
+                  image "symbol:close" color="-exact-label"
+                if hearing
+                  audio-waveform track=trackId tint="#9b9ba1" flex=1 min-width=0 height=28 testId="waveform"
+                  text voiceClock font="-exact-subheadline" color="-exact-secondary-label" font-variant-numeric="tabular-nums" testId="voice-clock"
+                  button press=finishVoice appearance="none" width=36 height=36 border-radius=18 background-color="AccentColor" display="flex" align-items="center" justify-content="center"
+                    flex-shrink=0 aria-label="Done" testId="voice-done"
+                    image "symbol:checkmark" color="AccentColorText"
                 else
-                  button press=submit disabled=(not canSend) buttonStyle="filled" margin="4px 0" retainFocus=true aria-label="Send" testId="send"
-                    image "symbol:send"
-              row gap=2 align-items="center" padding="0 6px 4px"
-                button popovertarget="add-menu" appearance="none" padding=8 aria-label="Add" testId="add"
-                  image "symbol:add" color="-exact-secondary-label"
-                button popovertarget="model-menu" appearance="none" padding="8px 6px" display="flex" flex-direction="row" gap=3 align-items="center" testId="model"
-                  text modelLabel font="-exact-footnote" color="-exact-secondary-label" line-clamp=1
-                  image "symbol:chooser" font-size=10 color="-exact-secondary-label"
-                view flex=1
-                // As in Apollo, the mic shows only where this phone can transcribe on its own.
-                if voice.availability != "unavailable"
-                  button press=dictate appearance="none" padding=8 disabled=(pending(voiceInstalled) or pending(micOpened) or pending(listening)) aria-label=(dictating ? "Stop dictation" : "Dictate") testId="dictate"
-                    image (dictating ? "symbol:stop-fill" : "symbol:microphone") color=(dictating ? "-exact-system-red" : "-exact-secondary-label")
+                  text "Preparing" flex=1 min-width=0 text-align="center" color="-exact-secondary-label" testId="voice-preparing"
+                  progress aria-label="Preparing dictation" width=36 flex-shrink=0
+            else
+              column margin="6px 12px" border-radius=20 border="1px solid -exact-separator"
+                if files.length > 0
+                  row gap=6 flex-wrap="wrap" padding="8px 10px 0"
+                    for f in files key=f.path
+                      button appearance="none" press=unattach(f.path) aria-label=`Remove ${f.name}` display="flex" flex-direction="row" align-items="center" gap=4
+                        padding="4px 8px" border-radius=12 background-color="-exact-secondary-background" max-width="100%" testId=`file-${f.name}`
+                        text f.name font="-exact-footnote" line-clamp=1 min-width=0
+                        image "symbol:close" font-size=11 color="-exact-secondary-label"
+                row align-items="flex-end" padding="0 4px 0 12px"
+                  textarea id="composer" value=draft input=edit key=composerKey rows=1 field-sizing="content" max-height=160
+                    placeholder="Message" aria-label="Message" testId="composer" flex=1 min-width=0 padding="10px 0"
+                    border="none" background-color="transparent" autofocus=(e.name == "compose")
+                  if thread.active and e.name == "session"
+                    button press=stop buttonStyle="bordered" margin="4px 0" aria-label="Stop" testId="stop"
+                      image "symbol:stop-fill"
+                  else
+                    button press=submit disabled=(not canSend) buttonStyle="filled" margin="4px 0" retainFocus=true aria-label="Send" testId="send"
+                      image "symbol:send"
+                row gap=2 align-items="center" padding="0 6px 4px"
+                  button popovertarget="add-menu" appearance="none" padding=8 aria-label="Add" testId="add"
+                    image "symbol:add" color="-exact-secondary-label"
+                  button popovertarget="model-menu" appearance="none" padding="8px 6px" display="flex" flex-direction="row" gap=3 align-items="center" testId="model"
+                    text modelLabel font="-exact-footnote" color="-exact-secondary-label" line-clamp=1
+                    image "symbol:chooser" font-size=10 color="-exact-secondary-label"
+                  view flex=1
+                  // As in Apollo, the mic shows only where this phone can transcribe on its own.
+                  if voice.availability != "unavailable"
+                    button press=dictate appearance="none" padding=8 aria-label="Dictate" testId="dictate"
+                      image "symbol:microphone" color="-exact-secondary-label"
             input type="file" id="attach-photo" accept="image/*" multiple=true display="none" change=picked testId="photo-input"
             input type="file" id="attach-file" multiple=true display="none" change=picked testId="file-input"
             column id="add-menu" popover="auto" role="menu"
