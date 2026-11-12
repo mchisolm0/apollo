@@ -42,7 +42,8 @@ function parsePick(value: unknown): CardPick | undefined {
   const label = text(value.text);
   if (typeof n !== 'number' || !Number.isInteger(n) || label === undefined || typeof done !== 'boolean') return undefined;
   const sub = text(value.sub);
-  return { n, text: label, done, ...(sub ? { sub } : {}) };
+  const url = text(value.url);
+  return { n, text: label, done, ...(sub ? { sub } : {}), ...(url ? { url } : {}) };
 }
 
 function parseMetric(value: unknown): CardMetric | undefined {
