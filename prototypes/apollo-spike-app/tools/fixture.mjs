@@ -142,7 +142,7 @@ const iso = (offset = 0) => new Date(Date.now() - offset * 1000).toISOString();
 const cards = new Map([
   ["morning-1", { id: "morning-1", rev: 1, source: "morning", key: "day", kind: "briefing", title: "Good morning", state: "open", push: "none", createdAt: iso(3600), updatedAt: iso(3600),
     body: "Three things worth your time today.", meta: { calendar: "Standup 10:00 · Dentist 15:30" },
-    picks: [{ n: 1, text: "Review the Exact spike", done: false }, { n: 2, text: "Merge the connector PR", sub: "#83", done: false }, { n: 3, text: "Reply to Scryve feedback", done: true }],
+    picks: [{ n: 1, text: "Review the Exact spike", done: false }, { n: 2, text: "Merge the connector PR", sub: "#83", url: "https://github.com/mchisolm0/apollo/pull/83", done: false }, { n: 3, text: "Reply to Scryve feedback", done: true }],
     actions: [{ id: "go", label: "Work on these", style: "primary" }, { id: "skip", label: "No picks today" }], keepOpen: true }],
   ["update-1", { id: "update-1", rev: 2, source: "preview", key: "build-412", kind: "update", title: "Scryve preview 4.12 is ready", state: "open", push: "none", createdAt: iso(7200), updatedAt: iso(7200),
     body: "Preview build **4.12** finished.\n\n- Life counter haptics\n- Faster cold start", url: "https://example.com/builds/412",

@@ -26,6 +26,7 @@ shape Pick
   n: number
   text: string
   sub: string
+  url: string
   done: bool
 
 shape Pair
@@ -249,6 +250,12 @@ component Apollo
     nav = top(nav).name == "compose" ? nav : push(nav, "/new")
   action openLink(url: string)
     openURL(url)
+  // A pick's text opens its link, or the card when it has none. Only the ring checks it off.
+  action openPick(id: string, p: Pick)
+    if p.url != ""
+      openURL(p.url)
+    else if top(nav).name != "card"
+      nav = go(nav, path("card", id))
   action toggleSettled
     showSettled = not showSettled
 
@@ -421,7 +428,7 @@ component Apollo
                         if it.picks.length > 0
                           column padding-left=34 gap=2
                             for p in it.picks key=p.n
-                              PickRow(pick=p, press=pickRow(it.id, p), off=pending(responded), tid=`row-pick-${it.id}-${p.n}`)
+                              PickRow(pick=p, press=pickRow(it.id, p), open=openPick(it.id, p), off=pending(responded), tid=`row-pick-${it.id}-${p.n}`)
                         for m in it.meta key=m.key
                           text `${m.key} ${m.value}` font="-exact-subheadline" color="-exact-secondary-label" line-clamp=2 padding-left=34
                         if it.summary != ""
@@ -488,7 +495,7 @@ component Apollo
               if card.picks.length > 0
                 column gap=2
                   for p in card.picks key=p.n
-                    PickRow(pick=p, press=toggle(p), off=(not card.open or pending(responded)), tid=`pick-${p.n}`)
+                    PickRow(pick=p, press=toggle(p), open=openPick(card.id, p), off=(not card.open or pending(responded)), tid=`pick-${p.n}`)
               if card.body != ""
                 if card.plainText
                   text card.body user-select="text" overflow-wrap="anywhere"
@@ -629,15 +636,18 @@ component PickRow
   props
     pick: Pick
     press: action
+    open: action
     off: bool
     tid: string
   view
-    button appearance="none" press=press disabled=off role="checkbox" aria-checked=pick.done display="flex" flex-direction="row" gap=10 align-items="flex-start"
-      justify-content="flex-start" text-align="left" align-self="stretch" padding="6px 0" testId=tid
-      text `${pick.n}` font="-exact-caption1" font-weight=600 width=22 height=22 border-radius=11 text-align="center" line-height="20px" flex-shrink=0 box-sizing="border-box"
-        border=(pick.done ? "1px solid AccentColor" : "1.5px solid -exact-secondary-label") background-color=(pick.done ? "AccentColor" : "transparent")
-        color=(pick.done ? "AccentColorText" : "-exact-secondary-label")
-      column flex=1 min-width=0 gap=2 align-items="flex-start"
-        text pick.text text-align="left" text-decoration=(pick.done ? "line-through" : "none") color=(pick.done ? "-exact-secondary-label" : "-exact-label")
+    row gap=10 align-items="flex-start" align-self="stretch"
+      button appearance="none" press=press disabled=off role="checkbox" aria-checked=pick.done aria-label=pick.text padding="6px 0" flex-shrink=0 testId=tid
+        text `${pick.n}` font="-exact-caption1" font-weight=600 width=22 height=22 border-radius=11 text-align="center" line-height="20px" box-sizing="border-box"
+          border=(pick.done ? "1px solid AccentColor" : "1.5px solid -exact-secondary-label") background-color=(pick.done ? "AccentColor" : "transparent")
+          color=(pick.done ? "AccentColorText" : "-exact-secondary-label")
+      button appearance="none" press=open role=(pick.url != "" ? "link" : "button") display="flex" flex-direction="column" flex=1 min-width=0 gap=2
+        align-items="flex-start" justify-content="flex-start" text-align="left" padding="6px 0" testId=`${tid}-open`
+        text pick.text text-align="left" text-decoration=(pick.done ? "line-through" : "none")
+          color=(pick.done ? "-exact-secondary-label" : (pick.url != "" ? "-exact-system-cyan" : "-exact-label"))
         if pick.sub != ""
           text pick.sub font="-exact-footnote" color="-exact-secondary-label" text-align="left"

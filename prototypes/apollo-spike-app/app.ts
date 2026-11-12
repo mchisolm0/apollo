@@ -162,7 +162,7 @@ async function settleThreads(store: Store, settled: Record<string, number | null
   await api(store, '/v1/inbox', { method: 'PATCH', body: { importOnly: false, settled } });
 }
 
-const picksOf = (card: Card) => (card.picks ?? []).map((p) => ({ n: p.n, text: p.text, sub: p.sub ?? '', done: p.done }));
+const picksOf = (card: Card) => (card.picks ?? []).map((p) => ({ n: p.n, text: p.text, sub: p.sub ?? '', url: p.url ?? '', done: p.done }));
 const button = (a: CardAction) => ({ id: a.id, label: a.label, style: a.style ?? 'default', input: a.input === 'text', url: a.url ?? '' });
 const noExtras = { picks: [], meta: [], summary: '' } satisfies Pick<Item, 'picks' | 'meta' | 'summary'>;
 
