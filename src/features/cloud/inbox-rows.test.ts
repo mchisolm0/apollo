@@ -9,7 +9,7 @@ function card(id: string, kind: Card['kind'], patch: Partial<Card> = {}): Card {
 }
 
 function session(id: string, patch: Partial<InboxRowSession> = {}): InboxRowSession {
-  return { id, title: id, settled: false, status: 'active', pendingApproval: false, activityAt: 0, ...patch };
+  return { id, title: id, settled: false, status: 'active', pendingApproval: false, failed: false, activityAt: 0, background: false, ...patch };
 }
 
 const collapsed = { snoozed: true, settled: true };
@@ -181,6 +181,15 @@ test('stale run state or a snoozed thread never hides a Hermes approval', () => 
   // Snoozed: the thread isn't on screen, so the card shows.
   const snoozed = buildInboxRows({ sessions: waiting, cards: [approval], runStateLive: true, isSnoozed: () => true, collapsed });
   assert.deepEqual(layout(snoozed), ['card:card:run_9:req_1', '[Snoozed 1]']);
+});
+
+test("a cron job's own run shows only while it waits on an approval, has failed, or matches a search", () => {
+  const input = { cards: [], isSnoozed: () => false, collapsed };
+  const run = session('run', { title: 'Lot watcher', background: true });
+  assert.deepEqual(layout(buildInboxRows({ ...input, sessions: [run, session('chat'), session('old', { background: true, settled: true })] })), ['session:chat']);
+  assert.deepEqual(layout(buildInboxRows({ ...input, sessions: [{ ...run, pendingApproval: true }] })), ['session:run']);
+  assert.deepEqual(layout(buildInboxRows({ ...input, sessions: [{ ...run, failed: true, status: 'attention' }] })), ['session:run']);
+  assert.deepEqual(layout(buildInboxRows({ ...input, sessions: [run], query: 'lot' })), ['session:run']);
 });
 
 test('until live data lands, sections show no count and nothing claims the inbox is empty', () => {

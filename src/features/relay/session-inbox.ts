@@ -17,6 +17,8 @@ export interface InboxSession extends RelaySession {
   pinned: boolean;
   autoSettleDisabled: boolean;
   sortAt: number;
+  /** A cron job's own run: an agent work log whose result reaches you as a card, a message or Bot Chat. */
+  background: boolean;
 }
 
 export type InboxSettled = Readonly<Record<string, number>>;
@@ -146,6 +148,7 @@ export function deriveSessionInbox(
       // Server config wins when present (like settledAt); the local overlay covers offline toggles.
       autoSettleDisabled: session.autoSettleDisabled ?? autoSettleDisabled[session.id] === true,
       sortAt: session.startedAt ?? activityAt,
+      background: session.source === 'cron',
       ...presentation,
     };
   }));
@@ -196,7 +199,7 @@ export function reopenSession(session: InboxSession): InboxSession {
   return { ...session, status: 'attention', settled: false, attention: true, unread: true };
 }
 
-const presentationKeys = ['id', 'agentId', 'title', 'preview', 'updatedAt', 'running', 'unread', 'activityAt', 'sortAt', 'status', 'settled', 'attention', 'pendingApproval', 'failed', 'pinned', 'autoSettleDisabled'] as const satisfies readonly (keyof InboxSession)[];
+const presentationKeys = ['id', 'agentId', 'title', 'preview', 'updatedAt', 'running', 'unread', 'activityAt', 'sortAt', 'status', 'settled', 'attention', 'pendingApproval', 'failed', 'pinned', 'autoSettleDisabled', 'background'] as const satisfies readonly (keyof InboxSession)[];
 
 /** Keep inbox rows stable while the active transcript streams unrelated text/tool events. */
 export function createSessionInboxProjector() {

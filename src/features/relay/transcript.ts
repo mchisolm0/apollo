@@ -161,8 +161,12 @@ const SYSTEM_DISPLAY_KINDS = new Set([
 /** Injected user rows without a display kind: delegation results and `[System note: ...]` nudges. */
 const SYSTEM_PROMPT = /^\s*(?:\[ASYNC DELEGATION (?:BATCH COMPLETE|COMPLETE|TASK FAILED) — deleg_|\[System(?: note)?:)/u;
 
-/** Hermes cron mirrors a delivery into its origin chat as a user row: `[Cron delivery: <job>]\n<text>`. */
-const CRON_DELIVERY = /^\s*\[Cron delivery: ([^\n]*?)\](?:\n|$)/u;
+/**
+ * Hermes cron mirrors a delivery into its origin chat as a user row: `[Cron delivery: <job>]\n<text>`.
+ * A `bot-chat` delivery hands the bot its output as `[Cronjob "<job>" output — <instructions>]\n\n<text>`;
+ * matching stops at ` output`, like the connector's preview check, so new wording still folds.
+ */
+const CRON_DELIVERY = /^\s*\[(?:Cron delivery: ([^\n]*?)|Cronjob "([^\n]*?)" output\b[^\n]*)\](?:\n|$)/u;
 
 export interface CronDelivery {
   readonly job: string;
@@ -173,7 +177,7 @@ export interface CronDelivery {
 export function cronDelivery(text: string): CronDelivery | undefined {
   const match = CRON_DELIVERY.exec(text);
   if (!match) return undefined;
-  return { job: match[1]?.trim() || 'cron', text: text.slice(match[0].length).trim() };
+  return { job: (match[1] ?? match[2])?.trim() || 'cron', text: text.slice(match[0].length).trim() };
 }
 
 /** One-line prose summaries drop markdown markers; tool commands and paths stay literal. */

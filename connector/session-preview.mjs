@@ -1,12 +1,16 @@
 // Hermes previews a session with its first user message, so threads that producers
-// create with only assistant messages list with an empty preview. These helpers fill
-// that gap from the latest assistant message, through the Hermes HTTP API.
+// create with only assistant messages list with an empty preview, and cron threads list
+// with the message cron wrote for the bot. These helpers preview both with the latest
+// assistant message instead, through the Hermes HTTP API. A cron job's own run (`source:
+// cron`) is skipped: Apollo hides it, so it shouldn't spend the lookup budget.
 
 // Same shape as Hermes's `_shape_preview` (hermes_state_common.py): one line, 60 chars, then "...".
 const PREVIEW_MAX_CHARS = 60;
 const MAX_LOOKUPS = 20;
 const CONCURRENCY = 4;
 const CACHE_SIZE = 500;
+// First user messages cron writes into a chat for the bot: a Bot Chat delivery, a mirror.
+const CRON_PREVIEW = /^\s*\[(?:Cronjob "|Cron delivery: )/u;
 
 /** Markdown to one plain line, capped like a Hermes preview. */
 export function previewText(markdown) {
@@ -45,7 +49,7 @@ function latestAssistantPreview(messages) {
 }
 
 /**
- * Returns `fill(body, signal)`, which sets an empty `preview` on sessions in a parsed
+ * Returns `fill(body, signal)`, which sets an empty or cron-written `preview` on sessions in a parsed
  * `/api/sessions` list (`{ data: [...] }`) or single-session (`{ session }`) body,
  * resolving the number of previews it filled. `fetchMessages(sessionId, signal)`
  * returns that session's `/messages` body.
@@ -53,7 +57,8 @@ function latestAssistantPreview(messages) {
  * Cached previews are always applied. Then at most MAX_LOOKUPS uncached sessions are
  * looked up, all within one `budget` that also ends when `signal` aborts (the client
  * left). Results are cached by session id and `last_active`; failures, and sessions
- * without `last_active`, only for `shortTtl`. Any failure leaves the preview empty.
+ * without `last_active`, only for `shortTtl`. Any failure, or no assistant text yet, leaves the
+ * preview as Hermes sent it.
  */
 export function createPreviewFiller({ fetchMessages, budget = 2_000, shortTtl = 60_000 }) {
   const cache = new Map();
@@ -72,7 +77,7 @@ export function createPreviewFiller({ fetchMessages, budget = 2_000, shortTtl = 
     };
     const uncached = [];
     for (const session of sessions) {
-      if (!session || typeof session.id !== "string" || !(session.preview === "" || session.preview === null) || session.message_count === 0) continue;
+      if (!session || typeof session.id !== "string" || session.source === "cron" || !(session.preview === "" || session.preview === null || CRON_PREVIEW.test(session.preview)) || session.message_count === 0) continue;
       const stamped = typeof session.last_active === "number";
       const key = `${session.id}\u0000${stamped ? session.last_active : ""}`;
       const hit = cache.get(key);
