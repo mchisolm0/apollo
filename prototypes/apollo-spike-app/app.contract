@@ -375,6 +375,13 @@ component Apollo
     aimedKind = kind
     aimedSwipe = swipe
     aimedSnooze = canSnooze
+  // UIKit's swipe action presses the button but not its popovertarget, so open the menu here.
+  action swipeSnooze(id: string, kind: string, swipe: string)
+    aimed = id
+    aimedKind = kind
+    aimedSwipe = swipe
+    aimedSnooze = true
+    showPopover("snooze-menu")
   action settleAimed
     if aimedSwipe == "unsnooze"
       send filed = snooze(aimed, 0)
@@ -564,57 +571,55 @@ component Apollo
             if account.paired
               if shownError != ""
                 text shownError font="-exact-footnote" color="-exact-system-red" padding="4px 16px" testId="error"
-              // A plain list: Exact's native row cells blank a long-pressed row until the menu lifts it.
-              list id="inbox" appearance="none" flex=1 min-height=0 testId="inbox"
-                for it in inbox.items key=it.key
-                  if it.kind == "section"
-                    button appearance="none" press=toggleSection(it.id) display="flex" flex-direction="row" align-items="center" justify-content="flex-start" gap=6 padding="14px 16px 6px" testId=`section-${it.id}`
-                      image ((it.id == "snoozed" ? showSnoozed : showSettled) or query != "" ? "symbol:sf/chevron.down" : "symbol:forward-chevron") font-size=12 color="-exact-secondary-label"
-                      text `${it.title} · ${it.count}` font="-exact-subheadline" color="-exact-secondary-label"
-                  else if it.kind == "caughtUp"
-                    row justify-content="center" padding="24px 0"
-                      text it.title color="-exact-secondary-label" testId="caught-up"
-                  else
-                    // Swipe left to settle or reopen, as Apollo's rows do; long press for the same in a menu.
-                    scroll swipeContent="content" swipeTrailing="swipe" swipeLeading="snooze" display="flex" padding-right=0 overflow-x="scroll" overflow-y="hidden"
-                      scrollbar-width="none" scroll-snap-type="x mandatory" border-bottom="1px solid -exact-separator" margin="0 0 0 16px"
-                      column id="content" width="100%" flex-shrink=0 scroll-snap-align="start" box-sizing="border-box" gap=8 padding="10px 16px 10px 0"
-                        link href=(it.kind == "session" ? path("session", it.id) : path("card", it.id)) contextmenu=aim(it.id, it.kind, it.swipe, it.snooze) contextPopover="row-menu" testId=`row-${it.id}`
-                          row gap=10 align-items="flex-start" flex=1 min-width=0
-                            if it.glyph != ""
-                              text it.glyph font="-exact-footnote" font-weight=600 color="AccentColor" width=24 height=24 border-radius=12
-                                background-color="-exact-secondary-background" text-align="center" line-height="24px" flex-shrink=0
-                            column flex=1 min-width=0 gap=2
-                              row gap=8 align-items="baseline"
-                                text it.title font=(it.settled ? "-exact-body" : "-exact-headline") color=(it.settled ? "-exact-secondary-label" : "-exact-label") line-clamp=(it.settled ? 1 : 2) flex=1 min-width=0
-                                if it.badge != ""
-                                  text it.badge font="-exact-footnote" color=toneColor(it.tone) flex-shrink=0
-                                else
-                                  text it.time font="-exact-footnote" color="-exact-secondary-label" flex-shrink=0
-                              if it.subtitle != ""
-                                text it.subtitle font="-exact-subheadline" color="-exact-secondary-label" line-clamp=2
-                        if it.picks.length > 0
-                          column padding-left=34 gap=2
-                            for p in it.picks key=p.n
-                              PickRow(pick=p, press=pickRow(it.id, p), open=openPick(it.id, p), off=pending(responded), tid=`row-pick-${it.id}-${p.n}`)
-                        for m in it.meta key=m.key
-                          text `${m.key} ${m.value}` font="-exact-subheadline" color="-exact-secondary-label" line-clamp=2 padding-left=34
-                        if it.summary != ""
-                          text it.summary font="-exact-subheadline" color="-exact-secondary-label" padding-left=34 testId=`summary-${it.id}`
-                        else if it.actions.length > 0
-                          row gap=8 padding-left=(it.glyph != "" ? 34 : 0) flex-wrap="wrap"
-                            for a in it.actions key=a.id
-                              button press=answerCard(it.id, a) buttonStyle=(a.style == "primary" ? "filled" : "bordered") destructive=(a.style == "destructive") disabled=pending(responded) testId=`act-${it.id}-${a.id}`
-                                text a.label
-                      // Swipe right to snooze, as in Apollo: the press picks a time from the menu.
-                      if it.snooze
-                        button id="snooze" appearance="none" press=aim(it.id, it.kind, it.swipe, it.snooze) popovertarget="snooze-menu" flex-shrink=0 scroll-snap-align="start" width=84
-                          align-self="stretch" display="flex" align-items="center" justify-content="center" background-color="-exact-system-purple" testId=`snooze-${it.id}`
-                          text "Snooze" font="-exact-subheadline" font-weight=600 color="AccentColorText"
-                      if it.swipe != ""
-                        button id="swipe" appearance="none" press=settleRow(it.id, it.kind, it.swipe) flex-shrink=0 scroll-snap-align="start" width=84 align-self="stretch"
-                          display="flex" align-items="center" justify-content="center" background-color=(it.swipe == "settle" ? "AccentColor" : "-exact-system-indigo") testId=`swipe-${it.id}`
-                          text (it.swipe == "settle" ? "Settle" : it.swipe == "unsnooze" ? "Unsnooze" : "Reopen") font="-exact-subheadline" font-weight=600 color="AccentColorText"
+              list id="inbox" appearance="auto" listStyle="plain" flex=1 min-height=0 testId="inbox"
+                section
+                  for it in inbox.items key=it.key
+                    if it.kind == "section"
+                      button appearance="none" press=toggleSection(it.id) display="flex" flex-direction="row" align-items="center" justify-content="flex-start" gap=6 padding="14px 16px 6px" testId=`section-${it.id}`
+                        image ((it.id == "snoozed" ? showSnoozed : showSettled) or query != "" ? "symbol:sf/chevron.down" : "symbol:forward-chevron") font-size=12 color="-exact-secondary-label"
+                        text `${it.title} · ${it.count}` font="-exact-subheadline" color="-exact-secondary-label"
+                    else if it.kind == "caughtUp"
+                      row justify-content="center" padding="24px 0"
+                        text it.title color="-exact-secondary-label" testId="caught-up"
+                    else
+                      // Swipe left to settle or reopen, as Apollo's rows do; long press for the same in a menu.
+                      scroll swipeContent="content" swipeTrailing="swipe" swipeLeading="snooze" display="flex" padding-right=0 overflow-x="scroll" overflow-y="hidden"
+                        scrollbar-width="none" scroll-snap-type="x mandatory"
+                        column id="content" width="100%" flex-shrink=0 scroll-snap-align="start" box-sizing="border-box" gap=8 padding="8px 16px"
+                          link href=(it.kind == "session" ? path("session", it.id) : path("card", it.id)) contextmenu=aim(it.id, it.kind, it.swipe, it.snooze) contextPopover="row-menu" testId=`row-${it.id}`
+                            row gap=10 align-items="flex-start" flex=1 min-width=0
+                              if it.glyph != ""
+                                text it.glyph font="-exact-footnote" font-weight=600 color="AccentColor" width=24 height=24 border-radius=12
+                                  background-color="-exact-secondary-background" text-align="center" line-height="24px" flex-shrink=0
+                              column flex=1 min-width=0 gap=2
+                                row gap=8 align-items="baseline"
+                                  text it.title font=(it.settled ? "-exact-body" : "-exact-headline") color=(it.settled ? "-exact-secondary-label" : "-exact-label") line-clamp=(it.settled ? 1 : 2) flex=1 min-width=0
+                                  if it.badge != ""
+                                    text it.badge font="-exact-footnote" color=toneColor(it.tone) flex-shrink=0
+                                  else
+                                    text it.time font="-exact-footnote" color="-exact-secondary-label" flex-shrink=0
+                                if it.subtitle != ""
+                                  text it.subtitle font="-exact-subheadline" color="-exact-secondary-label" line-clamp=2
+                          if it.picks.length > 0
+                            column padding-left=34 gap=2
+                              for p in it.picks key=p.n
+                                PickRow(pick=p, press=pickRow(it.id, p), open=openPick(it.id, p), off=pending(responded), tid=`row-pick-${it.id}-${p.n}`)
+                          for m in it.meta key=m.key
+                            text `${m.key} ${m.value}` font="-exact-subheadline" color="-exact-secondary-label" line-clamp=2 padding-left=34
+                          if it.summary != ""
+                            text it.summary font="-exact-subheadline" color="-exact-secondary-label" padding-left=34 testId=`summary-${it.id}`
+                          else if it.actions.length > 0
+                            row gap=8 padding-left=(it.glyph != "" ? 34 : 0) flex-wrap="wrap"
+                              for a in it.actions key=a.id
+                                button press=answerCard(it.id, a) buttonStyle=(a.style == "primary" ? "filled" : "bordered") destructive=(a.style == "destructive") disabled=pending(responded) testId=`act-${it.id}-${a.id}`
+                                  text a.label
+                        // Swipe right to snooze, as in Apollo: the press picks a time from the menu.
+                        if it.snooze
+                          button id="snooze" press=swipeSnooze(it.id, it.kind, it.swipe) accent-color="-exact-system-purple" flex-shrink=0 scroll-snap-align="start" testId=`snooze-${it.id}`
+                            text "Snooze"
+                        if it.swipe != ""
+                          button id="swipe" press=settleRow(it.id, it.kind, it.swipe) accent-color=(it.swipe == "settle" ? "AccentColor" : "-exact-system-indigo") flex-shrink=0 scroll-snap-align="start" testId=`swipe-${it.id}`
+                            text (it.swipe == "settle" ? "Settle" : it.swipe == "unsnooze" ? "Unsnooze" : "Reopen")
               column id="row-menu" popover="auto" role="menu"
                 if aimedSwipe == "settle"
                   button press=settleAimed popovertarget="row-menu" popovertargetaction="hide" testId="settle"

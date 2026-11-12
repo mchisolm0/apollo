@@ -38,7 +38,10 @@ crashes on the Xcode 27.2 SDK). Fixture inputs: `approval`, `hold`, `storm` (2,0
 - Exact won't import files outside the app folder or through symlinks, so a real port would
   move the relay modules into a shared package.
 - Exact's native list rows (`list appearance="auto"`) blank a long-pressed row until its menu
-  lifts it, so the inbox uses a plain list and paints its own swipe action.
+  lifts it: UIKit's highlight lands under the route that holds it. A fix in Exact (branch
+  `fix/row-cell-lift-blank`, 5be1a348) keeps UIKit's views on top; build with `EXACT2` pointing
+  at that checkout until it lands. UIKit's swipe actions press a button but skip its
+  `popovertarget`, so Snooze opens its menu with `showPopover`.
 - Exact's speech recognition takes a `@exact/media-capture` microphone track, not
   `microphone=true` (not built on Apple). The simulator has no on-device English model, so
   dictation answers `language-not-supported` there; it needs a phone.
