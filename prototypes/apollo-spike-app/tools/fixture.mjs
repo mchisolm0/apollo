@@ -111,6 +111,7 @@ const hermes = createServer(async (req, res) => {
     const key = req.headers["idempotency-key"];
     if (typeof key === "string" && idempotency.has(key)) return json(res, 202, runStatus(idempotency.get(key)));
     const input = await body(req);
+    console.log(`run ${input.session_id}: model=${input.model ?? "-"} provider=${input.provider ?? "-"} instructions=${input.instructions ? "yes" : "no"} attachments=${/<apollo-attachments>/.test(input.input ?? "") ? "yes" : "no"}`);
     const run = { input: input.input ?? "", createdAt: now(), id: `spike-run-${randomUUID()}`, sessionId: input.session_id ?? "spike-session", status: "started", events: [], output: undefined };
     messages.get(run.sessionId)?.push({ id: `user-${run.id}`, role: "user", content: run.input, timestamp: run.createdAt });
     runs.set(run.id, run); if (typeof key === "string") idempotency.set(key, run); schedule(run); return json(res, 202, runStatus(run));
@@ -133,6 +134,21 @@ const hermes = createServer(async (req, res) => {
       return json(res, 200, { run_id: run.id, choice: input.choice ?? "deny", resolved: 1 });
     }
   }
+  if (url.pathname === "/api/model/options") return json(res, 200, { model: "fixture", provider: "fixture", providers: [
+    { slug: "fixture", models: ["fixture", "fixture-fast"], authenticated: true },
+    { slug: "openrouter", models: ["anthropic/claude-opus-5.5", "openai/gpt-6.1"], unavailable_models: ["openai/gpt-6.1"], authenticated: true },
+  ] });
+  if (url.pathname === "/v1/skills") return json(res, 200, { data: [
+    { name: "github", description: "Review and merge pull requests", category: "dev" },
+    { name: "calendar", description: "Read and plan the day", category: "life" },
+  ] });
+  if (url.pathname === "/v1/toolsets") return json(res, 200, { data: [
+    { name: "terminal", label: "Terminal", description: "Run shell commands", enabled: true, configured: true, tools: ["terminal", "process"] },
+    { name: "browser", label: "Browser", description: "Browse the web", enabled: false, configured: false, tools: ["browse"] },
+  ] });
+  const modelMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/model$/u);
+  if (modelMatch && req.method === "POST") { const input = await body(req); console.log(`model ${modelMatch[1]} -> ${input.provider ?? ""} ${input.model}`); return json(res, 200, { runtime: { model: input.model, model_lock: "accepted" } }); }
+  if (sessionMatch && req.method === "DELETE") { sessions.delete(sessionMatch[1]); messages.delete(sessionMatch[1]); return json(res, 200, { deleted: true }); }
   json(res, 404, { error: { message: "Fixture route not found" } });
 });
 

@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 rm -rf apollo
 for f in \
   src/features/relay/transcript.ts src/features/relay/activity.ts src/features/relay/types.ts \
-  src/features/relay/session-inbox.ts src/features/relay/snooze-presets.ts src/features/cloud/card-text.ts src/features/cloud/cards.ts \
+  src/features/relay/session-inbox.ts src/features/relay/snooze-presets.ts src/features/relay/composer-skills.ts src/features/cloud/card-text.ts src/features/cloud/cards.ts \
   src/features/cloud/inbox-rows.ts src/lib/run-state.ts src/lib/types.ts src/lib/attachments.ts \
   src/lib/endpoint.ts cloud/src/contract.ts; do
   mkdir -p "apollo/$(dirname "$f")"

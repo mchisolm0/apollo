@@ -3,11 +3,14 @@
 // approvals. app.ts holds the data and the connection.
 
 use setAppShortcuts, ShortcutItem, AppleShortcutItem from "@exact/quick-actions"
+use getUserMedia, stopTrack, MediaStream, MediaStreamTrack from "@exact/media-capture"
+use startSpeechRecognition, stopSpeechRecognition, speechRecognitionState, speechRecognitionAvailability, SpeechRecognitionInfo, SpeechRecognitionState, SpeechRecognitionAvailability from "@exact/speech-recognition"
 
 routes nav
   home "/"
     session "/s/:id"
     compose "/new"
+    settings "/settings"
     card "/c/:id"
 
 shape Account
@@ -126,6 +129,38 @@ shape Recent
   id: string
   title: string
 
+shape ModelOption
+  key: string
+  id: string
+  provider: string
+  label: string
+  isDefault: bool
+
+shape Skill
+  name: string
+  description: string
+
+shape Toolset
+  name: string
+  label: string
+  enabled: bool
+  tools: number
+
+shape Options
+  models: ModelOption[]
+  skills: Skill[]
+  toolsets: Toolset[]
+  defaultModel: string
+  platform: string
+  error: string
+
+// A picked file waiting to go with the next message.
+shape Draft
+  name: string
+  type: string
+  size: number
+  path: string
+
 shape Thread
   title: string
   rows: Row[]
@@ -143,6 +178,7 @@ shape Thread
   autoSettle: bool
   activityAt: number
   recent: Recent[]
+  model: string
 
 shape Created
   id: string
@@ -181,6 +217,12 @@ component Apollo
   state searchText = ""
   state query = ""
   state aimedSnooze = false
+  state composeModel = ""
+  state files: Draft[] = []
+  state recognitionId = ""
+  state dictating = false
+  state dictationBase = ""
+  state trackId = ""
   state aimed = ""
   state aimedSwipe = ""
   state aimedKind = ""
@@ -195,6 +237,14 @@ component Apollo
   resource inbox = inbox(revision, account.paired, showSettled, showSnoozed, query) with now as shape Inbox
   resource thread = transcript(selected, revision) with now as shape Thread
   resource card = card(selectedCard, revision) as shape CardView
+  resource options = agentOptions(account.paired, accountRevision) as shape Options
+  resource voice = speechRecognitionAvailability(langs=["en-US"], processLocally=true) as shape SpeechRecognitionAvailability else empty()
+  resource heard = speechRecognitionState(recognition=recognitionId, interval=100) as shape SpeechRecognitionState else empty()
+  mutation micOpened as shape MediaStream then micReady
+  mutation micClosed as shape MediaStreamTrack
+  mutation listening as shape SpeechRecognitionInfo then dictationStarted
+  mutation stoppedListening as shape SpeechRecognitionInfo
+  mutation removed as shape Ack then afterDelete
   mutation paired as shape Ack then afterPair
   mutation unpaired as shape Ack then afterPair
   mutation created as shape Created then afterCreate
@@ -204,11 +254,17 @@ component Apollo
   mutation filed as shape Ack then afterWrite
   mutation responded as shape Ack then afterWrite
   derive onHome = top(nav).name == "home"
-  derive canSend = draft.trim() != "" and not thread.active and not pending(sent) and not pending(created)
+  derive canSend = (draft.trim() != "" or files.length > 0) and not dictating and not thread.active and not pending(sent) and not pending(created)
   derive lastId = match thread.rows.at(-1) { case some(r) => r.id, case none => "" }
   // Quick actions: the manifest's New thread, then the threads opened last (as Apollo does).
   derive recentKey = thread.recent.map(r => `${r.id}|${r.title}`).join("\n")
-  derive shownError = notice != "" ? notice : onHome ? inbox.error : top(nav).name == "card" ? card.error : thread.error
+  derive currentModel = top(nav).name == "compose" ? composeModel : thread.model
+  derive modelLabel = match options.models.filter(m => m.key == currentModel).at(0) { case some(m) => m.label, case none => "Default model" }
+  derive spoken = heard.results.map(r => r.alternatives.slice(0, 1).map(a => a.transcript).join("")).join(" ")
+  derive interim = match heard.interim { case some(i) => i.alternatives.slice(0, 1).map(a => a.transcript).join(""), case none => "" }
+  derive dictated = [dictationBase.trim(), spoken.trim(), interim.trim()].filter(t => t != "").join(" ")
+  derive dictationError = match failure(micOpened) { case some(e) => `Microphone: ${e.message}`, case none => match failure(listening) { case some(e) => `Dictation: ${e.message}`, case none => "" } }
+  derive shownError = notice != "" ? notice : dictationError != "" ? dictationError : onHome ? inbox.error : top(nav).name == "card" ? card.error : thread.error
 
   // A finished run hands back to durable history, as Apollo reloads messages after a terminal event.
   task settle when thread.ended and thread.runId != ""
@@ -229,6 +285,9 @@ component Apollo
   // Search filters as you type, a beat after the last key, so each key doesn't refetch the inbox.
   task searching when searchText != query key=searchText
     after(250, applySearch)
+  // Dictation ends on its own after a pause too; either way its words land in the draft.
+  task heardOut when dictating and heard.state == "ended"
+    after(1, finishDictation)
   task shortcuts when recentKey != "" key=recentKey
     after(1, publishShortcuts)
 
@@ -292,6 +351,7 @@ component Apollo
   action askUnpair
     showModal("unpair")
   action unpair
+    nav = top(nav).name == "settings" ? back(nav) : nav
     send unpaired = unpair()
   action afterPair
     match paired
@@ -377,10 +437,72 @@ component Apollo
   action submit
     if canSend
       if top(nav).name == "compose"
-        send created = createThread(draft.trim())
+        send created = createThread(draft.trim(), composeModel, files)
       else
-        send sent = startRun(selected, draft.trim())
+        send sent = startRun(selected, draft.trim(), files)
       draft = ""
+      files = []
+  // Model: a new thread keeps it for its first run; an open thread asks Hermes to switch.
+  action pickModel(key: string)
+    if top(nav).name == "compose"
+      composeModel = key
+    else
+      send filed = setModel(selected, key)
+  // Skills: a $name in the message, as Apollo's composer writes them.
+  action insertSkill(name: string)
+    draft = `${draft == "" or draft.endsWith(" ") ? draft : draft + " "}$${name} `
+  action attach(id: string)
+    showPicker(id)
+  action picked(fs: Picked[])
+    files = files.concat(fs.map(f => Draft(name=f.name, type=f.type, size=f.size, path=f.path))).slice(0, 10)
+  action unattach(path: string)
+    files = files.filter(f => f.path != path)
+  // Voice: on-device recognition, as Apollo's; the words join the draft when it stops.
+  action dictate
+    if dictating
+      send stoppedListening = stopSpeechRecognition(recognition=recognitionId)
+    else
+      dictationBase = draft
+      send micOpened = getUserMedia(audio=true)
+  action micReady
+    match micOpened
+      case some(m)
+        let id = match m.tracks.at(0) { case some(t) => t.id, case none => "" }
+        trackId = id
+        send listening = startSpeechRecognition(track=id, lang="en-US", continuous=true, interimResults=true, processLocally=true)
+      case none
+        trackId = ""
+  action dictationStarted
+    match listening
+      case some(r)
+        recognitionId = r.id
+        dictating = true
+      case none
+        dictating = false
+  action finishDictation
+    notice = match heard.error { case some(e) => `Dictation stopped: ${e}`, case none => "" }
+    draft = dictated
+    dictating = false
+    recognitionId = ""
+    if trackId != ""
+      send micClosed = stopTrack(track=trackId)
+    trackId = ""
+  action askDelete(id: string)
+    aimed = id
+    showModal("delete-thread")
+  action deleteAimed
+    send removed = deleteThread(aimed)
+  action afterDelete
+    match removed
+      case some(r)
+        notice = r.error
+        if r.error == "" and top(nav).name == "session" and selected == aimed
+          nav = back(nav)
+      case none
+        notice = ""
+    refreshAll()
+  action openSettings
+    nav = push(nav, "/settings")
   action afterCreate
     match created
       case some(c)
@@ -423,6 +545,8 @@ component Apollo
               if account.paired
                 input type="search" value=searchText input=search placeholder="Search" aria-label="Search threads" testId="search" width="100%"
             column id="home-menu" popover="auto" role="menu" aria-label=account.label
+              button press=openSettings popovertarget="home-menu" popovertargetaction="hide" testId="settings"
+                text "Settings"
               button press=askUnpair destructive=true popovertarget="home-menu" popovertargetaction="hide" testId="unpair"
                 text "Unpair"
             if account.paired
@@ -474,7 +598,7 @@ component Apollo
                       if it.snooze
                         button id="snooze" appearance="none" press=aim(it.id, it.kind, it.swipe, it.snooze) popovertarget="snooze-menu" flex-shrink=0 scroll-snap-align="start" width=84
                           align-self="stretch" display="flex" align-items="center" justify-content="center" background-color="-exact-system-purple" testId=`snooze-${it.id}`
-                          text "Snooze" font="-exact-subheadline" font-weight=600 color="#ffffff"
+                          text "Snooze" font="-exact-subheadline" font-weight=600 color="AccentColorText"
                       if it.swipe != ""
                         button id="swipe" appearance="none" press=settleRow(it.id, it.kind, it.swipe) flex-shrink=0 scroll-snap-align="start" width=84 align-self="stretch"
                           display="flex" align-items="center" justify-content="center" background-color=(it.swipe == "settle" ? "AccentColor" : "-exact-system-indigo") testId=`swipe-${it.id}`
@@ -492,6 +616,9 @@ component Apollo
                 if aimedSnooze
                   button popovertarget="snooze-menu" testId="snooze"
                     text "Snooze"
+                if aimedKind == "session"
+                  button press=askDelete(aimed) destructive=true popovertarget="row-menu" popovertargetaction="hide" testId="delete"
+                    text "Delete"
               column id="snooze-menu" popover="auto" role="menu" aria-label="Snooze until"
                 for o in inbox.snoozeOptions key=o.id
                   button press=snoozeAimed(o.until) popovertarget="snooze-menu" popovertargetaction="hide" testId=`snooze-${o.id}`
@@ -597,6 +724,8 @@ component Apollo
                   text "Reopen thread"
               button press=toggleAutoSettle role="menuitemcheckbox" aria-checked=thread.autoSettle popovertarget="thread-menu" popovertargetaction="hide" testId="auto-settle"
                 text "Auto-settle"
+              button press=askDelete(selected) destructive=true popovertarget="thread-menu" popovertargetaction="hide" testId="delete-thread"
+                text "Delete"
             if e.name == "compose"
               column flex=1 display="flex" justify-content="center" align-items="center" padding=24 gap=6
                 image "symbol:sparkles" width=28 height=28 color="AccentColor"
@@ -606,9 +735,14 @@ component Apollo
                 for r in thread.rows key=r.id
                   column padding=(r.kind == "live" ? "0 16px 0 30px" : r.kind == "text" or r.kind == "table" ? "4px 16px" : "8px 16px") testId=`row-${r.id}`
                     if r.kind == "user"
-                      row justify-content="flex-end" padding-left=48
-                        text r.text padding="8px 12px" border-radius=18 overflow-wrap="anywhere" user-select="text"
-                          background-color="AccentColor" color="AccentColorText"
+                      column align-items="flex-end" padding-left=48 gap=4
+                        if r.text != ""
+                          text r.text padding="8px 12px" border-radius=18 overflow-wrap="anywhere" user-select="text"
+                            background-color="AccentColor" color="AccentColorText"
+                        if r.summary != ""
+                          row gap=4 align-items="center"
+                            image "symbol:sf/paperclip" font-size=11 color="-exact-secondary-label"
+                            text r.summary font="-exact-footnote" color="-exact-secondary-label" testId=`files-${r.id}`
                     if r.kind == "text"
                       text r.text markup="markdown" user-select="text" overflow-wrap="anywhere"
                     if r.kind == "live"
@@ -661,16 +795,93 @@ component Apollo
                 text shownError font="-exact-footnote" color="-exact-system-red" flex=1 min-width=0 testId="error"
                 button press=refreshAll buttonStyle="bordered" testId="retry"
                   text "Retry"
-            row align-items="flex-end" margin="6px 12px" padding="0 4px 0 12px" border-radius=20 border="1px solid -exact-separator"
-              textarea id="composer" value=draft input=edit key=composerKey rows=1 field-sizing="content" max-height=160
-                placeholder="Message" aria-label="Message" testId="composer" flex=1 min-width=0 padding="10px 0"
-                border="none" background-color="transparent" autofocus=(e.name == "compose")
-              if thread.active and e.name == "session"
-                button press=stop buttonStyle="bordered" margin="4px 0" aria-label="Stop" testId="stop"
-                  image "symbol:stop-fill"
-              else
-                button press=submit disabled=(not canSend) buttonStyle="filled" margin="4px 0" retainFocus=true aria-label="Send" testId="send"
-                  image "symbol:send"
+            column margin="6px 12px" border-radius=20 border="1px solid -exact-separator"
+              if files.length > 0
+                row gap=6 flex-wrap="wrap" padding="8px 10px 0"
+                  for f in files key=f.path
+                    button appearance="none" press=unattach(f.path) aria-label=`Remove ${f.name}` display="flex" flex-direction="row" align-items="center" gap=4
+                      padding="4px 8px" border-radius=12 background-color="-exact-secondary-background" max-width="100%" testId=`file-${f.name}`
+                      text f.name font="-exact-footnote" line-clamp=1 min-width=0
+                      image "symbol:close" font-size=11 color="-exact-secondary-label"
+              row align-items="flex-end" padding="0 4px 0 12px"
+                textarea id="composer" value=(dictating ? dictated : draft) input=edit key=composerKey rows=1 field-sizing="content" max-height=160
+                  placeholder=(dictating ? "Listening" : pending(micOpened) or pending(listening) ? "Starting dictation" : "Message") aria-label="Message" readonly=dictating testId="composer" flex=1 min-width=0 padding="10px 0"
+                  border="none" background-color="transparent" autofocus=(e.name == "compose")
+                if thread.active and e.name == "session"
+                  button press=stop buttonStyle="bordered" margin="4px 0" aria-label="Stop" testId="stop"
+                    image "symbol:stop-fill"
+                else
+                  button press=submit disabled=(not canSend) buttonStyle="filled" margin="4px 0" retainFocus=true aria-label="Send" testId="send"
+                    image "symbol:send"
+              row gap=2 align-items="center" padding="0 6px 4px"
+                button popovertarget="add-menu" appearance="none" padding=8 aria-label="Add" testId="add"
+                  image "symbol:add" color="-exact-secondary-label"
+                button popovertarget="model-menu" appearance="none" padding="8px 6px" display="flex" flex-direction="row" gap=3 align-items="center" testId="model"
+                  text modelLabel font="-exact-footnote" color="-exact-secondary-label" line-clamp=1
+                  image "symbol:chooser" font-size=10 color="-exact-secondary-label"
+                view flex=1
+                // As in Apollo, the mic shows only where this phone can transcribe on its own.
+                if voice.availability != "unavailable"
+                  button press=dictate appearance="none" padding=8 disabled=(pending(micOpened) or pending(listening)) aria-label=(dictating ? "Stop dictation" : "Dictate") testId="dictate"
+                    image (dictating ? "symbol:stop-fill" : "symbol:microphone") color=(dictating ? "-exact-system-red" : "-exact-secondary-label")
+            input type="file" id="attach-photo" accept="image/*" multiple=true display="none" change=picked testId="photo-input"
+            input type="file" id="attach-file" multiple=true display="none" change=picked testId="file-input"
+            column id="add-menu" popover="auto" role="menu"
+              button press=attach("attach-photo") popovertarget="add-menu" popovertargetaction="hide" testId="add-photo"
+                text "Photo Library"
+              button press=attach("attach-file") popovertarget="add-menu" popovertargetaction="hide" testId="add-file"
+                text "Choose Files"
+              if options.skills.length > 0
+                column role="group" aria-label="Skills"
+                  for k in options.skills key=k.name
+                    button press=insertSkill(k.name) popovertarget="add-menu" popovertargetaction="hide" testId=`skill-${k.name}`
+                      text `$${k.name}`
+            column id="model-menu" popover="auto" role="menu" aria-label="Model"
+              button press=pickModel("") role="menuitemradio" aria-checked=(currentModel == "") popovertarget="model-menu" popovertargetaction="hide" testId="model-default"
+                text "Default model"
+              for m in options.models key=m.key
+                button press=pickModel(m.key) role="menuitemradio" aria-checked=(currentModel == m.key) popovertarget="model-menu" popovertargetaction="hide" testId=`model-${m.key}`
+                  text m.label
+        if e.name == "settings"
+          column navigationKey=`${e.id}` navigationScroll="settings" position="absolute" inset=0 display="flex" flex-direction="column"
+            header display="flex" align-items="center" padding="8px 16px"
+              text "Settings" role="heading" aria-level=2
+            list id="settings" appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+              section
+                header
+                  text "Connection"
+                row justify-content="space-between" gap=12
+                  text "Agent"
+                  text account.label color="-exact-secondary-label" line-clamp=1 testId="settings-agent"
+                row justify-content="space-between" gap=12
+                  text "Endpoint"
+                  text account.endpoint color="-exact-secondary-label" line-clamp=1 overflow-wrap="anywhere"
+                if options.platform != ""
+                  row justify-content="space-between" gap=12
+                    text "Platform"
+                    text options.platform color="-exact-secondary-label"
+                row justify-content="space-between" gap=12
+                  text "Default model"
+                  text (options.defaultModel == "" ? "Unknown" : options.defaultModel) color="-exact-secondary-label" line-clamp=1
+              if options.toolsets.length > 0
+                section
+                  header
+                    text "Toolsets"
+                  for t in options.toolsets key=t.name
+                    row justify-content="space-between" gap=12 testId=`toolset-${t.name}`
+                      column gap=2 flex=1 min-width=0
+                        text t.label
+                        text `${t.tools} ${t.tools == 1 ? "tool" : "tools"}` font="-exact-footnote" color="-exact-secondary-label"
+                      text (t.enabled ? "On" : "Off") color="-exact-secondary-label"
+              section
+                button press=askUnpair destructive=true testId="settings-unpair"
+                  text "Unpair this phone"
+      dialog id="delete-thread" role="alertdialog" aria-label="Delete thread?"
+        text "This removes it from Hermes for every device."
+        button press=deleteAimed destructive=true commandfor="delete-thread" command="close" testId="delete-confirm"
+          text "Delete"
+        button commandfor="delete-thread" command="close" testId="delete-cancel"
+          text "Cancel"
       dialog id="unpair" role="alertdialog" aria-label="Unpair this phone?"
         text "You'll need a new pairing link to connect again."
         button press=unpair destructive=true commandfor="unpair" command="close" testId="unpair-confirm"

@@ -6,6 +6,8 @@
     "start": "bun exact.mjs serve dist"
   },
   "dependencies": {
-    "@exact/quick-actions": "file:/Users/mcc/code/exact/packages/quick-actions"
+    "@exact/quick-actions": "file:/Users/mcc/code/exact/packages/quick-actions",
+    "@exact/speech-recognition": "file:/Users/mcc/code/exact/packages/speech-recognition",
+    "@exact/media-capture": "file:/Users/mcc/code/exact/packages/media-capture"
   }
 }

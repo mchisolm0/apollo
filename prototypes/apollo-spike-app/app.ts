@@ -10,6 +10,8 @@ import { buildInboxRows, cardOpenPlan, hermesApprovalTarget, isCardSettled, sett
 import { liveActivityLabel, oneLine, readableOutput, settledActivityLabel, toolVerb } from './apollo/src/features/relay/activity.ts';
 import { autoSettleSessionsDue, canSettleSession, deriveSessionInbox, isSessionSnoozed, pruneSnoozedLedger, snoozeSession, unsnoozeSession, type InboxSession } from './apollo/src/features/relay/session-inbox.ts';
 import { resolveSnoozePresets } from './apollo/src/features/relay/snooze-presets.ts';
+import { selectedSkillNames } from './apollo/src/features/relay/composer-skills.ts';
+import { attachmentMessage, MAX_ATTACHMENT_BYTES, splitAttachmentMessage, type Attachment } from './apollo/src/lib/attachments.ts';
 import { createTranscriptProjector, type TranscriptRow } from './apollo/src/features/relay/transcript.ts';
 import { setClock } from './apollo/clock.ts';
 import { normalizeEndpoint } from './apollo/src/lib/endpoint.ts';
@@ -20,7 +22,7 @@ const SECRET = 'apollo.credential';
 const STATE = 'app:/data/state.json';
 export const appId = 'com.matthewchisolm.apollo.exactspike';
 // `https:` admits the connector and cloud the pairing names; loopback http is tools/fixture.mjs.
-export const grants = ['net.fetch https:', 'net.fetch http://127.0.0.1:19111', 'net.fetch http://127.0.0.1:19113', `secret.keep ${SECRET}`, `fs.read ${STATE}`, `fs.write ${STATE}`].join('\n');
+export const grants = ['net.fetch https:', 'net.fetch http://127.0.0.1:19111', 'net.fetch http://127.0.0.1:19113', `secret.keep ${SECRET}`, `fs.read ${STATE}`, `fs.write ${STATE}`, 'fs.read app:/tmp', 'fs.write app:/tmp', 'device.microphone purpose.microphone', 'device.speech-recognition purpose.recognition'].join('\n');
 
 type Thread = Result<'transcript'>;
 type Row = Thread['rows'][number];
@@ -91,8 +93,9 @@ async function cloud(store: Store): Promise<Credential['cloud']> {
 
 // `recent` is the threads opened last, newest first: the Home Screen's quick actions.
 // snoozed: Apollo's local snooze ledger, thread id -> wake time in unix seconds.
-type Local = { runs: Record<string, string>; read: Record<string, number>; cards: Record<string, number>; recent: { id: string; title: string }[]; snoozed: Record<string, number> };
-const fresh = (): Local => ({ runs: {}, read: {}, cards: {}, recent: [], snoozed: {} });
+// models: the model each thread runs on, as `provider|id`, kept on this phone as Apollo does.
+type Local = { runs: Record<string, string>; read: Record<string, number>; cards: Record<string, number>; recent: { id: string; title: string }[]; snoozed: Record<string, number>; models: Record<string, string> };
+const fresh = (): Local => ({ runs: {}, read: {}, cards: {}, recent: [], snoozed: {}, models: {} });
 let local: Local | undefined;
 async function state(storage: Storage): Promise<Local> {
   if (local) return local;
@@ -334,6 +337,12 @@ function toRows(rows: readonly TranscriptRow[]): Row[] {
       out.push(...blocks(row.text).map((b, i): Row => ({ ...plain, id: `${row.id}#${i}`, kind: live ? 'live' : b.table.length ? 'table' : 'text', text: b.text, table: b.table, status: row.status ?? '' })));
       continue;
     }
+    if (row.kind === 'user') {
+      // The files a message carried show under it by name, not as Apollo's attachment block.
+      const { text, attachments } = splitAttachmentMessage(row.text);
+      out.push({ ...plain, id: row.id, kind: 'user', text, summary: attachments.map((a) => a.name).join(', '), status: row.status ?? '' });
+      continue;
+    }
     if (row.kind !== 'activity') { out.push({ ...plain, id: row.id, kind: row.kind, text: row.text, status: row.status ?? '' }); continue; }
     const running = row.status === 'running';
     live = running;
@@ -350,7 +359,7 @@ function toRows(rows: readonly TranscriptRow[]): Row[] {
 
 const emptyThread: Thread = {
   title: '', rows: [], runId: '', status: '', active: false, ended: false, error: '',
-  approvalId: '', approvalTitle: '', approvalCommand: '', approvalReason: '', settled: false, canSettle: false, autoSettle: true, activityAt: 0, recent: [],
+  approvalId: '', approvalTitle: '', approvalCommand: '', approvalReason: '', settled: false, canSettle: false, autoSettle: true, activityAt: 0, recent: [], model: '',
 };
 
 // iOS shows four quick actions: New thread and the three threads opened last.
@@ -387,7 +396,7 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       if (runId) delete l.runs[sessionId];
       l.read[sessionId] = Math.floor(now / 1000);
       await save(storage);
-      return { ...emptyThread, ...inboxFacts(sessionId), recent, title, rows: toRows(project({ history: messages, events: [], running: false })) };
+      return { ...emptyThread, ...inboxFacts(sessionId), model: l.models[sessionId] ?? "", recent, title, rows: toRows(project({ history: messages, events: [], running: false })) };
     }
     await save(storage);
     const { endpoint, token } = await credential(store);
@@ -401,7 +410,7 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       const command = str(approval?.command) ?? str(approval?.preview);
       const rows = project({ history: messages, events, runId, runStartedAt: current.createdAt, runEndedAt: current.updatedAt, runStatus: current.status, runOutput: current.output, running });
       return {
-        ...emptyThread, ...inboxFacts(sessionId), canSettle: false, recent, title, rows: toRows(rows), runId, status: current.status, active: running, ended: !running, error,
+        ...emptyThread, ...inboxFacts(sessionId), model: l.models[sessionId] ?? "", canSettle: false, recent, title, rows: toRows(rows), runId, status: current.status, active: running, ended: !running, error,
         ...(approval && command ? { approvalId: str(approval.request_id) ?? approval.requestId ?? '', approvalTitle: approval.tool ? `Allow ${approval.tool}?` : 'Allow this command?', approvalCommand: command, approvalReason: approval.description ?? '' } : {}),
       };
     };
@@ -445,9 +454,83 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
   }
 }
 
-async function start(store: Store, storage: Storage, sessionId: string, input: string) {
-  const run = await api(store, '/v1/runs', { method: 'POST', body: { input, session_id: sessionId }, headers: { 'Idempotency-Key': crypto.randomUUID() } });
+// ---- Models, skills, toolsets and attachments ----
+
+type Options = Result<'agentOptions'>;
+type Draft = Parameters<Sources['startRun']>[0][2][number];
+const modelKey = (provider: string, id: string) => `${provider}|${id}`;
+let skillsSeen: { name: string; description?: string }[] = [];
+
+// What the composer and Settings offer: Hermes's models (Apollo's /api/model/options, else
+// /v1/models), its skills and its toolsets. Each part fails alone.
+async function agentOptions(store: Store): Promise<Options> {
+  const [caps, options, skills, toolsets] = await Promise.all([
+    api(store, '/v1/capabilities').catch(() => ({} as Json)),
+    api(store, '/api/model/options').catch(() => api(store, '/v1/models').catch(() => ({} as Json))),
+    api(store, '/v1/skills').catch(() => ({} as Json)),
+    api(store, '/v1/toolsets').catch(() => ({} as Json)),
+  ]);
+  const models: Options['models'] = [];
+  if (Array.isArray(options.providers)) {
+    for (const p of options.providers as Json[]) {
+      if (typeof p.slug !== 'string' || !Array.isArray(p.models) || p.authenticated === false) continue;
+      const unavailable = Array.isArray(p.unavailable_models) ? p.unavailable_models : [];
+      for (const m of p.models) {
+        if (typeof m !== 'string' || unavailable.includes(m)) continue;
+        const aliases = Array.isArray(p.aliases) ? p.aliases : [];
+        const isDefault = m === options.model && (p.slug === options.provider || aliases.includes(options.provider));
+        models.push({ key: modelKey(p.slug, m), id: m, provider: p.slug, label: m === 'hermes-agent' ? 'Default' : m, isDefault });
+      }
+    }
+  } else {
+    for (const m of ((options.data ?? options.models ?? []) as Json[])) {
+      const id = str(m.id);
+      if (id) models.push({ key: modelKey('hermes', id), id, provider: 'hermes', label: id === 'hermes-agent' ? 'Default' : id, isDefault: id === caps.model });
+    }
+  }
+  skillsSeen = ((skills.data ?? []) as Json[]).flatMap((k) => (typeof k.name === 'string' ? [{ name: k.name, description: str(k.description) }] : []));
+  return {
+    models, defaultModel: str(caps.model) ?? '', platform: str(caps.platform) ?? '', error: '',
+    skills: skillsSeen.map((k) => ({ name: k.name, description: k.description ?? '' })),
+    toolsets: ((toolsets.data ?? []) as Json[]).flatMap((t) => (typeof t.name === 'string'
+      ? [{ name: t.name, label: str(t.label) ?? t.name, enabled: t.enabled === true, tools: Array.isArray(t.tools) ? t.tools.length : 0 }] : [])),
+  };
+}
+
+// The connector keeps a picked file under its state folder; the message names its path, as
+// Apollo's does. A large photo is shrunk first, as Apollo's 2000 px, 5 MB fit does.
+async function upload(store: Store, storage: Storage, file: Draft): Promise<Attachment> {
+  if (file.size > MAX_ATTACHMENT_BYTES) throw new Error('Choose files no larger than 25 MB each.');
+  let path = file.path, type = file.type || 'application/octet-stream', name = file.name;
+  if (type.startsWith('image/') && (file.size > 5_000_000 || /hei[cf]/.test(type))) {
+    const out = await storage.fs.compressImage(path, `app:/tmp/upload/${crypto.randomUUID()}.jpg`, { maxDimension: 2000, maxBytes: 5_000_000 });
+    path = out.path; type = out.type; name = name.replace(/\.[^.]+$/, '') + '.jpg';
+  }
+  const bytes = await storage.fs.readFile(path);
+  const { endpoint, token } = await credential(store);
+  const res = await fetch(`${endpoint}/v1/apollo/attachments?name=${encodeURIComponent(name)}`, {
+    method: 'POST', exactTimeout: 120000, headers: { Authorization: `Bearer ${token}`, 'Content-Type': type }, body: bytes,
+  } as RequestInit);
+  const body = (await res.json().catch(() => ({}))) as Json;
+  if (!res.ok) throw new Error(str((body.error as Json | undefined)?.message) ?? `Upload failed (HTTP ${res.status})`);
+  return body.attachment as Attachment;
+}
+
+async function start(store: Store, storage: Storage, sessionId: string, text: string, files: readonly Draft[] = []) {
   const l = await state(storage);
+  const attachments = [];
+  for (const f of files) attachments.push(await upload(store, storage, f));
+  const input = attachmentMessage(text, attachments);
+  // A $name a person typed picks that skill, as in Apollo: Hermes is told to load it first.
+  const skills = selectedSkillNames(text, skillsSeen);
+  const instructions = skills.length
+    ? `The user explicitly selected these installed skills: ${JSON.stringify(skills)}. Before responding, call skill_view for each exact name and follow its instructions. The $name references in the message identify these selections. If a skill cannot be loaded, tell the user.`
+    : undefined;
+  const [provider, model] = (l.models[sessionId] ?? '').split('|');
+  const run = await api(store, '/v1/runs', {
+    method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() },
+    body: { input, session_id: sessionId, ...(model ? { model, ...(provider && provider !== 'hermes' ? { provider } : {}) } : {}), ...(instructions ? { instructions } : {}) },
+  });
   l.runs[sessionId] = String(run.run_id);
   await save(storage);
 }
@@ -495,15 +578,44 @@ const sources: Sources = {
   },
   card: ([id], _store, storage) => cardView(id, storage),
   transcript: ([sessionId, , now], store, storage) => { setClock(now); return transcript(sessionId, now, store, storage); },
-  createThread: async ([input], store, storage) => {
+  agentOptions: async (_args, store) => {
+    try { return await agentOptions(store); }
+    catch (e) { return { models: [], skills: [], toolsets: [], defaultModel: '', platform: '', error: e instanceof Unpaired ? '' : message(e) }; }
+  },
+  // A new thread's model is saved before its first run; an open thread's is locked on Hermes.
+  setModel: async ([sessionId, key], store, storage) => {
+    try {
+      const l = await state(storage);
+      const [provider, model] = key.split('|');
+      if (key) {
+        const res = await api(store, `/api/sessions/${encodeURIComponent(sessionId)}/model`, { method: 'POST', body: { model, ...(provider && provider !== 'hermes' ? { provider } : {}) } });
+        if ((res.runtime as Json | undefined)?.model_lock !== 'accepted') throw new Error('Hermes kept the current model for this thread.');
+        l.models[sessionId] = key;
+      } else delete l.models[sessionId];
+      await save(storage);
+      return ok;
+    } catch (e) { return failed(e); }
+  },
+  deleteThread: async ([sessionId], store, storage) => {
+    try {
+      await api(store, `/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+      const l = await state(storage);
+      for (const ledger of [l.runs, l.read, l.snoozed, l.models]) delete ledger[sessionId];
+      l.recent = l.recent.filter((r) => r.id !== sessionId);
+      await save(storage);
+      return ok;
+    } catch (e) { return failed(e); }
+  },
+  createThread: async ([input, model, files], store, storage) => {
     try {
       const id = crypto.randomUUID();
-      await api(store, '/api/sessions', { method: 'POST', body: { id, title: input.split('\n')[0]!.slice(0, 72) } });
-      await start(store, storage, id, input);
+      await api(store, '/api/sessions', { method: 'POST', body: { id, title: (input.split('\n')[0] || files[0]?.name || 'New thread').slice(0, 72) } });
+      if (model) { const l = await state(storage); l.models[id] = model; }
+      await start(store, storage, id, input, files);
       return { id, error: '' };
     } catch (e) { return { id: '', error: message(e) }; }
   },
-  startRun: async ([sessionId, input], store, storage) => { try { await start(store, storage, sessionId, input); return ok; } catch (e) { return failed(e); } },
+  startRun: async ([sessionId, input, files], store, storage) => { try { await start(store, storage, sessionId, input, files); return ok; } catch (e) { return failed(e); } },
   stopRun: async ([runId], store) => { try { await api(store, `/v1/runs/${encodeURIComponent(runId)}/stop`, { method: 'POST' }); return ok; } catch (e) { return failed(e); } },
   answerApproval: async ([runId, requestId, choice], store) => {
     try { await api(store, `/v1/runs/${encodeURIComponent(runId)}/approval`, { method: 'POST', body: { choice, ...(requestId ? { request_id: requestId } : {}) } }); return ok; }
