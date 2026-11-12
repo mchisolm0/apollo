@@ -74,7 +74,7 @@ async function startHermesStub() {
   const server = (await import("node:http")).createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
-    seen.push({ method: req.method, url: req.url, body, authorization: req.headers.authorization, cookie: req.headers.cookie, forwarded: req.headers["x-forwarded-for"], device: req.headers["x-apollo-device-id"] });
+    seen.push({ method: req.method, url: req.url, body, authorization: req.headers.authorization, cookie: req.headers.cookie, forwarded: req.headers["x-forwarded-for"], device: req.headers["x-apollo-device-id"], accept: req.headers.accept });
     const path = new URL(req.url, "http://hermes").pathname;
     if (req.method === "GET" && path === "/api/sessions") { res.setHeader("etag", '"hermes-list"'); return send(res, 200, hermesData.sessions); }
     const messages = path.match(/^\/api\/sessions\/([^/]+)\/messages$/u);
@@ -179,7 +179,7 @@ test("run events asked for as bytes keep their SSE frames under a byte content t
   const response = await fetch(`${f.base}/v1/runs/demo/events`, { headers: { authorization: `Bearer ${exchanged.body.access_token}`, accept: "application/octet-stream" } });
   assert.equal(response.headers.get("content-type"), "application/octet-stream");
   assert.equal(await response.text(), "event: run.completed\ndata: {}\n\n");
-  assert.equal(f.hermes.seen.at(-1).url, "/v1/runs/demo/events");
+  assert.deepEqual([f.hermes.seen.at(-1).url, f.hermes.seen.at(-1).accept], ["/v1/runs/demo/events", "text/event-stream"]);
 });
 
 test("model inventory is device-authenticated and GET-only", async (t) => {
