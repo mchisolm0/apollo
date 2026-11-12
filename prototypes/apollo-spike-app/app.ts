@@ -1,28 +1,43 @@
-// PROTOTYPE. Apollo on Exact: pairs with an Apollo connector, lists Hermes threads, and streams
-// runs. Apollo's own transcript projector and run-state helpers are reused unchanged (copied in
-// by tools/sync-apollo.sh), so the view is the only new part.
+// PROTOTYPE. Apollo on Exact: pairs with an Apollo connector, shows Apollo's inbox (Hermes threads
+// and cloud cards, with settle), and streams runs. Apollo's own transcript projector, run-state,
+// inbox and card modules are reused unchanged (copied in by tools/sync-apollo.sh); the view and
+// this data seam are the new parts.
 import type { Answer, Result, Sources, Storage, Store } from './app.contract.d.ts';
-import { createTranscriptProjector, type TranscriptRow } from './apollo/features/relay/transcript.ts';
-import { currentApproval, isRunActive, statusAfterEvent } from './apollo/lib/run-state.ts';
-import { normalizeEndpoint } from './apollo/lib/endpoint.ts';
-import type { HermesMessage, HermesRunEvent, HermesRunState, HermesRunStatus } from './apollo/lib/types.ts';
+import type { Card, CardResponse } from './apollo/cloud/src/contract.ts';
+import { parseCard, parseSnapshot } from './apollo/src/features/cloud/cards.ts';
+import { previewLine } from './apollo/src/features/cloud/card-text.ts';
+import { buildInboxRows, cardOpenPlan, hermesApprovalTarget, isCardSettled, settleAction, updateSettledCards, type InboxCard, type SettledCards } from './apollo/src/features/cloud/inbox-rows.ts';
+import { liveActivityLabel, oneLine, readableOutput, settledActivityLabel, toolVerb } from './apollo/src/features/relay/activity.ts';
+import { autoSettleSessionsDue, canSettleSession, deriveSessionInbox, type InboxSession } from './apollo/src/features/relay/session-inbox.ts';
+import { createTranscriptProjector, type TranscriptRow } from './apollo/src/features/relay/transcript.ts';
+import { setClock } from './apollo/clock.ts';
+import { normalizeEndpoint } from './apollo/src/lib/endpoint.ts';
+import { currentApproval, isRunActive, statusAfterEvent } from './apollo/src/lib/run-state.ts';
+import type { HermesMessage, HermesRunEvent, HermesRunState, HermesRunStatus, HermesSession } from './apollo/src/lib/types.ts';
 
 const SECRET = 'apollo.credential';
-const RUNS = 'app:/data/runs.json';
+const STATE = 'app:/data/state.json';
 export const appId = 'com.matthewchisolm.apollo.exactspike';
-// `https:` admits whatever connector the pairing link names; loopback http is tools/fixture.mjs.
-export const grants = ['net.fetch https:', 'net.fetch http://127.0.0.1:19111', `secret.keep ${SECRET}`, `fs.read ${RUNS}`, `fs.write ${RUNS}`].join('\n');
+// `https:` admits the connector and cloud the pairing names; loopback http is tools/fixture.mjs.
+export const grants = ['net.fetch https:', 'net.fetch http://127.0.0.1:19111', 'net.fetch http://127.0.0.1:19113', `secret.keep ${SECRET}`, `fs.read ${STATE}`, `fs.write ${STATE}`].join('\n');
 
 type Thread = Result<'transcript'>;
 type Row = Thread['rows'][number];
+type Inbox = Result<'inbox'>;
+type Item = Inbox['items'][number];
+type CardView = Result<'card'>;
 type Json = Record<string, unknown>;
-type Credential = { endpoint: string; token: string; label: string };
+type Credential = { endpoint: string; token: string; label: string; cloud?: { url: string; token: string } };
 
 const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+const bool = (v: unknown) => (typeof v === 'boolean' ? v : undefined);
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 class Unpaired extends Error {}
+
+// ---- Credentials and requests ----
 
 async function credential(store: Store): Promise<Credential> {
   const raw = await store.get(SECRET);
@@ -30,36 +45,64 @@ async function credential(store: Store): Promise<Credential> {
   return JSON.parse(raw) as Credential;
 }
 
-async function api(store: Store, path: string, init: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<Json> {
-  const { endpoint, token } = await credential(store);
-  const res = await fetch(endpoint + path, {
+async function request(base: string, token: string, path: string, init: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<Json> {
+  const res = await fetch(base + path, {
     method: init.method ?? 'GET',
     exactTimeout: 20000,
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', ...(init.body ? { 'Content-Type': 'application/json' } : {}), ...init.headers },
     ...(init.body ? { body: JSON.stringify(init.body) } : {}),
   } as RequestInit);
   const json = (await res.json().catch(() => ({}))) as Json;
-  if (res.status === 401) throw new Error('This phone was unpaired from the connector. Pair it again.');
-  if (!res.ok) throw new Error(str((json.error as Json | undefined)?.message) ?? `HTTP ${res.status}`);
+  if (!res.ok) {
+    const error = json.error as Json | undefined;
+    throw Object.assign(new Error(str(error?.message) ?? `HTTP ${res.status}`), { status: res.status, code: str(error?.code), body: json });
+  }
   return json;
 }
 
-// Runs this app started, by session, so a relaunch or a return from the background picks the
-// stream back up. Apollo keeps the same map in its runtime state.
-let runs: Record<string, string> | undefined;
-async function activeRuns(storage: Storage) {
-  if (runs) return runs;
-  const bytes = await storage.fs.readFile(RUNS).catch(() => null);
-  try { runs = bytes ? (JSON.parse(new TextDecoder().decode(bytes)) as Record<string, string>) : {}; } catch { runs = {}; }
-  return runs;
-}
-async function setRun(storage: Storage, sessionId: string, runId: string | undefined) {
-  const map = await activeRuns(storage);
-  if (runId) map[sessionId] = runId; else delete map[sessionId];
-  await storage.fs.atomicWriteFile(RUNS, new TextEncoder().encode(JSON.stringify(map))).catch(() => {});
+async function api(store: Store, path: string, init?: Parameters<typeof request>[3]) {
+  const { endpoint, token } = await credential(store);
+  try { return await request(endpoint, token, path, init); }
+  catch (e) {
+    if ((e as { status?: number }).status === 401) throw new Error('This phone was unpaired from the connector. Pair it again.');
+    throw e;
+  }
 }
 
-// The same mapping as Apollo's hermes-client parseMessage / parseEvent / parseRun.
+// The cloud inbox's device token comes with pairing; an older pairing asks the connector once.
+let cloudAsked = false;
+async function cloud(store: Store): Promise<Credential['cloud']> {
+  const c = await credential(store);
+  if (c.cloud || cloudAsked) return c.cloud;
+  cloudAsked = true;
+  try {
+    const body = await request(c.endpoint, c.token, '/v1/apollo/cloud-token', { method: 'POST', body: {} });
+    const grant = body.cloud as Json | undefined;
+    if (str(grant?.url) && str(grant?.token)) {
+      c.cloud = { url: String(grant!.url).replace(/\/$/, ''), token: String(grant!.token) };
+      await store.set(SECRET, JSON.stringify(c));
+    }
+  } catch { /* no cloud configured on this connector: cards stay off */ }
+  return c.cloud;
+}
+
+// ---- Local state: runs this app started, threads read, cards settled ----
+
+type Local = { runs: Record<string, string>; read: Record<string, number>; cards: Record<string, number> };
+let local: Local | undefined;
+async function state(storage: Storage): Promise<Local> {
+  if (local) return local;
+  const bytes = await storage.fs.readFile(STATE).catch(() => null);
+  try { local = { runs: {}, read: {}, cards: {}, ...(bytes ? JSON.parse(new TextDecoder().decode(bytes)) : {}) }; } catch { local = { runs: {}, read: {}, cards: {} }; }
+  return local!;
+}
+async function save(storage: Storage) {
+  if (local) await storage.fs.atomicWriteFile(STATE, new TextEncoder().encode(JSON.stringify(local))).catch(() => {});
+}
+const settledCards = (l: Local): SettledCards => new Map(Object.entries(l.cards));
+
+// ---- Hermes parsing, as Apollo's hermes-client does it ----
+
 const parseMessage = (v: Json): HermesMessage => ({
   id: str(v.id), sequence: num(v.id), sessionId: str(v.session_id), role: str(v.role) ?? 'system', content: str(v.content),
   toolCallId: str(v.tool_call_id), toolName: str(v.tool_name), toolCalls: Array.isArray(v.tool_calls) ? (v.tool_calls as Json[]) : undefined,
@@ -70,52 +113,219 @@ const parseRun = (v: Json): HermesRunStatus => ({
   runId: String(v.run_id), status: (str(v.status) ?? 'unknown') as HermesRunState, sessionId: str(v.session_id), output: str(v.output),
   error: str(v.error), createdAt: num(v.created_at), updatedAt: num(v.updated_at), approval: v.approval as HermesRunStatus['approval'],
 });
+const parseSession = (v: Json): HermesSession => ({
+  id: String(v.id), source: str(v.source), model: str(v.model), title: str(v.title), startedAt: num(v.started_at), endedAt: num(v.ended_at),
+  endReason: str(v.end_reason), messageCount: num(v.message_count), lastActive: num(v.last_active), parentSessionId: str(v.parent_session_id),
+  pinned: bool(v.pinned), archived: bool(v.archived), hidden: bool(v.hidden), preview: str(v.preview),
+});
 
-// A GFM pipe table becomes a grid, since `markup="markdown"` draws one as its source. Fenced code
-// is never searched for tables. Adapted from Exact's apps/agents.
+// ---- Inbox ----
+
+function ago(seconds: number | undefined, now: number) {
+  if (!seconds) return '';
+  const s = Math.max(0, now / 1000 - seconds);
+  if (s < 60) return 'now';
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  if (s < 86400 * 7) return `${Math.floor(s / 86400)}d`;
+  return new Date(seconds * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+// The last list, so a thread or card screen can answer without asking again.
+let sessionsSeen: InboxSession[] = [];
+let cardsSeen: Card[] = [];
+
+async function sessionsAndRuns(store: Store, storage: Storage) {
+  const l = await state(storage);
+  const [list, inbox] = await Promise.all([api(store, '/api/sessions?limit=200'), api(store, '/v1/inbox').catch(() => ({ settled: {}, config: {} }))]);
+  const settled = (inbox.settled ?? {}) as Record<string, number | null>;
+  const config = (inbox.config ?? {}) as Record<string, { auto_settle?: boolean }>;
+  const sessions = ((list.data as Json[] | undefined) ?? []).filter((s) => !s.hidden && !s.archived).map((v) => {
+    const s = parseSession(v);
+    return { ...s, ...(s.id in settled ? { settledAt: settled[s.id] } : {}), ...(config[s.id] ? { autoSettleDisabled: config[s.id]!.auto_settle === false } : {}) };
+  });
+  const runs: Record<string, HermesRunStatus> = {};
+  await Promise.all(Object.entries(l.runs).map(async ([sessionId, runId]) => {
+    try {
+      const run = { ...parseRun(await api(store, `/v1/runs/${encodeURIComponent(runId)}`)), sessionId };
+      runs[runId] = run;
+      if (!isRunActive(run.status)) delete l.runs[sessionId];
+    } catch { delete l.runs[sessionId]; }
+  }));
+  await save(storage);
+  return { sessions, runs };
+}
+
+async function settleThreads(store: Store, settled: Record<string, number | null>) {
+  await api(store, '/v1/inbox', { method: 'PATCH', body: { importOnly: false, settled } });
+}
+
+function cardItem(card: InboxCard, settled: boolean, l: Local, now: number): Item {
+  const unanswered = card.state === 'open' && !card.resolution && card.kind === 'approval';
+  const answer = card.resolution ? (card.actions?.find((a) => a.id === card.resolution!.actionId)?.label ?? 'Answered') : '';
+  const picks = card.picks ?? [];
+  const subtitle = settled ? '' : card.kind === 'update' && picks.length
+    ? `${picks.filter((p) => p.done).length} of ${picks.length} checked`
+    : [card.kind === 'update' ? capitalize(card.source) : '', previewLine(card.body) ?? ''].filter(Boolean).join(' · ');
+  const tone = answer ? (card.resolution!.actionId === 'approve' ? 'green' : card.resolution!.actionId === 'reject' ? 'red' : 'muted') : unanswered ? 'amber' : 'muted';
+  return {
+    key: `card-${card.id}`, kind: card.kind === 'briefing' ? 'briefing' : 'card', id: card.id, title: card.title, subtitle,
+    badge: answer || (unanswered ? 'Needs answer' : ''), tone, time: ago(Date.parse(card.updatedAt) / 1000, now), settled,
+    swipe: settleAction(card, settledCards(l)) ?? '', count: 0, glyph: card.source.charAt(0).toUpperCase(), link: cardOpenPlan(card).target === 'link' ? card.url ?? '' : '',
+    actions: unanswered ? (card.actions ?? []).filter((a) => !a.url).map((a) => ({ id: a.id, label: a.label, style: a.style ?? 'default', input: a.input === 'text', url: '' })) : [],
+  };
+}
+
+function sessionItem(s: InboxSession, now: number): Item {
+  const badge = s.pendingApproval ? 'Needs approval' : s.running ? 'Working' : s.failed && s.attention ? 'Failed' : s.attention ? 'New result' : '';
+  const tone = s.pendingApproval ? 'amber' : s.running || badge === 'New result' ? 'accent' : badge === 'Failed' ? 'red' : 'muted';
+  return {
+    key: `session-${s.id}`, kind: 'session', id: s.id, title: s.title, subtitle: s.settled ? '' : s.preview ?? '', badge, tone,
+    time: ago(s.activityAt, now), settled: s.settled, swipe: canSettleSession(s) ? 'settle' : s.settled ? 'reopen' : '', count: 0, glyph: '', link: '', actions: [],
+  };
+}
+
+async function inbox(showSettled: boolean, now: number, store: Store, storage: Storage): Promise<Inbox> {
+  try {
+    const l = await state(storage);
+    const [{ sessions, runs }, cloudCredential] = await Promise.all([sessionsAndRuns(store, storage), cloud(store)]);
+    let cards = cardsSeen, cloudError = '';
+    if (cloudCredential) {
+      try { cards = [...(parseSnapshot(await request(cloudCredential.url, cloudCredential.token, '/v1/cards'))?.cards ?? cards)]; cardsSeen = cards; }
+      catch (e) { cloudError = `Cards: ${message(e)}`; }
+    }
+    const derived = deriveSessionInbox('hermes', { sessions, runs, events: [] }, {}, l.read);
+    // Auto-settle, as Apollo does: read, quiet for three hours, nothing pending.
+    const due = autoSettleSessionsDue(derived, l.read, now / 1000, new Set());
+    if (due.length) await settleThreads(store, Object.fromEntries(due.map((s) => [s.id, s.activityAt || Math.floor(now / 1000)]))).catch(() => {});
+    const dueIds = new Set(due.map((s) => s.id));
+    sessionsSeen = derived.map((s) => (dueIds.has(s.id) ? { ...s, settled: true, status: 'settled' as const } : s));
+    const pendingRunIds = new Set(Object.values(runs).filter((r) => r.status === 'waiting_for_approval').map((r) => r.runId));
+    const rows = buildInboxRows({ sessions: sessionsSeen, cards, isSnoozed: () => false, settledCards: settledCards(l), pendingRunIds, runStateLive: true, collapsed: { snoozed: true, settled: !showSettled }, now });
+    const items = rows.map((row): Item => {
+      if (row.kind === 'session') return sessionItem(row.session, now);
+      if (row.kind === 'card' || row.kind === 'briefing') return cardItem(row.card, row.kind === 'card' && row.settled, l, now);
+      const blank = { id: row.id, subtitle: '', badge: '', tone: 'muted', time: '', settled: false, swipe: '', glyph: '', link: '', actions: [] };
+      if (row.kind === 'section') return { ...blank, key: `section-${row.id}`, kind: 'section', title: row.title, count: row.count ?? 0 };
+      return { ...blank, key: 'caught-up', kind: 'caughtUp', title: "You're caught up", count: 0 };
+    });
+    return { error: cloudError, items };
+  } catch (e) { return { error: e instanceof Unpaired ? '' : message(e), items: [] }; }
+}
+
+// ---- Cards ----
+
+const emptyCard: CardView = {
+  found: false, id: '', kind: '', source: '', title: '', body: '', plainText: false, outcome: '', url: '', threadId: '', open: false, settled: false,
+  swipe: '', meta: [], metrics: [], picks: [], actions: [], progress: '', progressValue: 0, error: '',
+};
+
+async function cardView(id: string, storage: Storage): Promise<CardView> {
+  const card = cardsSeen.find((c) => c.id === id);
+  if (!card) return { ...emptyCard, error: 'This card is no longer in the inbox.' };
+  const l = await state(storage);
+  // Opening an update settles it, as Apollo does on first sight.
+  if (cardOpenPlan(card).settle && settleAction(card, settledCards(l)) === 'settle') {
+    l.cards = Object.fromEntries(updateSettledCards(settledCards(l), cardsSeen, card.id, true));
+    await save(storage);
+  }
+  const settled = isCardSettled(card, settledCards(l));
+  const answered = card.resolution ? card.actions?.find((a) => a.id === card.resolution!.actionId)?.label ?? card.resolution.actionId : '';
+  const unanswered = card.state === 'open' && !card.resolution;
+  return {
+    found: true, id: card.id, kind: card.kind, source: capitalize(card.source), title: card.title, body: card.body ?? '', plainText: !!card.plainText,
+    outcome: answered ? `${answered} by ${card.resolution!.by}` : card.state !== 'open' ? capitalize(card.state) : settled ? 'Settled' : '',
+    url: card.url && !card.url.startsWith('apollo') ? card.url : '', threadId: hermesApprovalTarget(card).sessionId ?? '',
+    open: card.state === 'open', settled, swipe: settleAction(card, settledCards(l)) ?? '',
+    meta: Object.entries(card.meta ?? {}).map(([key, value]) => ({ key, value })),
+    metrics: (card.metrics ?? []).map((m) => ({ label: m.label, value: `${m.value}${m.unit ? ` ${m.unit}` : ''}`, delta: m.delta ?? '', tone: m.trend ?? 'neutral' })),
+    picks: (card.picks ?? []).map((p) => ({ n: p.n, text: p.text, sub: p.sub ?? '', done: p.done })),
+    actions: unanswered || card.actions?.some((a) => a.repeat) ? (card.actions ?? []).filter((a) => unanswered || a.repeat).map((a) => ({ id: a.id, label: a.label, style: a.style ?? 'default', input: a.input === 'text', url: a.url ?? '' })) : [],
+    progress: card.progress ? `${card.progress.label} · ${card.progress.step} of ${card.progress.of}` : '', progressValue: card.progress ? card.progress.step / Math.max(1, card.progress.of) : 0,
+    error: '',
+  };
+}
+
+async function respond(store: Store, cardId: string, response: CardResponse) {
+  const c = await cloud(store);
+  if (!c) throw new Error('Cards are not set up on this connector.');
+  try {
+    const body = await request(c.url, c.token, `/v1/cards/${encodeURIComponent(cardId)}/respond`, { method: 'POST', body: response, headers: { 'Idempotency-Key': crypto.randomUUID() } });
+    const card = parseCard(body);
+    if (card) cardsSeen = cardsSeen.map((x) => (x.id === card.id ? card : x));
+  } catch (e) {
+    if ((e as { code?: string }).code !== 'card_closed') throw e; // already answered elsewhere: nothing to send
+  }
+}
+
+// ---- Transcript ----
+
+// An answer becomes one list row per markdown block (split at blank lines outside code fences),
+// so the native list never lays out a multi-screen cell and a streamed delta re-lays out only
+// the last block. A GFM pipe table becomes a grid, since `markup="markdown"` draws one as its
+// source. Table parsing adapted from Exact's apps/agents.
+type Block = { text: string; table: Row['table'] };
 const DELIMITER = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
 const cellsOf = (line: string) => line.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '').split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'));
-function parts(body: string): Row['parts'] {
-  const lines = body.split('\n'), out: Row['parts'] = [];
+function blocks(body: string): Block[] {
+  const lines = body.split('\n'), out: Block[] = [];
   let text: string[] = [], fence = '';
-  const flush = () => { if (text.join('\n').trim()) out.push({ key: `p${out.length}`, table: false, text: text.join('\n'), rows: [] }); text = []; };
+  const flush = () => { if (text.join('\n').trim()) out.push({ text: text.join('\n'), table: [] }); text = []; };
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!, open = /^\s*(```|~~~)/.exec(line)?.[1];
     if (open && (!fence || fence === open)) fence = fence ? '' : open;
+    if (!fence && !open && line.trim() === '') { flush(); continue; }
     const next = lines[i + 1];
-    if (fence || !line.includes('|') || next === undefined || !DELIMITER.test(next)) { text.push(line); continue; }
+    if (fence || open || !line.includes('|') || next === undefined || !DELIMITER.test(next)) { text.push(line); continue; }
     const head = cellsOf(line), aligns = cellsOf(next).map((d) => (d.endsWith(':') ? (d.startsWith(':') ? 'center' : 'right') : 'left'));
-    const body: string[][] = [];
-    for (i += 2; i < lines.length && lines[i]!.includes('|') && lines[i]!.trim(); i++) body.push(cellsOf(lines[i]!));
+    const rows: string[][] = [];
+    for (i += 2; i < lines.length && lines[i]!.includes('|') && lines[i]!.trim(); i++) rows.push(cellsOf(lines[i]!));
     i--;
     flush();
     const row = (cells: string[], r: number, head: boolean) => ({ key: `r${r}`, head, cells: aligns.map((align, c) => ({ key: `c${c}`, text: cells[c] ?? '', align, first: c === 0 })) });
-    out.push({ key: `p${out.length}`, table: true, text: '', rows: [row(head, 0, true), ...body.map((cells, r) => row(cells, r + 1, false))] });
+    out.push({ text: '', table: [row(head, 0, true), ...rows.map((cells, r) => row(cells, r + 1, false))] });
   }
   flush();
   return out;
 }
 
-function toRow(row: TranscriptRow): Row {
-  if (row.kind !== 'activity') return { id: row.id, kind: row.kind, text: row.text, parts: row.kind === 'assistant' ? parts(row.text) : [], status: row.status ?? '', summary: '', running: row.status === 'running', steps: [] };
-  const tools = row.steps.filter((s) => s.kind === 'tool');
-  const last = tools.at(-1);
-  const running = row.status === 'running';
-  const summary = running
-    ? row.phase === 'approval' ? 'Waiting for approval' : last ? `${last.name} ${last.input}`.trim() : 'Working'
-    : `${tools.length === 0 ? 'Thought' : `Used ${tools.length} tool${tools.length === 1 ? '' : 's'}`}${row.status === 'failed' ? ', failed' : row.status === 'stopped' ? ', stopped' : ''}`;
-  return {
-    id: row.id, kind: 'activity', text: '', parts: [], status: row.status, summary, running,
-    steps: row.steps.map((s) => s.kind === 'tool'
-      ? { key: s.id, kind: 'tool', label: s.name, detail: [s.input, s.output].filter(Boolean).join(' → '), running: s.status === 'running', failed: s.status === 'failed' }
-      : { key: s.id, kind: s.kind, label: s.kind === 'thought' ? 'Thought' : 'Note', detail: s.text, running: false, failed: false }),
-  };
+const plain = { text: '', table: [], status: '', summary: '', running: false, startedAt: 0, steps: [] } satisfies Omit<Row, 'id' | 'kind'>;
+
+// While a turn runs, what the agent writes stays inside its activity block as live commentary:
+// Apollo's projector only knows text is commentary once a later tool call arrives, so showing it
+// as the answer first makes it jump into the fold. The answer comes out when the run ends.
+function toRows(rows: readonly TranscriptRow[]): Row[] {
+  const out: Row[] = [];
+  let live = false;
+  for (const row of rows) {
+    if (row.kind === 'user') live = false;
+    if (row.kind === 'assistant') {
+      out.push(...blocks(row.text).map((b, i): Row => ({ ...plain, id: `${row.id}#${i}`, kind: live ? 'live' : b.table.length ? 'table' : 'text', text: b.text, table: b.table, status: row.status ?? '' })));
+      continue;
+    }
+    if (row.kind !== 'activity') { out.push({ ...plain, id: row.id, kind: row.kind, text: row.text, status: row.status ?? '' }); continue; }
+    const running = row.status === 'running';
+    live = running;
+    out.push({
+      ...plain, id: row.id, kind: 'activity', status: row.status, running, startedAt: row.startedAt ?? 0,
+      summary: running ? liveActivityLabel(row, 'connected') : settledActivityLabel(row),
+      steps: row.steps.map((s) => s.kind === 'tool'
+        ? { key: s.id, kind: 'tool', label: [toolVerb(s.name, s.status), oneLine(s.input)].filter(Boolean).join(' '), detail: oneLine(readableOutput(s.output)), running: s.status === 'running', failed: s.status === 'failed' }
+        : { key: s.id, kind: s.kind, label: s.kind === 'thought' ? 'Thought' : 'Note', detail: s.text, running: false, failed: false }),
+    });
+  }
+  return out;
 }
 
 const emptyThread: Thread = {
   title: '', rows: [], runId: '', status: '', active: false, ended: false, error: '',
-  approvalId: '', approvalTitle: '', approvalCommand: '', approvalReason: '',
+  approvalId: '', approvalTitle: '', approvalCommand: '', approvalReason: '', settled: false, canSettle: false, autoSettle: true, activityAt: 0,
 };
+
+function inboxFacts(sessionId: string) {
+  const s = sessionsSeen.find((x) => x.id === sessionId);
+  return { settled: s?.settled ?? false, canSettle: s ? canSettleSession(s) : false, autoSettle: !(s?.autoSettleDisabled ?? false), activityAt: s?.activityAt ?? 0 };
+}
 
 async function history(store: Store, sessionId: string) {
   const [session, list] = await Promise.all([api(store, `/api/sessions/${encodeURIComponent(sessionId)}`), api(store, `/api/sessions/${encodeURIComponent(sessionId)}/messages`)]);
@@ -124,16 +334,20 @@ async function history(store: Store, sessionId: string) {
 
 // History alone, or history plus the session's active run as a stream: each chunk of the run's
 // events is parsed and mapped through Apollo's projector, and commits as the next answer.
-async function transcript(sessionId: string, store: Store, storage: Storage): Promise<Thread> {
+async function transcript(sessionId: string, now: number, store: Store, storage: Storage): Promise<Thread> {
   if (!sessionId) return emptyThread;
   try {
     const project = createTranscriptProjector();
+    const l = await state(storage);
     const { title, messages } = await history(store, sessionId);
-    const runId = (await activeRuns(storage))[sessionId];
+    const runId = l.runs[sessionId];
     let run = runId ? parseRun(await api(store, `/v1/runs/${encodeURIComponent(runId)}`).catch(() => ({ run_id: runId, status: 'unknown' }))) : undefined;
     if (!runId || !run || !isRunActive(run.status)) {
-      if (runId) await setRun(storage, sessionId, undefined);
-      return { ...emptyThread, title, rows: project({ history: messages, events: [], running: false }).map(toRow) };
+      // A thread read with nothing running is read, as Apollo marks it.
+      if (runId) delete l.runs[sessionId];
+      l.read[sessionId] = Math.floor(now / 1000);
+      await save(storage);
+      return { ...emptyThread, ...inboxFacts(sessionId), title, rows: toRows(project({ history: messages, events: [], running: false })) };
     }
     const { endpoint, token } = await credential(store);
     const events: HermesRunEvent[] = [];
@@ -146,7 +360,7 @@ async function transcript(sessionId: string, store: Store, storage: Storage): Pr
       const command = str(approval?.command) ?? str(approval?.preview);
       const rows = project({ history: messages, events, runId, runStartedAt: current.createdAt, runEndedAt: current.updatedAt, runStatus: current.status, runOutput: current.output, running });
       return {
-        ...emptyThread, title, rows: rows.map(toRow), runId, status: current.status, active: running, ended: !running, error,
+        ...emptyThread, ...inboxFacts(sessionId), canSettle: false, title, rows: toRows(rows), runId, status: current.status, active: running, ended: !running, error,
         ...(approval && command ? { approvalId: str(approval.request_id) ?? approval.requestId ?? '', approvalTitle: approval.tool ? `Allow ${approval.tool}?` : 'Allow this command?', approvalCommand: command, approvalReason: approval.description ?? '' } : {}),
       };
     };
@@ -160,7 +374,9 @@ async function transcript(sessionId: string, store: Store, storage: Storage): Pr
       if (event.event === 'run.completed') run = { ...run, output: str(event.output) ?? str(event.final_response) ?? run.output };
     };
     // Exact coalesces SSE messages that arrive faster than it commits, losing deltas, so the
-    // connector is asked for the same frames as bytes, which Exact never drops.
+    // connector is asked for the same frames as bytes, which Exact never drops. A connector
+    // without that option answers SSE, read as before (it can drop deltas; the run's final
+    // output still replaces them).
     const decoder = new TextDecoder();
     let buffer = '';
     return fetch(`${endpoint}/v1/runs/${encodeURIComponent(runId)}/events`, {
@@ -174,9 +390,11 @@ async function transcript(sessionId: string, store: Store, storage: Storage): Pr
           const frames = buffer.split(/\r?\n\r?\n/);
           buffer = frames.pop() ?? '';
           for (const frame of frames) {
-            const data = frame.split(/\r?\n/).filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trimStart()).join('\n');
+            const data = frame.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart()).join('\n');
             if (data) try { take(data); } catch { /* a malformed frame is skipped, as Apollo does */ }
           }
+        } else if (typeof e.data === 'string' && e.data) {
+          try { take(e.data); } catch { /* skipped */ }
         }
         return snapshot();
       },
@@ -186,20 +404,15 @@ async function transcript(sessionId: string, store: Store, storage: Storage): Pr
   }
 }
 
-function ago(seconds: number | undefined, now: number) {
-  if (!seconds) return '';
-  const s = Math.max(0, now / 1000 - seconds);
-  if (s < 60) return 'now';
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h`;
-  if (s < 86400 * 7) return `${Math.floor(s / 86400)}d`;
-  return new Date(seconds * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
-
 async function start(store: Store, storage: Storage, sessionId: string, input: string) {
   const run = await api(store, '/v1/runs', { method: 'POST', body: { input, session_id: sessionId }, headers: { 'Idempotency-Key': crypto.randomUUID() } });
-  await setRun(storage, sessionId, String(run.run_id));
+  const l = await state(storage);
+  l.runs[sessionId] = String(run.run_id);
+  await save(storage);
 }
+
+const ok = { error: '' };
+const failed = (e: unknown) => ({ error: message(e) });
 
 const sources: Sources = {
   account: async (_args, store) => {
@@ -218,20 +431,23 @@ const sources: Sources = {
       const res = await fetch(endpoint + path, { method: 'POST', exactTimeout: 15000, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, device_name: 'Apollo on Exact' }) } as RequestInit);
       const body = (await res.json().catch(() => ({}))) as Json;
       if (!res.ok) throw new Error(str((body.error as Json | undefined)?.message) ?? 'The link expired or was already used. Make a new one.');
-      await store.set(SECRET, JSON.stringify({ endpoint, token: String(body.access_token), label: str(descriptor.label) ?? 'Hermes' } satisfies Credential));
-      return { error: '' };
-    } catch (e) { return { error: message(e) }; }
+      const grant = body.cloud as Json | undefined;
+      const saved: Credential = { endpoint, token: String(body.access_token), label: str(descriptor.label) ?? 'Hermes', ...(str(grant?.url) && str(grant?.token) ? { cloud: { url: String(grant!.url).replace(/\/$/, ''), token: String(grant!.token) } } : {}) };
+      await store.set(SECRET, JSON.stringify(saved));
+      cloudAsked = false;
+      return ok;
+    } catch (e) { return failed(e); }
   },
-  unpair: async (_args, store) => { await store.forget(SECRET); runs = {}; return { error: '' }; },
-  listSessions: async ([, , , now], store, storage) => {
-    try {
-      const [{ data }, active] = await Promise.all([api(store, '/api/sessions?limit=200'), activeRuns(storage)]);
-      const rows = ((data as Json[] | undefined) ?? []).filter((s) => !s.hidden && !s.archived)
-        .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || (num(b.last_active) ?? num(b.started_at) ?? 0) - (num(a.last_active) ?? num(a.started_at) ?? 0));
-      return { error: '', rows: rows.map((s) => ({ id: String(s.id), title: str(s.title) || 'Untitled', preview: str(s.preview) ?? '', time: ago(num(s.last_active) ?? num(s.started_at), now), running: !!active[String(s.id)] })) };
-    } catch (e) { return { error: e instanceof Unpaired ? '' : message(e), rows: [] }; }
+  unpair: async (_args, store, storage) => {
+    await store.forget(SECRET);
+    local = { runs: {}, read: {}, cards: {} };
+    await save(storage);
+    sessionsSeen = []; cardsSeen = [];
+    return ok;
   },
-  transcript: ([sessionId], store, storage) => transcript(sessionId, store, storage),
+  inbox: ([, , showSettled, now], store, storage) => { setClock(now); return inbox(showSettled, now, store, storage); },
+  card: ([id], _store, storage) => cardView(id, storage),
+  transcript: ([sessionId, , now], store, storage) => { setClock(now); return transcript(sessionId, now, store, storage); },
   createThread: async ([input], store, storage) => {
     try {
       const id = crypto.randomUUID();
@@ -240,17 +456,36 @@ const sources: Sources = {
       return { id, error: '' };
     } catch (e) { return { id: '', error: message(e) }; }
   },
-  startRun: async ([sessionId, input], store, storage) => {
-    try { await start(store, storage, sessionId, input); return { error: '' }; } catch (e) { return { error: message(e) }; }
-  },
-  stopRun: async ([runId], store) => {
-    try { await api(store, `/v1/runs/${encodeURIComponent(runId)}/stop`, { method: 'POST' }); return { error: '' }; } catch (e) { return { error: message(e) }; }
-  },
+  startRun: async ([sessionId, input], store, storage) => { try { await start(store, storage, sessionId, input); return ok; } catch (e) { return failed(e); } },
+  stopRun: async ([runId], store) => { try { await api(store, `/v1/runs/${encodeURIComponent(runId)}/stop`, { method: 'POST' }); return ok; } catch (e) { return failed(e); } },
   answerApproval: async ([runId, requestId, choice], store) => {
+    try { await api(store, `/v1/runs/${encodeURIComponent(runId)}/approval`, { method: 'POST', body: { choice, ...(requestId ? { request_id: requestId } : {}) } }); return ok; }
+    catch (e) { return failed(e); }
+  },
+  // Settle or reopen a thread on the connector, shared with every paired phone.
+  settleThread: async ([sessionId, settle, now], store) => {
     try {
-      await api(store, `/v1/runs/${encodeURIComponent(runId)}/approval`, { method: 'POST', body: { choice, ...(requestId ? { request_id: requestId } : {}) } });
-      return { error: '' };
-    } catch (e) { return { error: message(e) }; }
+      const at = sessionsSeen.find((s) => s.id === sessionId)?.activityAt || Math.floor(now / 1000);
+      await settleThreads(store, { [sessionId]: settle ? at : null });
+      return ok;
+    } catch (e) { return failed(e); }
+  },
+  setAutoSettle: async ([sessionId, on], store) => {
+    try { await api(store, '/v1/inbox', { method: 'PATCH', body: { importOnly: false, settled: {}, config: { [sessionId]: { auto_settle: on } } } }); return ok; }
+    catch (e) { return failed(e); }
+  },
+  // Cards settle on this phone only: the Worker lets only producers close them.
+  settleCard: async ([cardId, settle], _store, storage) => {
+    const l = await state(storage);
+    l.cards = Object.fromEntries(updateSettledCards(settledCards(l), cardsSeen, cardId, settle));
+    await save(storage);
+    return ok;
+  },
+  respondCard: async ([cardId, actionId, text], store) => {
+    try { await respond(store, cardId, text ? { actionId, text } : { actionId }); return ok; } catch (e) { return failed(e); }
+  },
+  togglePick: async ([cardId, n, done], store) => {
+    try { await respond(store, cardId, { pick: n, done }); return ok; } catch (e) { return failed(e); }
   },
 };
 export const answer: Answer = (source, args, store, storage, native) => sources[source](args, store, storage, native);

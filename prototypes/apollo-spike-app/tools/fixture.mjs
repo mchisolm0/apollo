@@ -3,6 +3,8 @@
 // Forked from scripts/test-mobile-fixture.mjs with its own ports and state dir, word-by-word
 // deltas, reasoning, tool call ids, and a "storm" input that floods 2,000 deltas to check
 // whether Exact's SSE reader drops any. POST /__spike/pair on the fake Hermes port mints a pairing link.
+// A fake cloud inbox on :19113 holds a morning card, an update and an approval, and takes the
+// connector's own approval cards, so the app's inbox can be driven without the real Worker.
 import { createServer } from "node:http";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -12,6 +14,7 @@ import { createConnectorServer } from "../../../connector/index.mjs";
 const HOST = "127.0.0.1";
 const CONNECTOR_PORT = 19111;
 const HERMES_PORT = 19112;
+const CLOUD_PORT = 19113;
 const ROOT = "/tmp/apollo-exact-spike";
 const ADMIN_SECRET = "apollo-exact-spike-admin";
 
@@ -133,10 +136,60 @@ const hermes = createServer(async (req, res) => {
   json(res, 404, { error: { message: "Fixture route not found" } });
 });
 
+// ---- Fake cloud inbox: just enough of cloud/src for the connector and the app ----
+let rev = 3, seq = 0;
+const iso = (offset = 0) => new Date(Date.now() - offset * 1000).toISOString();
+const cards = new Map([
+  ["morning-1", { id: "morning-1", rev: 1, source: "morning", key: "day", kind: "briefing", title: "Good morning", state: "open", push: "none", createdAt: iso(3600), updatedAt: iso(3600),
+    body: "Three things worth your time today.", meta: { Calendar: "Standup 10:00 · Dentist 15:30" },
+    picks: [{ n: 1, text: "Review the Exact spike", done: false }, { n: 2, text: "Merge the connector PR", sub: "#83", done: false }, { n: 3, text: "Reply to Scryve feedback", done: true }],
+    actions: [{ id: "go", label: "Work on these", style: "primary" }, { id: "skip", label: "No picks today" }], keepOpen: true }],
+  ["update-1", { id: "update-1", rev: 2, source: "preview", key: "build-412", kind: "update", title: "Scryve preview 4.12 is ready", state: "open", push: "none", createdAt: iso(7200), updatedAt: iso(7200),
+    body: "Preview build **4.12** finished.\n\n- Life counter haptics\n- Faster cold start", url: "https://example.com/builds/412",
+    metrics: [{ label: "cold start", value: "377", unit: "ms", delta: "−117", trend: "good" }, { label: "size", value: "41", unit: "MB", delta: "+0.4", trend: "bad" }] }],
+  ["approval-1", { id: "approval-1", rev: 3, source: "fleet", key: "deploy-1", kind: "approval", title: "Deploy the landing page?", state: "open", push: "none", createdAt: iso(600), updatedAt: iso(600),
+    body: "The fleet routine wants to publish the new landing page copy.", progress: { label: "Deploy", step: 2, of: 3 },
+    actions: [{ id: "approve", label: "Approve", style: "primary" }, { id: "reject", label: "Reject", style: "destructive" }, { id: "edit", label: "Edit", input: "text", prefill: "" }] }],
+]);
+const events = [];
+const cloud = createServer(async (req, res) => {
+  const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+  const input = req.method === "GET" ? {} : await body(req).catch(() => ({}));
+  if (url.pathname === "/v1/health") return json(res, 200, { ok: true });
+  if (url.pathname === "/v1/device-tokens" && req.method === "POST") return json(res, 200, { name: input.name, token: `fixture-device-${randomUUID()}` });
+  if (url.pathname.startsWith("/v1/device-tokens/")) { res.writeHead(204); return res.end(); }
+  if (url.pathname === "/v1/events") return json(res, 200, events.filter((e) => e.seq > Number(url.searchParams.get("after") ?? 0) && (!url.searchParams.get("source") || e.source === url.searchParams.get("source"))));
+  if (url.pathname === "/v1/cards" && req.method === "GET") return json(res, 200, { rev, cards: [...cards.values()] });
+  if (url.pathname === "/v1/cards" && req.method === "POST") {
+    const existing = [...cards.values()].find((c) => c.source === input.source && c.key === input.key);
+    const card = { ...existing, ...input, id: existing?.id ?? randomUUID(), rev: ++rev, state: "open", push: input.push ?? "none", createdAt: existing?.createdAt ?? iso(), updatedAt: iso() };
+    cards.set(card.id, card); return json(res, 200, card);
+  }
+  const cardMatch = url.pathname.match(/^\/v1\/cards\/([^/]+)(\/respond)?$/u);
+  const card = cardMatch && cards.get(cardMatch[1]);
+  if (cardMatch && !card) return json(res, 404, { error: { code: "not_found", message: "Unknown card" } });
+  if (cardMatch && req.method === "PATCH") { Object.assign(card, input, { rev: ++rev, updatedAt: iso() }); return json(res, 200, card); }
+  if (cardMatch?.[2]) {
+    if (card.state !== "open") return json(res, 409, { error: { code: "card_closed", message: "Card is closed", card } });
+    const event = { seq: ++seq, cardId: card.id, source: card.source, key: card.key, at: iso(), by: "exact-fixture" };
+    if (typeof input.pick === "number") { card.picks = card.picks.map((p) => (p.n === input.pick ? { ...p, done: input.done } : p)); events.push({ ...event, type: "pick", pick: input.pick, done: input.done }); }
+    else {
+      events.push({ ...event, type: "action", actionId: input.actionId, ...(input.text ? { text: input.text } : {}) });
+      card.resolution ??= { actionId: input.actionId, by: "exact-fixture", at: iso() };
+      if (input.text) card.body = `${card.body ?? ""}\n\nYou: ${input.text}`;
+      if (!card.keepOpen && card.kind !== "briefing") card.state = "resolved";
+    }
+    card.rev = ++rev; card.updatedAt = iso();
+    return json(res, 200, card);
+  }
+  json(res, 404, { error: { message: "Fake cloud route not found" } });
+});
+
 await rm(ROOT, { recursive: true, force: true });
 await mkdir(ROOT, { recursive: true, mode: 0o700 });
 await new Promise((resolve, reject) => hermes.listen(HERMES_PORT, HOST, (error) => error ? reject(error) : resolve()));
-const connector = createConnectorServer({ host: HOST, port: CONNECTOR_PORT, hermesUrl: `http://${HOST}:${HERMES_PORT}`, hermesApiKey: "fixture-hermes", adminSecret: ADMIN_SECRET, statePath: join(ROOT, "connector-state.json"), label: "Exact spike fixture", generateThreadTitle: async (input) => `Spike: ${input.slice(0, 36)}` });
+await new Promise((resolve, reject) => cloud.listen(CLOUD_PORT, HOST, (error) => error ? reject(error) : resolve()));
+const connector = createConnectorServer({ host: HOST, port: CONNECTOR_PORT, hermesUrl: `http://${HOST}:${HERMES_PORT}`, hermesApiKey: "fixture-hermes", adminSecret: ADMIN_SECRET, statePath: join(ROOT, "connector-state.json"), label: "Exact spike fixture", cloud: { url: `http://${HOST}:${CLOUD_PORT}`, token: "fixture-connector" }, cloudPollInterval: 1000, generateThreadTitle: async (input) => `Spike: ${input.slice(0, 36)}` });
 await connector.start();
 const base = `http://${HOST}:${CONNECTOR_PORT}`;
 async function pairingLink() {

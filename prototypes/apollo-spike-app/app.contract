@@ -1,26 +1,82 @@
-// PROTOTYPE. Apollo on Exact: pair with an Apollo connector, browse Hermes threads, start one,
-// and follow a run live with Stop and approvals. app.ts holds the data and the connection.
+// PROTOTYPE. Apollo on Exact: pair with an Apollo connector, work Apollo's inbox (threads and cloud
+// cards, settle), open a card and answer it, start a thread, and follow a run live with Stop and
+// approvals. app.ts holds the data and the connection.
 
 routes nav
   home "/"
     session "/s/:id"
     compose "/new"
+    card "/c/:id"
 
 shape Account
   paired: bool
   label: string
   endpoint: string
 
-shape SessionRow
+shape CardButton
+  id: string
+  label: string
+  style: string
+  input: bool
+  url: string
+
+shape Item
+  key: string
+  kind: string
   id: string
   title: string
-  preview: string
+  subtitle: string
+  badge: string
+  tone: string
   time: string
-  running: bool
+  settled: bool
+  swipe: string
+  count: number
+  glyph: string
+  link: string
+  actions: CardButton[]
 
-shape Threads
+shape Inbox
   error: string
-  rows: SessionRow[]
+  items: Item[]
+
+shape Pair
+  key: string
+  value: string
+
+shape Metric
+  label: string
+  value: string
+  delta: string
+  tone: string
+
+shape Pick
+  n: number
+  text: string
+  sub: string
+  done: bool
+
+shape CardView
+  found: bool
+  id: string
+  kind: string
+  source: string
+  title: string
+  body: string
+  plainText: bool
+  outcome: string
+  url: string
+  threadId: string
+  open: bool
+  settled: bool
+  swipe: string
+  meta: Pair[]
+  metrics: Metric[]
+  picks: Pick[]
+  actions: CardButton[]
+  progress: string
+  progressValue: number
+  error: string
 
 shape Step
   key: string
@@ -41,20 +97,15 @@ shape TableRow
   head: bool
   cells: Cell[]
 
-shape Part
-  key: string
-  table: bool
-  text: string
-  rows: TableRow[]
-
 shape Row
   id: string
   kind: string
   text: string
-  parts: Part[]
+  table: TableRow[]
   status: string
   summary: string
   running: bool
+  startedAt: number
   steps: Step[]
 
 shape Thread
@@ -69,6 +120,10 @@ shape Thread
   approvalTitle: string
   approvalCommand: string
   approvalReason: string
+  settled: bool
+  canSettle: bool
+  autoSettle: bool
+  activityAt: number
 
 shape Created
   id: string
@@ -87,38 +142,58 @@ shape Time
   epochAtZero: number
   utcOffset: number
 
+fn secs(t: number): number = t > 100000000000 ? t / 1000 : t
+fn took(s: number): string = s < 60 ? `${floor(s)}s` : s < 3600 ? `${floor(s / 60)}m ${floor(s - floor(s / 60) * 60)}s` : `${floor(s / 3600)}h ${floor((s - floor(s / 3600) * 3600) / 60)}m`
+fn toneColor(t: string): string = t == "amber" ? "-exact-system-orange" : t == "accent" ? "AccentColor" : t == "green" ? "-exact-system-green" : t == "red" ? "-exact-system-red" : "-exact-secondary-label"
+
 component Apollo
   state draft = ""
   state link = ""
+  state reply = ""
+  state replying = ""
   state revision = 0
   state accountRevision = 0
   state tick = 0
+  state clock = 0
   state notice = ""
   state opened = []
+  state showSettled = false
+  state aimed = ""
+  state aimedSwipe = ""
+  state aimedKind = ""
   state chasing = false
   state wasHidden = false
   derive selected = match stack(nav).filter(e => e.name == "session").at(-1) { case some(e) => e.params.id, case none => "" }
+  derive selectedCard = match stack(nav).filter(e => e.name == "card").at(-1) { case some(e) => e.params.id, case none => "" }
+  derive now = time.epochAtZero + tick
   resource page = exactPage() as shape Page
   resource time = exactTime() as shape Time
   resource account = account(accountRevision) as shape Account
-  resource threads = listSessions(revision, account.paired, top(nav).name == "home") with time.epochAtZero + tick as shape Threads
-  resource thread = transcript(selected, revision) as shape Thread
+  resource inbox = inbox(revision, account.paired, showSettled) with now as shape Inbox
+  resource thread = transcript(selected, revision) with now as shape Thread
+  resource card = card(selectedCard, revision) as shape CardView
   mutation paired as shape Ack then afterPair
   mutation unpaired as shape Ack then afterPair
   mutation created as shape Created then afterCreate
   mutation sent as shape Ack then afterSend
   mutation stopped as shape Ack
   mutation answered as shape Ack
+  mutation filed as shape Ack then afterWrite
+  mutation responded as shape Ack then afterWrite
+  derive onHome = top(nav).name == "home"
   derive canSend = draft.trim() != "" and not thread.active and not pending(sent) and not pending(created)
   derive lastId = match thread.rows.at(-1) { case some(r) => r.id, case none => "" }
-  derive shownError = notice != "" ? notice : top(nav).name == "home" ? threads.error : thread.error
+  derive shownError = notice != "" ? notice : onHome ? inbox.error : top(nav).name == "card" ? card.error : thread.error
 
   // A finished run hands back to durable history, as Apollo reloads messages after a terminal event.
   task settle when thread.ended and thread.runId != ""
     after(300, refreshAll)
-  // The thread list stays fresh while it is on screen.
-  task poll when account.paired and top(nav).name == "home" and page.visibilityState == "visible"
+  // The inbox stays fresh while it is on screen.
+  task poll when account.paired and onHome and page.visibilityState == "visible"
     every(15000, refreshAll)
+  // A running turn's elapsed time.
+  task ticker when thread.active
+    every(1000, tickClock)
   // A return from the background reconnects: the stream does not survive suspension.
   task hid when page.visibilityState == "hidden"
     after(1, markHidden)
@@ -130,6 +205,8 @@ component Apollo
   action refreshAll
     tick = performanceNow()
     revision = revision + 1
+  action tickClock
+    clock = time.epochAtZero + performanceNow()
   action markHidden
     wasHidden = true
   action onReturn
@@ -143,12 +220,20 @@ component Apollo
     nav = go(nav, url)
     draft = ""
     notice = ""
+    replying = ""
+    tick = performanceNow()
+    clock = time.epochAtZero + performanceNow()
   action back
     nav = back(nav)
+    refreshAll()
   action openNew
     draft = ""
     notice = ""
     nav = top(nav).name == "compose" ? nav : push(nav, "/new")
+  action openLink(url: string)
+    openURL(url)
+  action toggleSettled
+    showSettled = not showSettled
 
   action editLink(v: string)
     link = v
@@ -169,6 +254,58 @@ component Apollo
         notice = ""
     accountRevision = accountRevision + 1
     refreshAll()
+
+  // Settle and reopen: threads on the connector (every phone sees it), cards on this phone.
+  action aim(id: string, kind: string, swipe: string)
+    aimed = id
+    aimedKind = kind
+    aimedSwipe = swipe
+  action settleAimed
+    if aimedKind == "session"
+      send filed = settleThread(aimed, aimedSwipe == "settle", time.epochAtZero + performanceNow())
+    else
+      send filed = settleCard(aimed, aimedSwipe == "settle")
+  action settleThread(settle: bool)
+    send filed = settleThread(selected, settle, time.epochAtZero + performanceNow())
+  action toggleAutoSettle
+    send filed = setAutoSettle(selected, not thread.autoSettle)
+  action settleOpenCard(settle: bool)
+    send filed = settleCard(card.id, settle)
+  action afterWrite
+    let a = match filed { case some(f) => f.error, case none => "" }
+    let b = match responded { case some(r) => r.error, case none => "" }
+    notice = a != "" ? a : b
+    replying = ""
+    reply = ""
+    refreshAll()
+
+  action answerCard(id: string, action: CardButton)
+    if action.input
+      nav = go(nav, path("card", id))
+      replying = action.id
+      reply = ""
+    else if action.url != ""
+      openURL(action.url)
+    else
+      send responded = respondCard(id, action.id, "")
+  action startReply(action: CardButton)
+    replying = action.id
+    reply = ""
+  action cardAction(action: CardButton)
+    if action.input
+      startReply(action)
+    else
+      answerCard(card.id, action)
+  action editReply(v: string)
+    reply = v
+  action sendReply
+    if reply.trim() != ""
+      send responded = respondCard(card.id, replying, reply.trim())
+  action cancelReply
+    replying = ""
+  action toggle(p: Pick)
+    if card.open
+      send responded = togglePick(card.id, p.n, not p.done)
 
   action edit(v: string)
     draft = v
@@ -207,36 +344,65 @@ component Apollo
     send answered = answerApproval(thread.runId, thread.approvalId, "once")
   action deny
     send answered = answerApproval(thread.runId, thread.approvalId, "deny")
-  action toggle(id: string)
+  action toggleSteps(id: string)
     opened = opened.includes(id) ? opened.filter(x => x != id) : opened.concat([id])
 
   view
     main navigationKey=`${top(nav).id}` navigationBack="back" navigate=follow testId="app" width="100%" height="100%"
       for e in stack(nav) key=e.id
         if e.name == "home"
-          column navigationKey=`${e.id}` navigationScroll="threads" position="absolute" inset=0 display="flex" flex-direction="column"
+          column navigationKey=`${e.id}` navigationScroll="inbox" position="absolute" inset=0 display="flex" flex-direction="column"
             header display="flex" align-items="center" gap=8 padding="8px 16px"
-              text (account.paired ? account.label : "Apollo") role="heading" aria-level=1 flex=1
+              text "Inbox" role="heading" aria-level=1 flex=1
               if account.paired
-                button press=askUnpair aria-label="Unpair" testId="unpair"
-                  image "symbol:link"
+                button popovertarget="home-menu" aria-label="More" testId="more"
+                  image "symbol:more"
                 button press=openNew aria-label="New Thread" aria-keyshortcuts="Meta+N" testId="new"
                   image "symbol:compose"
+            column id="home-menu" popover="auto" role="menu" aria-label=account.label
+              button press=askUnpair destructive=true popovertarget="home-menu" popovertargetaction="hide" testId="unpair"
+                text "Unpair"
             if account.paired
               if shownError != ""
                 text shownError font="-exact-footnote" color="-exact-system-red" padding="4px 16px" testId="error"
-              list id="threads" appearance="auto" listStyle="plain" flex=1 min-height=0 testId="threads"
+              list id="inbox" appearance="auto" listStyle="plain" flex=1 min-height=0 testId="inbox"
                 section
-                  for s in threads.rows key=s.id
-                    link href=path("session", s.id) testId=`thread-${s.id}`
-                      column flex=1 min-width=0 gap=2 padding-top=6 padding-bottom=6
-                        row gap=8 align-items="baseline"
-                          text s.title font="-exact-headline" line-clamp=1 flex=1 min-width=0
-                          if s.running
-                            text "Working" font="-exact-footnote" color="AccentColor"
-                          text s.time font="-exact-footnote" color="-exact-secondary-label"
-                        if s.preview != ""
-                          text s.preview font="-exact-subheadline" color="-exact-secondary-label" line-clamp=2
+                  for it in inbox.items key=it.key
+                    if it.kind == "section"
+                      button press=toggleSettled testId=`section-${it.id}`
+                        image (showSettled ? "symbol:sf/chevron.down" : "symbol:forward-chevron") font-size=12 color="-exact-secondary-label"
+                        text `${it.title} · ${it.count}` font="-exact-subheadline" color="-exact-secondary-label"
+                    else if it.kind == "caughtUp"
+                      row justify-content="center" padding="24px 0"
+                        text it.title color="-exact-secondary-label" testId="caught-up"
+                    else
+                      column gap=8 padding-top=6 padding-bottom=6 contextmenu=aim(it.id, it.kind, it.swipe) contextPopover="row-menu"
+                        link href=(it.kind == "session" ? path("session", it.id) : path("card", it.id)) testId=`row-${it.id}`
+                          row gap=10 align-items="flex-start" flex=1 min-width=0
+                            if it.glyph != ""
+                              text it.glyph font="-exact-footnote" font-weight=600 color="AccentColor" width=24 height=24 border-radius=12
+                                background-color="-exact-secondary-background" text-align="center" line-height="24px" flex-shrink=0
+                            column flex=1 min-width=0 gap=2
+                              row gap=8 align-items="baseline"
+                                text it.title font=(it.settled ? "-exact-body" : "-exact-headline") color=(it.settled ? "-exact-secondary-label" : "-exact-label") line-clamp=(it.settled ? 1 : 2) flex=1 min-width=0
+                                if it.badge != ""
+                                  text it.badge font="-exact-footnote" color=toneColor(it.tone) flex-shrink=0
+                                else
+                                  text it.time font="-exact-footnote" color="-exact-secondary-label" flex-shrink=0
+                              if it.subtitle != ""
+                                text it.subtitle font="-exact-subheadline" color="-exact-secondary-label" line-clamp=2
+                        if it.actions.length > 0
+                          row gap=8 padding-left=(it.glyph != "" ? 34 : 0) flex-wrap="wrap"
+                            for a in it.actions key=a.id
+                              button press=answerCard(it.id, a) buttonStyle=(a.style == "primary" ? "filled" : "bordered") destructive=(a.style == "destructive") disabled=pending(responded) testId=`act-${it.id}-${a.id}`
+                                text a.label
+              column id="row-menu" popover="auto" role="menu"
+                if aimedSwipe == "settle"
+                  button press=settleAimed popovertarget="row-menu" popovertargetaction="hide" testId="settle"
+                    text (aimedKind == "session" ? "Finish thread" : "Settle")
+                if aimedSwipe == "reopen"
+                  button press=settleAimed popovertarget="row-menu" popovertargetaction="hide" testId="reopen"
+                    text "Reopen"
             else
               list id="pair-form" appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
                 section
@@ -245,7 +411,7 @@ component Apollo
                   row
                     input value=link input=editLink placeholder="apollo://pair?host=…" aria-label="Pairing link" autocapitalize="off" autocorrect="off" spellcheck=false flex=1 min-width=0 testId="pair-link"
                   footer
-                    text "Paste the apollo://pair link from the connector. It works once and expires after five minutes."
+                    text "Paste the apollo://pair link from the connector. It works once and expires after a few minutes."
                 section
                   button press=pair disabled=(link.trim() == "" or pending(paired)) testId="pair"
                     text (pending(paired) ? "Pairing…" : "Pair")
@@ -253,13 +419,96 @@ component Apollo
                   section
                     row
                       text notice color="-exact-system-red" testId="pair-error"
+        if e.name == "card"
+          column navigationKey=`${e.id}` navigationScroll="card" position="absolute" inset=0 display="flex" flex-direction="column"
+            interactive-widget="resizes-content"
+            header display="flex" flex-direction="column" padding="8px 16px" gap=2
+              text card.source role="heading" aria-level=2
+            column id="card" flex=1 min-height=0 overflow-y="auto" padding="8px 20px 24px" gap=14
+              text card.title font="-exact-title2" font-weight=700 user-select="text" testId="card-title"
+              if card.outcome != ""
+                text card.outcome font="-exact-subheadline" color="-exact-secondary-label" testId="card-outcome"
+              if card.progress != ""
+                column gap=4
+                  text card.progress font="-exact-footnote" color="-exact-secondary-label"
+                  progress value=card.progressValue aria-label=card.progress
+              if card.meta.length > 0
+                column gap=4
+                  for m in card.meta key=m.key
+                    row gap=8
+                      text m.key font="-exact-footnote" color="-exact-secondary-label" width=96 flex-shrink=0
+                      text m.value markup="markdown" font="-exact-footnote" flex=1 min-width=0 user-select="text"
+              if card.metrics.length > 0
+                row gap=16 flex-wrap="wrap"
+                  for m in card.metrics key=m.label
+                    column gap=1
+                      text m.value font="-exact-title3" font-weight=600
+                      text m.label font="-exact-caption1" color="-exact-secondary-label"
+                      if m.delta != ""
+                        text m.delta font="-exact-caption1" color=(m.tone == "good" ? "-exact-system-green" : m.tone == "bad" ? "-exact-system-red" : "-exact-secondary-label")
+              if card.picks.length > 0
+                column gap=8
+                  for p in card.picks key=p.n
+                    button appearance="none" press=toggle(p) disabled=(not card.open or pending(responded)) display="flex" flex-direction="row" gap=10 align-items="flex-start" justify-content="flex-start" text-align="left" align-self="stretch" testId=`pick-${p.n}`
+                      image (p.done ? "symbol:select-fill" : "symbol:circle") font-size=20 color=(p.done ? "AccentColor" : "-exact-secondary-label")
+                      column flex=1 min-width=0 gap=2 align-items="flex-start"
+                        text p.text text-align="left" text-decoration=(p.done ? "line-through" : "none") color=(p.done ? "-exact-secondary-label" : "-exact-label")
+                        if p.sub != ""
+                          text p.sub font="-exact-footnote" color="-exact-secondary-label"
+              if card.body != ""
+                if card.plainText
+                  text card.body user-select="text" overflow-wrap="anywhere"
+                else
+                  text card.body markup="markdown" user-select="text" overflow-wrap="anywhere" testId="card-body"
+            if shownError != ""
+              text shownError font="-exact-footnote" color="-exact-system-red" padding="4px 16px" testId="error"
+            if replying != ""
+              column margin="6px 12px" gap=8
+                textarea id="reply" value=reply input=editReply rows=3 field-sizing="content" max-height=200 placeholder="Reply" aria-label="Reply" autofocus=true
+                  padding="10px 12px" border-radius=12 border="1px solid -exact-separator" background-color="transparent" testId="reply"
+                row gap=8 justify-content="flex-end"
+                  button press=cancelReply buttonStyle="bordered" testId="reply-cancel"
+                    text "Cancel"
+                  button press=sendReply buttonStyle="filled" disabled=(reply.trim() == "" or pending(responded)) testId="reply-send"
+                    text "Send"
+            else
+              row gap=8 padding="8px 16px 12px" flex-wrap="wrap" justify-content="flex-end"
+                for a in card.actions key=a.id
+                  button press=cardAction(a) buttonStyle=(a.style == "primary" ? "filled" : "bordered") destructive=(a.style == "destructive") disabled=pending(responded) testId=`card-act-${a.id}`
+                    text a.label
+                if card.threadId != ""
+                  link href=path("session", card.threadId) testId="card-thread"
+                    text "Open thread"
+                if card.url != ""
+                  button press=openLink(card.url) buttonStyle="bordered" testId="card-link"
+                    text "Open link"
+                if card.swipe == "settle"
+                  button press=settleOpenCard(true) buttonStyle="bordered" testId="card-settle"
+                    text "Settle"
+                if card.swipe == "reopen"
+                  button press=settleOpenCard(false) buttonStyle="bordered" testId="card-reopen"
+                    text "Reopen"
         if e.name == "session" or e.name == "compose"
           column navigationKey=`${e.id}` navigationScroll="transcript" position="absolute" inset=0 display="flex" flex-direction="column"
             interactive-widget="resizes-content"
-            header display="flex" flex-direction="column" padding="8px 16px" gap=2
-              text (e.name == "compose" ? "New Thread" : thread.title == "" ? "Thread" : thread.title) role="heading" aria-level=2 line-clamp=1 testId="title"
-              if thread.active and e.name == "session"
-                text (thread.status == "waiting_for_approval" ? "Needs approval" : thread.status == "stopping" ? "Stopping" : "Working") font="-exact-caption1" color="AccentColor" testId="status"
+            header display="flex" align-items="center" gap=8 padding="8px 16px"
+              column flex=1 min-width=0 gap=1
+                text (e.name == "compose" ? "New Thread" : thread.title == "" ? "Thread" : thread.title) role="heading" aria-level=2 line-clamp=1 testId="title"
+                if thread.active and e.name == "session"
+                  text (thread.status == "waiting_for_approval" ? "Needs approval" : thread.status == "stopping" ? "Stopping" : "Working") font="-exact-caption1"
+                    color=(thread.status == "waiting_for_approval" ? "-exact-system-orange" : "AccentColor") testId="status"
+              if e.name == "session"
+                button popovertarget="thread-menu" aria-label="Thread actions" testId="thread-more"
+                  image "symbol:more"
+            column id="thread-menu" popover="auto" role="menu"
+              if thread.canSettle
+                button press=settleThread(true) popovertarget="thread-menu" popovertargetaction="hide" testId="finish"
+                  text "Finish thread"
+              if thread.settled
+                button press=settleThread(false) popovertarget="thread-menu" popovertargetaction="hide" testId="reopen-thread"
+                  text "Reopen thread"
+              button press=toggleAutoSettle role="menuitemcheckbox" aria-checked=thread.autoSettle popovertarget="thread-menu" popovertargetaction="hide" testId="auto-settle"
+                text "Auto-settle"
             if e.name == "compose"
               column flex=1 display="flex" justify-content="center" align-items="center" padding=24 gap=6
                 image "symbol:sparkles" width=28 height=28 color="AccentColor"
@@ -267,40 +516,47 @@ component Apollo
             else
               list id="transcript" appearance="none" virtualized=true scroll-start="end" scrollFollowEnd=true flex=1 min-height=0 padding-top=8 padding-bottom=16 testId="transcript"
                 for r in thread.rows key=r.id
-                  column padding="5px 16px" testId=`row-${r.id}`
+                  column padding=(r.kind == "live" ? "0 16px 0 30px" : r.kind == "text" or r.kind == "table" ? "4px 16px" : "8px 16px") testId=`row-${r.id}`
                     if r.kind == "user"
                       row justify-content="flex-end" padding-left=48
                         text r.text padding="8px 12px" border-radius=18 overflow-wrap="anywhere" user-select="text"
                           background-color="AccentColor" color="AccentColorText"
-                    if r.kind == "assistant"
-                      column gap=10 testId=`text-${r.id}`
-                        for p in r.parts key=p.key
-                          if p.table
-                            column border-width=1 border-style="solid" border-color="-exact-separator" border-radius=8 overflow="hidden"
-                              for t in p.rows key=t.key
-                                row border-top-width=(t.head ? 0 : 1) border-right-width=0 border-bottom-width=0 border-left-width=0 border-style="solid" border-color="-exact-separator"
-                                  background-color=(t.head ? "-exact-secondary-background" : "transparent")
-                                  for c in t.cells key=c.key
-                                    text c.text markup="markdown" user-select="text" overflow-wrap="anywhere" flex="1 1 0" min-width=0 font="-exact-subheadline"
-                                      padding="6px 8px" text-align=c.align border-top-width=0 border-right-width=0 border-bottom-width=0 border-left-width=(c.first ? 0 : 1) border-style="solid" border-color="-exact-separator"
-                          else
-                            text p.text markup="markdown" user-select="text" overflow-wrap="anywhere"
+                    if r.kind == "text"
+                      text r.text markup="markdown" user-select="text" overflow-wrap="anywhere"
+                    if r.kind == "live"
+                      text r.text markup="markdown" user-select="text" overflow-wrap="anywhere" font="-exact-subheadline" color="-exact-secondary-label"
+                        padding-left=10 border-left="2px solid -exact-separator"
+                    if r.kind == "table"
+                      column border-width=1 border-style="solid" border-color="-exact-separator" border-radius=8 overflow="hidden"
+                        for t in r.table key=t.key
+                          row border-top-width=(t.head ? 0 : 1) border-right-width=0 border-bottom-width=0 border-left-width=0 border-style="solid" border-color="-exact-separator"
+                            background-color=(t.head ? "-exact-secondary-background" : "transparent")
+                            for c in t.cells key=c.key
+                              text c.text markup="markdown" user-select="text" overflow-wrap="anywhere" flex="1 1 0" min-width=0 font="-exact-subheadline"
+                                padding="6px 8px" text-align=c.align border-top-width=0 border-right-width=0 border-bottom-width=0 border-left-width=(c.first ? 0 : 1) border-style="solid" border-color="-exact-separator"
                     if r.kind == "system"
                       text r.text font="-exact-footnote" color="-exact-secondary-label" user-select="text"
                     if r.kind == "error"
                       text r.text font="-exact-footnote" color="-exact-system-red" user-select="text"
                     if r.kind == "activity"
-                      column gap=4
-                        button appearance="none" press=toggle(r.id) display="flex" flex-direction="row" align-items="center" gap=6 align-self="flex-start" padding="2px 0" testId=`activity-${r.id}`
-                          image (opened.includes(r.id) ? "symbol:sf/chevron.down" : "symbol:forward-chevron") font-size=10
-                          text r.summary font="-exact-footnote" color=(r.running ? "AccentColor" : "-exact-secondary-label") line-clamp=1
-                        if opened.includes(r.id)
-                          column gap=4 padding="2px 0 2px 10px" border-left="2px solid -exact-separator"
+                      column gap=6
+                        button appearance="none" press=toggleSteps(r.id) display="flex" flex-direction="row" align-items="center" justify-content="flex-start" text-align="left" gap=8 align-self="stretch" padding="2px 0" testId=`activity-${r.id}`
+                          if r.running
+                            progress aria-label="Working" width=14 height=14
+                          else
+                            image (opened.includes(r.id) ? "symbol:sf/chevron.down" : "symbol:forward-chevron") font-size=11 color="-exact-secondary-label"
+                          text r.summary text-align="left" font="-exact-footnote" color=(r.running ? (thread.status == "waiting_for_approval" ? "-exact-system-orange" : "-exact-label") : "-exact-secondary-label") line-clamp=1 flex=1 min-width=0
+                          if r.running and r.startedAt > 0 and clock > 0
+                            text took(clock / 1000 - secs(r.startedAt)) font="-exact-footnote" color="-exact-secondary-label" font-variant-numeric="tabular-nums"
+                        if (opened.includes(r.id) or r.running) and r.steps.length > 0
+                          column gap=5 padding="2px 0 2px 10px" margin-left=6 border-left="2px solid -exact-separator"
                             for s in r.steps key=s.key
-                              row gap=6 align-items="baseline"
-                                text (s.running ? "…" : s.failed ? "✕" : s.kind == "tool" ? "✓" : "·") font="-exact-caption1" color=(s.failed ? "-exact-system-red" : "-exact-secondary-label")
-                                text (s.kind == "tool" ? `${s.label}  ${s.detail}` : s.detail) font="-exact-caption1"
-                                  color="-exact-secondary-label" line-clamp=4 flex=1 min-width=0 user-select="text"
+                              column gap=1
+                                row gap=6 align-items="baseline"
+                                  text (s.running ? "…" : s.failed ? "✕" : s.kind == "tool" ? "✓" : "·") font="-exact-caption1" color=(s.failed ? "-exact-system-red" : "-exact-secondary-label") width=10 flex-shrink=0
+                                  text (s.kind == "tool" ? s.label : s.detail) font="-exact-caption1" color=(s.kind == "tool" ? "-exact-label" : "-exact-secondary-label") line-clamp=3 flex=1 min-width=0 user-select="text"
+                                if s.kind == "tool" and s.detail != ""
+                                  text s.detail font="-exact-caption2" font-family="ui-monospace" color="-exact-secondary-label" line-clamp=2 padding-left=16 user-select="text"
             if thread.approvalCommand != "" and e.name == "session"
               column margin="0 12px" padding=12 gap=8 border-radius=12 background-color="-exact-secondary-background" testId="approval"
                 text thread.approvalTitle font="-exact-headline"
@@ -311,7 +567,7 @@ component Apollo
                   button press=deny buttonStyle="bordered" disabled=pending(answered) testId="deny"
                     text "Deny"
                   button press=approve buttonStyle="filled" disabled=pending(answered) testId="approve"
-                    text "Approve"
+                    text "Allow once"
             if shownError != ""
               row gap=8 align-items="center" padding="4px 16px"
                 text shownError font="-exact-footnote" color="-exact-system-red" flex=1 min-width=0 testId="error"
