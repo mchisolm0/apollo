@@ -609,13 +609,13 @@ test("without cloud config pairing and approvals are unchanged", async (t) => {
   assert.equal((await req(f.base, "/v1/apollo/cloud-token", { method: "POST", headers })).response.status, 503);
 });
 
-test("empty session previews are filled from the latest assistant message; others are left alone", async (t) => {
+test("empty and cron-written session previews are filled from the latest assistant message; others are left alone", async (t) => {
   const f = await fixture(); t.after(async () => { await f.connector.close(); await f.hermes.close(); });
   const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
   const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
   const headers = { authorization: `Bearer ${exchange.body.access_token}` };
   const session = (id, preview) => ({ id, title: null, message_count: 2, last_active: 100, preview, pinned: false });
-  f.hermes.hermesData.sessions.data = [session("briefing", ""), session("chat", "fix the build"), session("broken", "")];
+  f.hermes.hermesData.sessions.data = [session("briefing", ""), session("chat", "fix the build"), session("broken", ""), session("bot", '[Cronjob "Lot watcher" output — scheduled job, not the user...')];
   f.hermes.hermesData.messages.briefing = { object: "list", data: [
     { role: "assistant", content: "Old note", timestamp: 1 },
     { role: "assistant", content: "## Morning\n\n- **Scryve** [#335](https://x.test) is *ready*", timestamp: 2 },
@@ -623,9 +623,10 @@ test("empty session previews are filled from the latest assistant message; other
   ] };
   f.hermes.hermesData.messages.chat = { object: "list", data: [{ role: "assistant", content: "must not be used", timestamp: 1 }] };
   f.hermes.hermesData.messages.broken = 500;
+  f.hermes.hermesData.messages.bot = { object: "list", data: [{ role: "assistant", content: "Nothing bought; best lot was $24 a phone", timestamp: 1 }] };
   const listed = await req(f.base, "/api/sessions?limit=200", { headers });
   assert.equal(listed.response.headers.get("etag"), null);
-  assert.deepEqual(listed.body.data, [session("briefing", "Morning Scryve #335 is ready"), session("chat", "fix the build"), session("broken", "")]);
+  assert.deepEqual(listed.body.data, [session("briefing", "Morning Scryve #335 is ready"), session("chat", "fix the build"), session("broken", ""), session("bot", "Nothing bought; best lot was $24 a phone")]);
   assert.equal(f.hermes.seen.some((request) => request.url.startsWith("/api/sessions/chat/")), false);
   assert.equal(f.hermes.seen.find((request) => request.url.startsWith("/api/sessions/briefing/")).authorization, "Bearer hermes-secret");
   // Cached by id and last_active: a second list does not ask Hermes again.

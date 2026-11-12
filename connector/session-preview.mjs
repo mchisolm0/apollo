@@ -1,12 +1,15 @@
 // Hermes previews a session with its first user message, so threads that producers
-// create with only assistant messages list with an empty preview. These helpers fill
-// that gap from the latest assistant message, through the Hermes HTTP API.
+// create with only assistant messages list with an empty preview, and cron threads list
+// with the instructions cron gave the agent. These helpers preview both with the latest
+// assistant message instead, through the Hermes HTTP API.
 
 // Same shape as Hermes's `_shape_preview` (hermes_state_common.py): one line, 60 chars, then "...".
 const PREVIEW_MAX_CHARS = 60;
 const MAX_LOOKUPS = 20;
 const CONCURRENCY = 4;
 const CACHE_SIZE = 500;
+// First user messages cron writes for the agent: a job's own prompt, a Bot Chat delivery, a mirror.
+const CRON_PREVIEW = /^\s*\[(?:IMPORTANT: You are running as a scheduled cron job|Cronjob "|Cron delivery: )/u;
 
 /** Markdown to one plain line, capped like a Hermes preview. */
 export function previewText(markdown) {
@@ -45,9 +48,9 @@ function latestAssistantPreview(messages) {
 }
 
 /**
- * Returns `fill(body, signal)`, which sets an empty `preview` on sessions in a parsed
+ * Returns `fill(body, signal)`, which sets an empty or cron-written `preview` on sessions in a parsed
  * `/api/sessions` list (`{ data: [...] }`) or single-session (`{ session }`) body,
- * resolving the number of previews it filled. `fetchMessages(sessionId, signal)`
+ * resolving the number of previews it filled. A cron preview with no assistant reply yet stays. `fetchMessages(sessionId, signal)`
  * returns that session's `/messages` body.
  *
  * Cached previews are always applied. Then at most MAX_LOOKUPS uncached sessions are
@@ -72,7 +75,7 @@ export function createPreviewFiller({ fetchMessages, budget = 2_000, shortTtl = 
     };
     const uncached = [];
     for (const session of sessions) {
-      if (!session || typeof session.id !== "string" || !(session.preview === "" || session.preview === null) || session.message_count === 0) continue;
+      if (!session || typeof session.id !== "string" || !(session.preview === "" || session.preview === null || CRON_PREVIEW.test(session.preview)) || session.message_count === 0) continue;
       const stamped = typeof session.last_active === "number";
       const key = `${session.id}\u0000${stamped ? session.last_active : ""}`;
       const hit = cache.get(key);

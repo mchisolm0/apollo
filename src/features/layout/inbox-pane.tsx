@@ -95,7 +95,7 @@ export function InboxPane({ agentId, selectedId, sidebar = false, onSelectAgent,
   const pendingSessions = new Map<string, InboxSession>();
   for (const item of outbox.items) {
     if (item.agentId !== agent.id || inbox.sessions.some((session) => session.id === item.sessionId) || pendingSessions.has(item.sessionId)) continue;
-    pendingSessions.set(item.sessionId, { id: item.sessionId, agentId: agent.id, title: (item.text || item.attachments[0]?.name || 'Queued thread').slice(0, 72), updatedAt: 'Queued', activityAt: item.createdAt / 1000, sortAt: item.createdAt / 1000, status: 'active', settled: false, attention: false, pendingApproval: false, queued: true, failed: false, pinned: false, autoSettleDisabled: false });
+    pendingSessions.set(item.sessionId, { id: item.sessionId, agentId: agent.id, title: (item.text || item.attachments[0]?.name || 'Queued thread').slice(0, 72), updatedAt: 'Queued', activityAt: item.createdAt / 1000, sortAt: item.createdAt / 1000, status: 'active', settled: false, attention: false, pendingApproval: false, queued: true, failed: false, pinned: false, autoSettleDisabled: false, background: false });
   }
   const queuedIds = new Set(outbox.items.filter((item) => item.agentId === agent.id).map((item) => item.sessionId));
   // Hermes previews the first user message; producer-written threads have none, so use the latest assistant text already loaded.

@@ -183,6 +183,14 @@ test('stale run state or a snoozed thread never hides a Hermes approval', () => 
   assert.deepEqual(layout(snoozed), ['card:card:run_9:req_1', '[Snoozed 1]']);
 });
 
+test("a cron job's own run shows only while it waits on an approval or matches a search", () => {
+  const input = { cards: [], isSnoozed: () => false, collapsed };
+  const run = session('run', { title: 'Lot watcher', background: true });
+  assert.deepEqual(layout(buildInboxRows({ ...input, sessions: [run, session('chat'), session('old', { background: true, settled: true })] })), ['session:chat']);
+  assert.deepEqual(layout(buildInboxRows({ ...input, sessions: [{ ...run, pendingApproval: true }] })), ['session:run']);
+  assert.deepEqual(layout(buildInboxRows({ ...input, sessions: [run], query: 'lot' })), ['session:run']);
+});
+
 test('until live data lands, sections show no count and nothing claims the inbox is empty', () => {
   const input = { sessions: [session('old', { settled: true })], cards: [], isSnoozed: () => false, collapsed };
   const cached = buildInboxRows({ ...input, fresh: false });

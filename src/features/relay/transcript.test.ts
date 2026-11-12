@@ -57,6 +57,7 @@ test('drops hidden Hermes nudges and labels legacy system notes as system', () =
 test('parses Hermes cron mirrors into job name and delivered text', () => {
   assert.deepEqual(cronDelivery('[Cron delivery: Morning brief]\nThree new issues.\n\nDetails'), { job: 'Morning brief', text: 'Three new issues.\n\nDetails' });
   assert.deepEqual(cronDelivery('[Cron delivery: a1b2c3]'), { job: 'a1b2c3', text: '' });
+  assert.deepEqual(cronDelivery('[Cronjob "Lot watcher" output — scheduled job, not the user. Review it, act on anything that needs action, and summarize for the chat.]\n\nNo lot met the bar.'), { job: 'Lot watcher', text: 'No lot met the bar.' });
   assert.equal(cronDelivery('Please check [Cron delivery: x]\nlater'), undefined);
   assert.equal(cronDelivery('[Cron delivery: x] inline'), undefined);
   assert.equal(cronDelivery('[System note: interrupted]'), undefined);
