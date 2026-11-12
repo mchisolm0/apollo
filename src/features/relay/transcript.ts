@@ -168,6 +168,14 @@ const SYSTEM_PROMPT = /^\s*(?:\[ASYNC DELEGATION (?:BATCH COMPLETE|COMPLETE|TASK
  */
 const CRON_DELIVERY = /^\s*\[(?:Cron delivery: ([^\n]*?)|Cronjob "([^\n]*?)" output\b[^\n]*)\](?:\n|$)/u;
 
+/** A mid-turn steer, saved by Hermes as a user row inside its out-of-band marker: exactly one per row. */
+const STEER = /^\s*\[OUT-OF-BAND USER MESSAGE\b[^\r\n]*\]\r?\n((?:(?!\[OUT-OF-BAND USER MESSAGE\b)[\s\S])*?)\r?\n\[\/OUT-OF-BAND USER MESSAGE\]\s*$/u;
+
+/** What the person typed: a steer without Hermes's marker, any other user message as it is. */
+export function userText(content: string): string {
+  return STEER.exec(content)?.[1] ?? content;
+}
+
 export interface CronDelivery {
   readonly job: string;
   readonly text: string;
@@ -347,7 +355,8 @@ function buildHistory(history: readonly HermesMessage[], previous?: HistoryCache
   let lastAssistantTimestamp: number | undefined;
   for (const [index, message] of history.entries()) {
     const role = message.role.toLowerCase();
-    const text = message.content ?? EMPTY;
+    const content = message.content ?? EMPTY;
+    const text = role === 'user' ? userText(content) : content;
     const identity = message.id ?? `index-${index}`;
     const occurrence = messageOccurrences.get(identity) ?? 0;
     messageOccurrences.set(identity, occurrence + 1);
@@ -361,7 +370,7 @@ function buildHistory(history: readonly HermesMessage[], previous?: HistoryCache
     // Hermes hides its own `[System: ...]` nudges, such as stream-timeout retries.
     if (injectable && message.displayKind === 'hidden') continue;
     // Assistant rows (including Hermes's `failed_turn` notice) stay assistant text inside their turn.
-    const system = injectable && (SYSTEM_DISPLAY_KINDS.has(message.displayKind ?? '') || SYSTEM_PROMPT.test(text) || CRON_DELIVERY.test(text));
+    const system = injectable && (SYSTEM_DISPLAY_KINDS.has(message.displayKind ?? '') || SYSTEM_PROMPT.test(content) || CRON_DELIVERY.test(content));
     if (role !== 'user' && role !== 'assistant' && role !== 'error' && !(role === 'system' && system)) continue;
     const reasoning = role === 'assistant' ? message.reasoningContent ?? message.reasoning : undefined;
     if (reasoning?.trim()) pushStep({ id: `history-thought-${key}`, kind: 'thought', text: reasoning });
