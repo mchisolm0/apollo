@@ -116,6 +116,8 @@ const settledCards = (l: Local): SettledCards => new Map(Object.entries(l.cards)
 const INBOX_CACHE = 'app:/cache/inbox.json';
 const threadCache = (id: string) => `app:/cache/thread-${encodeURIComponent(id)}.json`;
 const KEEP_THREADS = 30;
+// A thread opens at its end, so its last rows are all a kept copy needs; the live answer brings the rest.
+const KEEP_ROWS = 50;
 type InboxInputs = { sessions: InboxSession[]; cards: Card[]; pendingRunIds: string[] };
 
 async function readCache<T>(storage: Storage, path: string): Promise<T | undefined> {
@@ -444,7 +446,7 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       if (runId) delete l.runs[sessionId];
       l.read[sessionId] = Math.floor(now / 1000);
       const thread: Thread = { ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", recent, title, rows: toRows(project({ history: messages, events: [], running: false })) };
-      await keepThread(storage, l, { ...thread, recent: [] });
+      await keepThread(storage, l, { ...thread, recent: [], rows: thread.rows.slice(-KEEP_ROWS) });
       await save(storage);
       return thread;
     }
