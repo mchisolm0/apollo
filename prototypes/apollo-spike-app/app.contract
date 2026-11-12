@@ -864,6 +864,16 @@ component Apollo
                                 padding="6px 8px" text-align=c.align border-top-width=0 border-right-width=0 border-bottom-width=0 border-left-width=(c.first ? 0 : 1) border-style="solid" border-color="-exact-separator"
                     if r.kind == "system"
                       text r.text font="-exact-footnote" color="-exact-secondary-label" user-select="text"
+                    if r.kind == "cron"
+                      column gap=6
+                        button appearance="none" press=toggleSteps(r.id) disabled=(r.text == "") display="flex" flex-direction="row" align-items="center" justify-content="flex-start" text-align="left" gap=8 align-self="stretch" padding="2px 0" testId=`cron-${r.id}`
+                          image "symbol:sf/clock" font-size=11 color="-exact-secondary-label"
+                          text r.summary text-align="left" font="-exact-footnote" color="-exact-secondary-label" line-clamp=1 flex=1 min-width=0
+                          if r.text != ""
+                            image (opened.includes(r.id) ? "symbol:sf/chevron.up" : "symbol:sf/chevron.down") font-size=10 color="-exact-secondary-label"
+                        if opened.includes(r.id)
+                          text r.text markup="markdown" user-select="text" overflow-wrap="anywhere" font="-exact-subheadline" color="-exact-secondary-label"
+                            padding-left=10 border-left="2px solid -exact-separator"
                     if r.kind == "error"
                       text r.text font="-exact-footnote" color="-exact-system-red" user-select="text"
                     if r.kind == "activity"

@@ -12,7 +12,7 @@ import { autoSettleSessionsDue, canSettleSession, deriveSessionInbox, isSessionS
 import { resolveSnoozePresets } from './apollo/src/features/relay/snooze-presets.ts';
 import { selectedSkillNames } from './apollo/src/features/relay/composer-skills.ts';
 import { attachmentMessage, MAX_ATTACHMENT_BYTES, splitAttachmentMessage, type Attachment } from './apollo/src/lib/attachments.ts';
-import { createTranscriptProjector, type TranscriptRow } from './apollo/src/features/relay/transcript.ts';
+import { createTranscriptProjector, cronDelivery, type TranscriptRow } from './apollo/src/features/relay/transcript.ts';
 import { setClock } from './apollo/clock.ts';
 import { normalizeEndpoint } from './apollo/src/lib/endpoint.ts';
 import { currentApproval, isRunActive, statusAfterEvent } from './apollo/src/lib/run-state.ts';
@@ -393,6 +393,9 @@ function toRows(rows: readonly TranscriptRow[]): Row[] {
       out.push({ ...plain, id: row.id, kind: 'user', text, summary: attachments.map((a) => a.name).join(', '), status: row.status ?? '' });
       continue;
     }
+    // A cron delivery folds to its job's name, as in Apollo; tapping shows what the job sent.
+    const cron = row.kind === 'system' ? cronDelivery(row.text) : undefined;
+    if (cron) { out.push({ ...plain, id: row.id, kind: 'cron', summary: cron.job, text: cron.text }); continue; }
     if (row.kind !== 'activity') { out.push({ ...plain, id: row.id, kind: row.kind, text: row.text, status: row.status ?? '' }); continue; }
     const running = row.status === 'running';
     live = running;

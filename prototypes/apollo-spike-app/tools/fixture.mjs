@@ -21,12 +21,25 @@ const ADMIN_SECRET = "apollo-exact-spike-admin";
 const ANSWER = "## Result\n\nDone. The fixture streamed this **markdown** answer word by word, with a [link](https://example.com) and a list:\n\n- first item\n- second item with `inline code`\n\n```typescript\nconst count = 42;\nconsole.log(count);\n```\n\n| Column | Value |\n| --- | --- |\n| speed | fast |\n| words | many |\n\nThat is the end of the answer.";
 
 const now = () => Date.now() / 1000;
-const sessions = new Map([["spike-session", { id: "spike-session", title: "Spike thread", source: "fixture", message_count: 2, last_active: now() }]]);
+// A cron job's own run, and the Bot Chat its output went to. Hermes previews both with the
+// first user message, which cron wrote for the agent.
+const BOT_CHAT_INPUT = '[Cronjob "Lot watcher" output — scheduled job, not the user. Review it, act on anything that needs action, and summarize for the chat.]\n\nNo lot met the bar. Best seen: 2 Galaxy A03s at $24.65 each.';
+const sessions = new Map([
+  ["spike-session", { id: "spike-session", title: "Spike thread", source: "fixture", message_count: 2, last_active: now() }],
+  ["cron-run", { id: "cron-run", title: "Lot watcher · Nov 12 12:05", source: "cron", message_count: 2, last_active: now() - 120, ended_at: now() - 120, preview: "[IMPORTANT: You are running as a scheduled cron job. DELIVER..." }],
+  ["bot-chat", { id: "bot-chat", title: "Bot Chat", source: "cli", message_count: 2, last_active: now() - 90, preview: `${BOT_CHAT_INPUT.slice(0, 60)}...` }],
+]);
 const messages = new Map([["spike-session", [
   { id: "seed-user", role: "user", content: "What does this thread show?", timestamp: now() - 60 },
   { id: "seed-tool-call", role: "assistant", content: "", tool_calls: [{ id: "call-seed", function: { name: "read_file", arguments: JSON.stringify({ path: "README.md" }) } }], timestamp: now() - 58 },
   { id: "seed-tool", role: "tool", tool_call_id: "call-seed", tool_name: "read_file", content: JSON.stringify({ success: true, content: "# Apollo" }), timestamp: now() - 57 },
   { id: "seed-assistant", role: "assistant", content: "It shows **history** from the connector: a user turn, a tool call, and this answer.", timestamp: now() - 55 },
+]], ["cron-run", [
+  { id: "cron-prompt", role: "user", content: "[IMPORTANT: You are running as a scheduled cron job. DELIVER your final answer as your reply.]\n\nFind phone lots.", timestamp: now() - 180 },
+  { id: "cron-answer", role: "assistant", content: "No lot met the bar.", timestamp: now() - 120 },
+]], ["bot-chat", [
+  { id: "bot-input", role: "user", content: BOT_CHAT_INPUT, timestamp: now() - 100 },
+  { id: "bot-answer", role: "assistant", content: "Lot watcher test run: nothing bought. The best lot was 2 Galaxy A03s at $24.65 each.", timestamp: now() - 90 },
 ]]]);
 const runs = new Map();
 const idempotency = new Map();
