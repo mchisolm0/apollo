@@ -168,6 +168,9 @@ const SYSTEM_PROMPT = /^\s*(?:\[ASYNC DELEGATION (?:BATCH COMPLETE|COMPLETE|TASK
  */
 const CRON_DELIVERY = /^\s*\[(?:Cron delivery: ([^\n]*?)|Cronjob "([^\n]*?)" output\b[^\n]*)\](?:\n|$)/u;
 
+/** A mid-turn steer, saved by Hermes as a user row inside its out-of-band marker. */
+const STEER = /^\s*\[OUT-OF-BAND USER MESSAGE\b[^\n]*\]\n([\s\S]*?)\n\[\/OUT-OF-BAND USER MESSAGE\]\s*$/u;
+
 export interface CronDelivery {
   readonly job: string;
   readonly text: string;
@@ -347,7 +350,9 @@ function buildHistory(history: readonly HermesMessage[], previous?: HistoryCache
   let lastAssistantTimestamp: number | undefined;
   for (const [index, message] of history.entries()) {
     const role = message.role.toLowerCase();
-    const text = message.content ?? EMPTY;
+    const content = message.content ?? EMPTY;
+    // A steer shows as what the person typed.
+    const text = role === 'user' ? STEER.exec(content)?.[1]?.trim() ?? content : content;
     const identity = message.id ?? `index-${index}`;
     const occurrence = messageOccurrences.get(identity) ?? 0;
     messageOccurrences.set(identity, occurrence + 1);

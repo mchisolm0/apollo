@@ -75,6 +75,23 @@ test('labels cron mirrors as system rows and leaves similar user text alone', ()
   assert.deepEqual(rows.map((row) => row.kind), ['system', 'user']);
 });
 
+test('a steer shows as the text the person sent, and only a whole marker is unwrapped', () => {
+  const marker = (text: string) => `[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]\n${text}\n[/OUT-OF-BAND USER MESSAGE]`;
+  const rows = createTranscriptProjector()({
+    history: [
+      message({ id: 'u1', role: 'user', content: 'Clean the build folder.' }),
+      message({ id: 's1', role: 'user', content: marker('Skip the tests folder.\nKeep the logs.') }),
+      message({ id: 'u2', role: 'user', content: `Is this a steer? ${marker('no')}` }),
+      message({ id: 'a1', role: 'assistant', content: marker('quoted by the agent') }),
+    ],
+    events: [], running: false,
+  });
+  assert.deepEqual(rows.map((row) => row.kind === 'activity' ? row.kind : `${row.kind}:${row.text.split('\n')[0]}`), [
+    'user:Clean the build folder.', 'user:Skip the tests folder.', `user:Is this a steer? [OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]`, 'assistant:[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]',
+  ]);
+  assert.equal(rows[1]?.kind === 'user' && rows[1].text, 'Skip the tests folder.\nKeep the logs.');
+});
+
 test('labels backend-authored user turns as system and keeps their turn boundaries', () => {
   const injected = [
     { content: '[ASYNC DELEGATION BATCH COMPLETE — deleg_a1b2c3d4]\nResult' },
