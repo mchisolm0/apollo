@@ -49,7 +49,7 @@ export function withPendingResponses(cards: readonly Card[], pending: readonly {
   });
 }
 
-export type InboxRowSession = Pick<InboxSession, 'id' | 'title' | 'preview' | 'settled' | 'status' | 'pendingApproval' | 'activityAt'> & Partial<Pick<InboxSession, 'background'>>;
+export type InboxRowSession = Pick<InboxSession, 'id' | 'title' | 'preview' | 'settled' | 'status' | 'pendingApproval' | 'failed' | 'activityAt' | 'background'>;
 export type CollapsibleSectionId = 'snoozed' | 'settled';
 
 export type InboxRow<S extends InboxRowSession = InboxRowSession> =
@@ -134,7 +134,7 @@ export function parseSettledCards(value: unknown): SettledCards {
  * Stale run state from an offline agent never hides a card, since its Approve can't land. Closed Hermes cards stay out of Settled; the
  * thread keeps that history. Search hides the morning card; attention keeps open response
  * cards and threads needing attention. A cron job's own run (`background`) shows only while it
- * waits on an approval or matches a search; its result reaches the inbox another way.
+ * waits on an approval, has failed, or matches a search; its result reaches the inbox another way.
  */
 export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isSnoozed, settledCards = NO_SETTLED, pendingRunIds = NO_RUNS, runStateLive = false, fresh = true, query = '', attentionOnly = false, collapsed, now = Date.now() }: {
   sessions: readonly S[];
@@ -172,7 +172,7 @@ export function buildInboxRows<S extends InboxRowSession>({ sessions, cards, isS
   const shown = cards.filter((card) => card.source !== 'hermes');
   const hermes = cards.filter((card) => card.source === 'hermes' && card.kind === 'approval' && !isCardSettled(card, settledCards) && !knownLocally(card));
   const open = [...shown.filter((card) => !settledForDisplay(card)), ...hermes];
-  const listed = (session: S) => !session.background || session.pendingApproval || Boolean(search);
+  const listed = (session: S) => !session.background || session.pendingApproval || session.failed || Boolean(search);
   const inBucket = (id: 'open' | 'snoozed' | 'settled') => sessions.filter((session) => listed(session) && bucket(session) === id && matches(session.title, session.preview));
 
   const briefing = search ? undefined : open.filter((card) => card.kind === 'briefing').sort(newestFirst('createdAt'))[0];

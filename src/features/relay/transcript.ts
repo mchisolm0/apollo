@@ -163,9 +163,10 @@ const SYSTEM_PROMPT = /^\s*(?:\[ASYNC DELEGATION (?:BATCH COMPLETE|COMPLETE|TASK
 
 /**
  * Hermes cron mirrors a delivery into its origin chat as a user row: `[Cron delivery: <job>]\n<text>`.
- * A `bot-chat` delivery hands the bot its output as `[Cronjob "<job>" output — <instructions>]\n\n<text>`.
+ * A `bot-chat` delivery hands the bot its output as `[Cronjob "<job>" output — <instructions>]\n\n<text>`;
+ * matching stops at ` output`, like the connector's preview check, so new wording still folds.
  */
-const CRON_DELIVERY = /^\s*\[(?:Cron delivery: ([^\n]*?)|Cronjob "([^\n]*?)" output — [^\n]*)\](?:\n|$)/u;
+const CRON_DELIVERY = /^\s*\[(?:Cron delivery: ([^\n]*?)|Cronjob "([^\n]*?)" output\b[^\n]*)\](?:\n|$)/u;
 
 export interface CronDelivery {
   readonly job: string;
