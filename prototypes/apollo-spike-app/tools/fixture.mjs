@@ -73,7 +73,7 @@ async function body(req) {
   return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
 }
 
-const runStatus = (run) => ({ run_id: run.id, status: run.status, session_id: run.sessionId, output: run.output, approval: run.approval, created_at: run.createdAt, updated_at: now() });
+const runStatus = (run) => ({ run_id: run.id, status: run.status, session_id: run.sessionId, output: run.output, approval: run.approval, created_at: run.createdAt, updated_at: now(), ...(run.pendingSteer ? { pending_steer: run.pendingSteer } : {}) });
 
 function emit(run, event, extra = {}) {
   const message = JSON.stringify({ event_id: `${run.id}-${run.events.length}`, event, run_id: run.id, timestamp: now(), ...extra });
@@ -162,17 +162,31 @@ const hermes = createServer(async (req, res) => {
     // A steer lands in history as Hermes saves one; a "hold" run finishes on it.
     if (runMatch[2] === "steer") {
       const input = await body(req);
-      if (run.status !== "running") return json(res, 409, { error: { code: "run_not_accepting_steer", message: `Run is not currently accepting steer input: ${run.id}` } });
-      messages.get(run.sessionId)?.push({ id: `steer-${run.events.length}-${run.id}`, role: "user", content: `[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]\n${input.input}\n[/OUT-OF-BAND USER MESSAGE]`, timestamp: now() });
+      if (run.status !== "running" || /too late/i.test(input.input ?? "")) return json(res, 409, { error: { code: "run_not_accepting_steer", message: `Run is not currently accepting steer input: ${run.id}` } });
       emit(run, "run.steered", { accepted: true });
-      if (/hold/i.test(run.input)) stream(run, `Steered: ${input.input}`, 35);
+      // "never mind" ends the run before the agent reads it, so Hermes hands it back as pending_steer.
+      if (/never mind/i.test(input.input ?? "")) setTimeout(() => {
+        run.status = "completed"; run.output = "Stopped early."; run.pendingSteer = input.input;
+        messages.get(run.sessionId)?.push({ id: `assistant-${run.id}`, role: "assistant", content: run.output, timestamp: now() });
+        emit(run, "run.completed", { output: run.output, pending_steer: input.input }); end(run);
+      }, 600);
+      // Otherwise Hermes saves the steer when the agent reads it, a moment later, as below.
+      else setTimeout(() => {
+        messages.get(run.sessionId)?.push({ id: `steer-${run.events.length}-${run.id}`, role: "user", content: `[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]\n${input.input}\n[/OUT-OF-BAND USER MESSAGE]`, timestamp: now() });
+        if (/hold/i.test(run.input)) stream(run, `Steered: ${input.input}`, 35);
+      }, 800);
       return json(res, 200, { object: "hermes.run.steer", run_id: run.id, accepted: true });
     }
     if (runMatch[2] === "stop") { run.status = "cancelled"; emit(run, "run.cancelled"); end(run); return json(res, 200, runStatus(run)); }
     if (runMatch[2] === "approval") {
-      const input = await body(req); run.approval = undefined; emit(run, "approval.responded");
+      // As Hermes: an answer must name the open request and one of its offered tiers. The reply
+      // names the tier, so a test can tell which one the app sent.
+      const input = await body(req);
+      if (!run.approval || (input.request_id && input.request_id !== run.approval.request_id)) return json(res, 409, { error: { code: "approval_not_pending", message: "That request was already answered." } });
+      if (!run.approval.choices.includes(input.choice)) return json(res, 400, { error: { code: "invalid_choice", message: `Choice must be one of ${run.approval.choices.join(", ")}` } });
+      run.approval = undefined; emit(run, "approval.responded", { choice: input.choice });
       if (input.choice === "deny") { run.status = "running"; stream(run, "Okay, I left the build folder alone.", 35); }
-      else { run.status = "running"; emit(run, "tool.started", { tool: "terminal", tool_call_id: `call-rm-${run.id}`, preview: "rm -rf build/" }); emit(run, "tool.completed", { tool: "terminal", tool_call_id: `call-rm-${run.id}`, preview: "removed", duration: 0.1 }); stream(run, "Cleaned the build folder.", 35); }
+      else { run.status = "running"; emit(run, "tool.started", { tool: "terminal", tool_call_id: `call-rm-${run.id}`, preview: "rm -rf build/" }); emit(run, "tool.completed", { tool: "terminal", tool_call_id: `call-rm-${run.id}`, preview: "removed", duration: 0.1 }); stream(run, `Cleaned the build folder (allowed ${input.choice}).`, 35); }
       return json(res, 200, { run_id: run.id, choice: input.choice ?? "deny", resolved: 1 });
     }
   }
@@ -283,5 +297,5 @@ console.log(`Connector: ${base}  Fake Hermes: http://${HOST}:${HERMES_PORT}`);
 console.log(`Pairing link (15 min, once): ${await pairingLink()}`);
 console.log(`Another: curl -s -X POST http://${HOST}:${HERMES_PORT}/__spike/pair`);
 console.log(`Reusable test link (resets the seed): apollo://pair?host=${encodeURIComponent(base)}#token=fixture`);
-console.log(`Inputs: "approval" asks to run a command ("approval once only": no thread or always tier), "hold" runs until stopped or steered, "storm" floods 2,000 deltas.`);
+console.log(`Inputs: "approval" asks to run a command ("approval once only": no thread or always tier), "hold" runs until stopped or steered (a steer saying "too late" is refused, "never mind" comes back undelivered), "storm" floods 2,000 deltas.`);
 process.on("SIGINT", async () => { await connector.close(); await new Promise((resolve) => hermes.close(resolve)); process.exit(0); });

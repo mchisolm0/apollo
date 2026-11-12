@@ -227,7 +227,7 @@ fn secs(t: number): number = t > 100000000000 ? t / 1000 : t
 fn took(s: number): string = s < 60 ? `${floor(s)}s` : s < 3600 ? `${floor(s / 60)}m ${floor(s - floor(s / 60) * 60)}s` : `${floor(s / 3600)}h ${floor((s - floor(s / 3600) * 3600) / 60)}m`
 fn choiceLabel(c: string): string = c == "once" ? "Allow once" : c == "session" ? "Allow for thread" : c == "always" ? "Always allow" : "Deny"
 // A reply quotes the start of a message, each line marked, then leaves room to write.
-fn quoted(t: string): string = `${t.slice(0, 280).split("\n").slice(0, 4).map(l => `> ${l}`).join("\n")}\n\n`
+fn quoted(t: string): string = `${(t.length > 280 ? `${t.slice(0, 279)}…` : t).split("\n").slice(0, 4).map(l => `> ${l}`).join("\n")}\n\n`
 fn routineColor(s: string): string = s == "failed" ? "-exact-system-red" : s == "paused" ? "-exact-system-orange" : "-exact-secondary-label"
 fn toneColor(t: string): string = t == "amber" ? "-exact-system-orange" : t == "accent" ? "AccentColor" : t == "green" ? "-exact-system-green" : t == "red" ? "-exact-system-red" : "-exact-secondary-label"
 
@@ -260,6 +260,10 @@ component Apollo
   state aimedSwipe = ""
   state aimedKind = ""
   state aimedText = ""
+  // The approval "Always allow" was opened for, so a confirm never answers a newer request.
+  state alwaysRun = ""
+  state alwaysRequest = ""
+  state alwaysCommand = ""
   state chasing = false
   state wasHidden = false
   derive selected = match stack(nav).filter(e => e.name == "session").at(-1) { case some(e) => e.params.id, case none => "" }
@@ -294,8 +298,8 @@ component Apollo
   mutation created as shape Created then afterCreate
   mutation sent as shape Ack then afterSend
   mutation stopped as shape Ack
-  mutation steered as shape Ack then afterSend
-  mutation answered as shape Ack
+  mutation steered as shape Ack then afterSteer
+  mutation answered as shape Ack then afterAnswer
   mutation filed as shape Ack then afterWrite
   mutation responded as shape Ack then afterWrite
   derive onHome = top(nav).name == "home"
@@ -306,7 +310,7 @@ component Apollo
   derive threadRows = thread.id == selected ? thread.rows : []
   derive canSend = (draft.trim() != "" or files.length > 0) and threadLive and not dictating and not thread.active and not pending(sent) and not pending(created)
   // A message typed while a turn runs steers it; files wait for a new message.
-  derive canSteer = draft.trim() != "" and files.length == 0 and threadLive and thread.active and thread.runId != "" and thread.status == "running" and not dictating and not pending(steered)
+  derive canSteer = top(nav).name == "session" and draft.trim() != "" and files.length == 0 and threadLive and thread.active and thread.runId != "" and thread.status == "running" and not dictating and not pending(steered)
   derive lastId = match threadRows.at(-1) { case some(r) => r.id, case none => "" }
   // Quick actions: the manifest's New thread, then the threads opened last (as Apollo does).
   derive recentKey = thread.recent.map(r => `${r.id}|${r.title}`).join("\n")
@@ -333,6 +337,9 @@ component Apollo
   // The inbox stays fresh while it is on screen.
   task poll when account.paired and onHome and page.visibilityState == "visible"
     every(15000, refreshAll)
+  // Routines stay fresh while their screen is up.
+  task routinesPoll when top(nav).name == "routines" and page.visibilityState == "visible"
+    every(30000, refreshAll)
   // A running turn's elapsed time.
   task ticker when thread.active
     every(1000, tickClock)
@@ -509,9 +516,9 @@ component Apollo
       preventDefault()
       submit()
   action submit
+    // A steer keeps its text in the composer until Hermes takes it.
     if canSteer
       send steered = steerRun(thread.runId, selected, draft.trim())
-      draft = ""
     else if canSend
       if top(nav).name == "compose"
         send created = createThread(draft.trim(), composeModel, files)
@@ -643,10 +650,21 @@ component Apollo
           chasing = true
       case none
         notice = ""
+  action afterSteer
+    match steered
+      case some(s)
+        notice = s.error
+        if s.error == ""
+          draft = ""
+      case none
+        notice = ""
+    refreshAll()
   action afterSend
-    let a = match sent { case some(s) => s.error, case none => "" }
-    let b = match steered { case some(s) => s.error, case none => "" }
-    notice = a != "" ? a : b
+    match sent
+      case some(s)
+        notice = s.error
+      case none
+        notice = ""
     refreshAll()
     chasing = true
   action stop
@@ -655,11 +673,24 @@ component Apollo
   // "Always" adds the command to Hermes's allowlist for every thread, so it asks first.
   action choose(choice: string)
     if choice == "always"
+      alwaysRun = thread.runId
+      alwaysRequest = thread.approvalId
+      alwaysCommand = thread.approvalCommand
       showModal("always-allow")
     else
       send answered = answerApproval(thread.runId, thread.approvalId, choice)
+  action afterAnswer
+    match answered
+      case some(a)
+        notice = a.error
+      case none
+        notice = ""
+    refreshAll()
   action allowAlways
-    send answered = answerApproval(thread.runId, thread.approvalId, "always")
+    if alwaysRun == thread.runId and alwaysRequest == thread.approvalId and alwaysCommand == thread.approvalCommand and alwaysCommand != ""
+      send answered = answerApproval(alwaysRun, alwaysRequest, "always")
+    else
+      notice = "That request changed. Choose again."
   action aimMessage(text: string)
     aimedText = text
   action replyAimed
@@ -949,7 +980,7 @@ component Apollo
                   text thread.approvalReason font="-exact-subheadline" color="-exact-secondary-label"
                 text thread.approvalCommand font-family="ui-monospace" font="-exact-footnote" user-select="text" line-clamp=8
                 row gap=8 justify-content="flex-end" flex-wrap="wrap"
-                  for c in thread.approvalChoices.filter(c => c != "once").concat(thread.approvalChoices.filter(c => c == "once")) key=c
+                  for c in thread.approvalChoices.filter(c => c == "deny").concat(thread.approvalChoices.filter(c => c == "session" or c == "always")).concat(thread.approvalChoices.filter(c => c == "once")) key=c
                     button press=choose(c) buttonStyle=(c == "once" ? "filled" : "bordered") destructive=(c == "deny") disabled=pending(answered) testId=`approve-${c}`
                       text choiceLabel(c)
             if shownError != ""
@@ -986,7 +1017,7 @@ component Apollo
                   if thread.active and e.name == "session"
                     button press=stop buttonStyle="bordered" margin="4px 0" aria-label="Stop" testId="stop"
                       image "symbol:stop-fill"
-                    if draft.trim() != ""
+                    if draft.trim() != "" and thread.status == "running"
                       button press=submit disabled=(not canSteer) buttonStyle="filled" margin="4px 0 4px 6px" retainFocus=true aria-label="Steer" testId="steer"
                         image "symbol:send"
                   else
@@ -1107,7 +1138,7 @@ component Apollo
         button commandfor="delete-thread" command="close" testId="delete-cancel"
           text "Cancel"
       dialog id="always-allow" role="alertdialog" aria-label="Always allow this command?"
-        text "Hermes won't ask before running it again, in any thread."
+        text `${alwaysCommand}\n\nHermes won't ask before running it again, in any thread.` testId="always-text"
         button press=allowAlways commandfor="always-allow" command="close" testId="always-confirm"
           text "Always allow"
         button commandfor="always-allow" command="close" testId="always-cancel"

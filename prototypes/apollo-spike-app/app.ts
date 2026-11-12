@@ -424,11 +424,18 @@ const approvalChoices = (choices: unknown) => {
 
 // Steers this phone sent into a running turn, drawn under it until Hermes's history has them, and
 // what Hermes said it never delivered (`pending_steer` on a terminal event), until the next send.
-const steers = new Map<string, string[]>();
+// A steer is in history once its text shows more often than it did when it was sent, so an
+// earlier message with the same words doesn't hide it.
+const steers = new Map<string, { text: string; before: number }[]>();
 const undelivered = new Map<string, string>();
+const rowsSeen = new Map<string, Row[]>();
+const said = (rows: Row[], text: string) => rows.filter((r) => r.kind === 'user' && r.text.trim() === text).length;
+// The steers sent into a run that history doesn't show yet, with their place in the order sent.
+const unseen = (rows: Row[], runId: string) => (steers.get(runId) ?? []).flatMap(({ text, before }, i, sent) =>
+  said(rows, text) > before + sent.slice(0, i).filter((s) => s.text === text).length ? [] : [{ text, i }]);
 function withSteers(rows: Row[], sessionId: string, runId: string): Row[] {
-  const sent = new Set(rows.filter((r) => r.kind === 'user').map((r) => r.text.trim()));
-  const echoes = (steers.get(runId) ?? []).filter((text) => !sent.has(text)).map((text, i): Row => ({ ...plain, id: `steer-${runId}-${i}`, kind: 'user', text, status: 'steered' }));
+  rowsSeen.set(sessionId, rows);
+  const echoes = unseen(rows, runId).map(({ text, i }): Row => ({ ...plain, id: `steer-${runId}-${i}`, kind: 'user', text, status: 'steered' }));
   const lost = undelivered.get(sessionId);
   return [...rows, ...echoes, ...(lost ? [{ ...plain, id: `undelivered-${sessionId}`, kind: 'error', text: `Hermes finished before it read: “${lost}”. Send it again as a new message.` }] : [])];
 }
@@ -461,14 +468,23 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
     const { title, messages } = await history(store, sessionId);
     const recent = opened(l, sessionId, title);
     const runId = l.runs[sessionId];
-    let run = runId ? parseRun(await api(store, `/v1/runs/${encodeURIComponent(runId)}`).catch(() => ({ run_id: runId, status: 'unknown' }))) : undefined;
+    const status = runId ? await api(store, `/v1/runs/${encodeURIComponent(runId)}`).catch(() => ({ run_id: runId, status: 'unknown' } as Json)) : undefined;
+    let run = status ? parseRun(status) : undefined;
+    // A run that ended while the thread was closed still says what it never delivered.
+    const lostBefore = str(status?.pending_steer);
+    if (lostBefore && run && !isRunActive(run.status)) undelivered.set(sessionId, lostBefore);
     if (!runId || !run || !isRunActive(run.status)) {
       // A thread read with nothing running is read, as Apollo marks it.
       if (runId) delete l.runs[sessionId];
       l.read[sessionId] = Math.floor(now / 1000);
+      const rows = toRows(project({ history: messages, events: [], running: false }));
+      // A steer the ended run neither saved nor named as undelivered never reached it either.
+      const missed = runId ? unseen(rows, runId).map((m) => m.text) : [];
+      if (missed.length && !lostBefore) undelivered.set(sessionId, missed.join('\n'));
       if (runId) steers.delete(runId);
-      const thread: Thread = { ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", recent, title, rows: withSteers(toRows(project({ history: messages, events: [], running: false })), sessionId, '') };
-      await keepThread(storage, l, { ...thread, recent: [], rows: thread.rows.slice(-KEEP_ROWS) });
+      const thread: Thread = { ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", recent, title, rows: withSteers(rows, sessionId, '') };
+      // The kept copy leaves out the undelivered note, which lasts only until the next send.
+      await keepThread(storage, l, { ...thread, recent: [], rows: thread.rows.filter((r) => !r.id.startsWith('undelivered-')).slice(-KEEP_ROWS) });
       await save(storage);
       return thread;
     }
@@ -634,7 +650,8 @@ function scheduleLabel(display: string): string {
   const cron = /^(\S+) (\S+) \* \* (\S+)$/u.exec(display);
   if (!cron) return capitalize(display);
   const [, minute, hour, days] = cron as unknown as [string, string, string, string];
-  if (hour === '*' && days === '*') return minute === '*' ? 'Every minute' : /^\*\/\d+$/u.test(minute) ? every(Number(minute.slice(2))) : display;
+  // */n only keeps an even pace when n divides the hour: */45 runs at :00 and :45.
+  if (hour === '*' && days === '*') return minute === '*' ? 'Every minute' : minute === '0' ? 'Every hour' : /^\*\/\d+$/u.test(minute) && 60 % Number(minute.slice(2)) === 0 ? every(Number(minute.slice(2))) : display;
   if (!/^\d+$/u.test(minute) || !/^\d+$/u.test(hour)) return display;
   const at = clockTime(Number(hour), Number(minute));
   if (days === '*') return `Daily at ${at}`;
@@ -645,10 +662,11 @@ function scheduleLabel(display: string): string {
 
 const until = (seconds: number, now: number) => {
   const s = seconds - now / 1000;
+  if (s < 0) return 'due';
   if (s < 60) return 'soon';
-  if (s < 3600) return `in ${Math.round(s / 60)}m`;
-  if (s < 86400) return `in ${Math.round(s / 3600)}h`;
-  return `in ${Math.round(s / 86400)}d`;
+  if (s < 3600) return `in ${Math.floor(s / 60)}m`;
+  if (s < 86400) return `in ${Math.floor(s / 3600)}h`;
+  return `in ${Math.floor(s / 86400)}d`;
 };
 const when = (iso: unknown) => { const t = typeof iso === 'string' ? Date.parse(iso) : NaN; return Number.isFinite(t) ? t / 1000 : undefined; };
 
@@ -674,7 +692,7 @@ async function routines(store: Store, now: number): Promise<Routines> {
     return { error: '', live: true, items };
   } catch (e) {
     const status = (e as { status?: number }).status;
-    return { error: e instanceof Unpaired ? '' : status === 404 ? 'Update the Apollo connector to see routines.' : message(e), live: false, items: [] };
+    return { error: e instanceof Unpaired ? '' : status === 404 ? 'This connector or Hermes does not list routines yet.' : message(e), live: false, items: [] };
   }
 }
 
@@ -712,6 +730,7 @@ const sources: Sources = {
     local = fresh();
     await save(storage);
     sessionsSeen = []; cardsSeen = []; cardsLive = false;
+    steers.clear(); undelivered.clear(); rowsSeen.clear();
     return ok;
   },
   inbox: ([, , showSettled, showSnoozed, query, now], store, storage) => { setClock(now); return inbox(showSettled, showSnoozed, query, now, store, storage); },
@@ -747,6 +766,9 @@ const sources: Sources = {
     try {
       await api(store, `/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
       const l = await state(storage);
+      const runId = l.runs[sessionId];
+      if (runId) steers.delete(runId);
+      undelivered.delete(sessionId); rowsSeen.delete(sessionId);
       for (const ledger of [l.runs, l.read, l.snoozed, l.models]) delete ledger[sessionId];
       l.recent = l.recent.filter((r) => r.id !== sessionId);
       await forgetThread(storage, l, sessionId);
@@ -769,8 +791,8 @@ const sources: Sources = {
     try {
       const body = await api(store, `/v1/runs/${encodeURIComponent(runId)}/steer`, { method: 'POST', body: { input: text } });
       if (body.accepted !== true) throw new Error('Hermes did not take the message. Send it again when the run ends.');
-      steers.set(runId, [...(steers.get(runId) ?? []), text.trim()]);
-      undelivered.delete(sessionId);
+      const sent = text.trim();
+      steers.set(runId, [...(steers.get(runId) ?? []), { text: sent, before: said(rowsSeen.get(sessionId) ?? [], sent) }]);
       return ok;
     } catch (e) {
       return failed((e as { code?: string }).code === 'run_not_accepting_steer' ? new Error('The run already finished. Send it as a new message.') : e);

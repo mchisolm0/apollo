@@ -38,10 +38,12 @@ test "an approval offers the tiers Hermes allows, and Always asks before it appl
   expect tree has "approval"
   tap "approve-always"
   clock settle
+  expect text "always-text" == "rm -rf build/\n\nHermes won't ask before running it again, in any thread."
   tap "always-confirm"
   clock data
   clock until state thread.status == "completed" within 5000
   expect tree missing "approval"
+  expect state threadRows.2 .text == "Cleaned the build folder (allowed always)."
 
 test "a smart-denied command offers only once and deny"
   type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
@@ -72,10 +74,48 @@ test "a message typed while a turn runs steers it"
   tap "steer"
   clock data
   expect state draft == ""
+  expect state threadRows.2 .text == "Skip the tests folder"
+  expect state threadRows.2 .status == "steered"
   clock until state thread.status == "completed" within 5000
+  clock +300
   clock data
   expect state threadRows.1 .text == "Skip the tests folder"
-  expect state threadRows.1 .kind == "user"
+  expect state threadRows.1 .status == "complete"
+  expect state threadRows.2 .text == "Steered: Skip the tests folder"
+  expect state threadRows.length == 3
+
+test "a steer the run ended before reading says it was not delivered"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "new"
+  type "composer" "hold until I say"
+  tap "send"
+  clock data
+  clock until state thread.status == "running" within 5000
+  type "composer" "never mind"
+  tap "steer"
+  clock data
+  clock until state thread.status == "completed" within 5000
+  clock +300
+  clock data
+  expect state threadRows.2 .kind == "error"
+  expect state threadRows.2 .text == "Hermes finished before it read: “never mind”. Send it again as a new message."
+
+test "a steer Hermes refuses stays in the composer to send again"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "new"
+  type "composer" "hold until I say"
+  tap "send"
+  clock data
+  clock until state thread.status == "running" within 5000
+  type "composer" "too late"
+  tap "steer"
+  clock data
+  expect state draft == "too late"
+  expect text "error" == "The run already finished. Send it as a new message."
 
 test "Reply quotes a message into the composer"
   type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
@@ -101,3 +141,5 @@ test "Routines lists what failed first, then the rest, with paused ones marked"
   expect text "routine-status-job-digest" == "Paused"
   expect state routineList.items.2 .schedule == "Weekdays at 8:35 AM"
   expect state routineList.items.1 .schedule == "Daily at 8:45 AM"
+  expect state routineList.items.0 .schedule == "Every 30 minutes"
+  expect state routineList.items.3 .schedule == "Mondays at 8:00 AM"

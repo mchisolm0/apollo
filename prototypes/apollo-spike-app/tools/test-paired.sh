@@ -19,4 +19,7 @@ if ! up; then
     sleep 0.2
   done
 fi
-if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then bun exact.mjs test ios "$@"; else bun exact.mjs test ios tests/*.test.contract "$@"; fi
+case " $* " in
+  *.test.contract*) bun exact.mjs test ios "$@" ;;
+  *) bun exact.mjs test ios tests/*.test.contract "$@" ;;
+esac
