@@ -39,5 +39,12 @@ crashes on the Xcode 27.2 SDK). Fixture inputs: `approval`, `hold`, `storm` (2,0
   move the relay modules into a shared package.
 - Exact's native list rows (`list appearance="auto"`) blank a long-pressed row until its menu
   lifts it, so the inbox uses a plain list and paints its own swipe action.
-- Not built: push notifications, snooze, search, attachments and sharing, voice, model and skill
-  pickers, settings, iPad split view, code highlighting.
+- Exact's speech recognition takes a `@exact/media-capture` microphone track, not
+  `microphone=true` (not built on Apple). The simulator has no on-device English model, so
+  dictation answers `language-not-supported` there; it needs a phone.
+- `navigationSplit` splits on the web and the Mac only; Exact's iPad host doesn't split yet.
+  Exact's Markdown draws code blocks without syntax colours.
+- Push and sharing on the phone need an explicit App ID (Push, and the App Group
+  `group.com.matthewchisolm.apollo.exactspike`) instead of the wildcard profile, plus an APNs key
+  for that bundle id in EAS so the cloud and connector can send through Expo. Sharing works on the
+  simulator.
