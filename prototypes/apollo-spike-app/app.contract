@@ -51,10 +51,18 @@ shape Item
   picks: Pick[]
   meta: Pair[]
   summary: string
+  snooze: bool
+
+shape SnoozeOption
+  id: string
+  label: string
+  when: string
+  until: number
 
 shape Inbox
   error: string
   items: Item[]
+  snoozeOptions: SnoozeOption[]
 
 shape Metric
   label: string
@@ -169,6 +177,10 @@ component Apollo
   state notice = ""
   state opened = []
   state showSettled = false
+  state showSnoozed = false
+  state searchText = ""
+  state query = ""
+  state aimedSnooze = false
   state aimed = ""
   state aimedSwipe = ""
   state aimedKind = ""
@@ -180,7 +192,7 @@ component Apollo
   resource page = exactPage() as shape Page
   resource time = exactTime() as shape Time
   resource account = account(accountRevision) as shape Account
-  resource inbox = inbox(revision, account.paired, showSettled) with now as shape Inbox
+  resource inbox = inbox(revision, account.paired, showSettled, showSnoozed, query) with now as shape Inbox
   resource thread = transcript(selected, revision) with now as shape Thread
   resource card = card(selectedCard, revision) as shape CardView
   mutation paired as shape Ack then afterPair
@@ -214,6 +226,9 @@ component Apollo
     after(1, onReturn)
   task chase when chasing
     after(350, toEnd)
+  // Search filters as you type, a beat after the last key, so each key doesn't refetch the inbox.
+  task searching when searchText != query key=searchText
+    after(250, applySearch)
   task shortcuts when recentKey != "" key=recentKey
     after(1, publishShortcuts)
 
@@ -256,8 +271,18 @@ component Apollo
       openURL(p.url)
     else if top(nav).name != "card"
       nav = go(nav, path("card", id))
-  action toggleSettled
-    showSettled = not showSettled
+  action toggleSection(id: string)
+    if id == "snoozed"
+      showSnoozed = not showSnoozed
+    else
+      showSettled = not showSettled
+  action search(v: string)
+    searchText = v
+  action applySearch
+    query = searchText
+  // Snooze is this phone's alone, as in Apollo; until 0 wakes the thread.
+  action snoozeAimed(until: number)
+    send filed = snooze(aimed, until)
 
   action editLink(v: string)
     link = v
@@ -280,17 +305,22 @@ component Apollo
     refreshAll()
 
   // Settle and reopen: threads on the connector (every phone sees it), cards on this phone.
-  action aim(id: string, kind: string, swipe: string)
+  action aim(id: string, kind: string, swipe: string, canSnooze: bool)
     aimed = id
     aimedKind = kind
     aimedSwipe = swipe
+    aimedSnooze = canSnooze
   action settleAimed
-    if aimedKind == "session"
+    if aimedSwipe == "unsnooze"
+      send filed = snooze(aimed, 0)
+    else if aimedKind == "session"
       send filed = settleThread(aimed, aimedSwipe == "settle", time.epochAtZero + performanceNow())
     else
       send filed = settleCard(aimed, aimedSwipe == "settle")
   action settleRow(id: string, kind: string, swipe: string)
-    if kind == "session"
+    if swipe == "unsnooze"
+      send filed = snooze(id, 0)
+    else if kind == "session"
       send filed = settleThread(id, swipe == "settle", time.epochAtZero + performanceNow())
     else
       send filed = settleCard(id, swipe == "settle")
@@ -383,13 +413,15 @@ component Apollo
       for e in stack(nav) key=e.id
         if e.name == "home"
           column navigationKey=`${e.id}` navigationScroll="inbox" position="absolute" inset=0 display="flex" flex-direction="column"
-            header display="flex" align-items="center" gap=8 padding="8px 16px"
+            header display="flex" flex-wrap="wrap" align-items="center" gap=8 padding="8px 16px"
               text "Inbox" role="heading" aria-level=1 flex=1
               if account.paired
                 button popovertarget="home-menu" aria-label="More" testId="more"
                   image "symbol:more"
                 button press=openNew aria-label="New Thread" aria-keyshortcuts="Meta+N" testId="new"
                   image "symbol:compose"
+              if account.paired
+                input type="search" value=searchText input=search placeholder="Search" aria-label="Search threads" testId="search" width="100%"
             column id="home-menu" popover="auto" role="menu" aria-label=account.label
               button press=askUnpair destructive=true popovertarget="home-menu" popovertargetaction="hide" testId="unpair"
                 text "Unpair"
@@ -400,18 +432,18 @@ component Apollo
               list id="inbox" appearance="none" flex=1 min-height=0 testId="inbox"
                 for it in inbox.items key=it.key
                   if it.kind == "section"
-                    button appearance="none" press=toggleSettled display="flex" flex-direction="row" align-items="center" justify-content="flex-start" gap=6 padding="14px 16px 6px" testId=`section-${it.id}`
-                      image (showSettled ? "symbol:sf/chevron.down" : "symbol:forward-chevron") font-size=12 color="-exact-secondary-label"
+                    button appearance="none" press=toggleSection(it.id) display="flex" flex-direction="row" align-items="center" justify-content="flex-start" gap=6 padding="14px 16px 6px" testId=`section-${it.id}`
+                      image ((it.id == "snoozed" ? showSnoozed : showSettled) or query != "" ? "symbol:sf/chevron.down" : "symbol:forward-chevron") font-size=12 color="-exact-secondary-label"
                       text `${it.title} · ${it.count}` font="-exact-subheadline" color="-exact-secondary-label"
                   else if it.kind == "caughtUp"
                     row justify-content="center" padding="24px 0"
                       text it.title color="-exact-secondary-label" testId="caught-up"
                   else
                     // Swipe left to settle or reopen, as Apollo's rows do; long press for the same in a menu.
-                    scroll swipeContent="content" swipeTrailing="swipe" display="flex" padding-right=0 overflow-x="scroll" overflow-y="hidden"
+                    scroll swipeContent="content" swipeTrailing="swipe" swipeLeading="snooze" display="flex" padding-right=0 overflow-x="scroll" overflow-y="hidden"
                       scrollbar-width="none" scroll-snap-type="x mandatory" border-bottom="1px solid -exact-separator" margin="0 0 0 16px"
                       column id="content" width="100%" flex-shrink=0 scroll-snap-align="start" box-sizing="border-box" gap=8 padding="10px 16px 10px 0"
-                        link href=(it.kind == "session" ? path("session", it.id) : path("card", it.id)) contextmenu=aim(it.id, it.kind, it.swipe) contextPopover="row-menu" testId=`row-${it.id}`
+                        link href=(it.kind == "session" ? path("session", it.id) : path("card", it.id)) contextmenu=aim(it.id, it.kind, it.swipe, it.snooze) contextPopover="row-menu" testId=`row-${it.id}`
                           row gap=10 align-items="flex-start" flex=1 min-width=0
                             if it.glyph != ""
                               text it.glyph font="-exact-footnote" font-weight=600 color="AccentColor" width=24 height=24 border-radius=12
@@ -438,10 +470,15 @@ component Apollo
                             for a in it.actions key=a.id
                               button press=answerCard(it.id, a) buttonStyle=(a.style == "primary" ? "filled" : "bordered") destructive=(a.style == "destructive") disabled=pending(responded) testId=`act-${it.id}-${a.id}`
                                 text a.label
+                      // Swipe right to snooze, as in Apollo: the press picks a time from the menu.
+                      if it.snooze
+                        button id="snooze" appearance="none" press=aim(it.id, it.kind, it.swipe, it.snooze) popovertarget="snooze-menu" flex-shrink=0 scroll-snap-align="start" width=84
+                          align-self="stretch" display="flex" align-items="center" justify-content="center" background-color="-exact-system-purple" testId=`snooze-${it.id}`
+                          text "Snooze" font="-exact-subheadline" font-weight=600 color="#ffffff"
                       if it.swipe != ""
                         button id="swipe" appearance="none" press=settleRow(it.id, it.kind, it.swipe) flex-shrink=0 scroll-snap-align="start" width=84 align-self="stretch"
                           display="flex" align-items="center" justify-content="center" background-color=(it.swipe == "settle" ? "AccentColor" : "-exact-system-indigo") testId=`swipe-${it.id}`
-                          text (it.swipe == "settle" ? "Settle" : "Reopen") font="-exact-subheadline" font-weight=600 color="AccentColorText"
+                          text (it.swipe == "settle" ? "Settle" : it.swipe == "unsnooze" ? "Unsnooze" : "Reopen") font="-exact-subheadline" font-weight=600 color="AccentColorText"
               column id="row-menu" popover="auto" role="menu"
                 if aimedSwipe == "settle"
                   button press=settleAimed popovertarget="row-menu" popovertargetaction="hide" testId="settle"
@@ -449,6 +486,16 @@ component Apollo
                 if aimedSwipe == "reopen"
                   button press=settleAimed popovertarget="row-menu" popovertargetaction="hide" testId="reopen"
                     text "Reopen"
+                if aimedSwipe == "unsnooze"
+                  button press=settleAimed popovertarget="row-menu" popovertargetaction="hide" testId="unsnooze"
+                    text "Unsnooze"
+                if aimedSnooze
+                  button popovertarget="snooze-menu" testId="snooze"
+                    text "Snooze"
+              column id="snooze-menu" popover="auto" role="menu" aria-label="Snooze until"
+                for o in inbox.snoozeOptions key=o.id
+                  button press=snoozeAimed(o.until) popovertarget="snooze-menu" popovertargetaction="hide" testId=`snooze-${o.id}`
+                    text `${o.label} · ${o.when}`
             else
               list id="pair-form" appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
                 section

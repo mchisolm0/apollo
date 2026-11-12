@@ -8,7 +8,8 @@ import { parseCard, parseSnapshot } from './apollo/src/features/cloud/cards.ts';
 import { previewLine } from './apollo/src/features/cloud/card-text.ts';
 import { buildInboxRows, cardOpenPlan, hermesApprovalTarget, isCardSettled, settleAction, updateSettledCards, type InboxCard, type SettledCards } from './apollo/src/features/cloud/inbox-rows.ts';
 import { liveActivityLabel, oneLine, readableOutput, settledActivityLabel, toolVerb } from './apollo/src/features/relay/activity.ts';
-import { autoSettleSessionsDue, canSettleSession, deriveSessionInbox, type InboxSession } from './apollo/src/features/relay/session-inbox.ts';
+import { autoSettleSessionsDue, canSettleSession, deriveSessionInbox, isSessionSnoozed, pruneSnoozedLedger, snoozeSession, unsnoozeSession, type InboxSession } from './apollo/src/features/relay/session-inbox.ts';
+import { resolveSnoozePresets } from './apollo/src/features/relay/snooze-presets.ts';
 import { createTranscriptProjector, type TranscriptRow } from './apollo/src/features/relay/transcript.ts';
 import { setClock } from './apollo/clock.ts';
 import { normalizeEndpoint } from './apollo/src/lib/endpoint.ts';
@@ -89,8 +90,9 @@ async function cloud(store: Store): Promise<Credential['cloud']> {
 // ---- Local state: runs this app started, threads read, cards settled ----
 
 // `recent` is the threads opened last, newest first: the Home Screen's quick actions.
-type Local = { runs: Record<string, string>; read: Record<string, number>; cards: Record<string, number>; recent: { id: string; title: string }[] };
-const fresh = (): Local => ({ runs: {}, read: {}, cards: {}, recent: [] });
+// snoozed: Apollo's local snooze ledger, thread id -> wake time in unix seconds.
+type Local = { runs: Record<string, string>; read: Record<string, number>; cards: Record<string, number>; recent: { id: string; title: string }[]; snoozed: Record<string, number> };
+const fresh = (): Local => ({ runs: {}, read: {}, cards: {}, recent: [], snoozed: {} });
 let local: Local | undefined;
 async function state(storage: Storage): Promise<Local> {
   if (local) return local;
@@ -164,7 +166,7 @@ async function settleThreads(store: Store, settled: Record<string, number | null
 
 const picksOf = (card: Card) => (card.picks ?? []).map((p) => ({ n: p.n, text: p.text, sub: p.sub ?? '', url: p.url ?? '', done: p.done }));
 const button = (a: CardAction) => ({ id: a.id, label: a.label, style: a.style ?? 'default', input: a.input === 'text', url: a.url ?? '' });
-const noExtras = { picks: [], meta: [], summary: '' } satisfies Pick<Item, 'picks' | 'meta' | 'summary'>;
+const noExtras = { picks: [], meta: [], summary: '', snooze: false } satisfies Pick<Item, 'picks' | 'meta' | 'summary' | 'snooze'>;
 
 // The morning card as Apollo's first inbox row: its day, calendar line, up to three picks and its
 // actions, then "Working on these · 1 of 3 done" once answered.
@@ -174,7 +176,7 @@ function briefingItem(card: InboxCard, l: Local, now: number): Item {
   const ack = card.resolution?.actionId;
   const label = ack === 'keep' ? 'Working on these' : ack === 'skip' ? 'No picks today' : card.actions?.find((a) => a.id === ack)?.label ?? ack;
   return {
-    key: `card-${card.id}`, kind: 'briefing', id: card.id, title: card.title, subtitle: calendar ?? '', badge: '', tone: 'muted',
+    ...noExtras, key: `card-${card.id}`, kind: 'briefing', id: card.id, title: card.title, subtitle: calendar ?? '', badge: '', tone: 'muted',
     time: ago(Date.parse(card.updatedAt) / 1000, now), settled: false, swipe: settleAction(card, settledCards(l)) ?? '', count: 0,
     glyph: card.source.charAt(0).toUpperCase(), link: '', picks, meta: Object.entries(meta).map(([key, value]) => ({ key, value })),
     summary: ack ? `${label} · ${picks.filter((p) => p.done).length} of ${picks.length} done` : '',
@@ -198,16 +200,18 @@ function cardItem(card: InboxCard, settled: boolean, l: Local, now: number): Ite
   };
 }
 
-function sessionItem(s: InboxSession, now: number): Item {
+function sessionItem(s: InboxSession, snoozed: boolean, now: number): Item {
   const badge = s.pendingApproval ? 'Needs approval' : s.running ? 'Working' : s.failed && s.attention ? 'Failed' : s.attention ? 'New result' : '';
   const tone = s.pendingApproval ? 'amber' : s.running || badge === 'New result' ? 'accent' : badge === 'Failed' ? 'red' : 'muted';
   return {
     ...noExtras, key: `session-${s.id}`, kind: 'session', id: s.id, title: s.title, subtitle: s.settled ? '' : s.preview ?? '', badge, tone,
-    time: ago(s.activityAt, now), settled: s.settled, swipe: canSettleSession(s) ? 'settle' : s.settled ? 'reopen' : '', count: 0, glyph: '', link: '', actions: [],
+    time: ago(s.activityAt, now), settled: s.settled, swipe: s.settled ? 'reopen' : snoozed ? 'unsnooze' : canSettleSession(s) ? 'settle' : '', count: 0, glyph: '', link: '', actions: [],
+    // As in Apollo, work waiting on you can't be snoozed.
+    snooze: !s.settled && !snoozed && !s.pendingApproval,
   };
 }
 
-async function inbox(showSettled: boolean, now: number, store: Store, storage: Storage): Promise<Inbox> {
+async function inbox(showSettled: boolean, showSnoozed: boolean, query: string, now: number, store: Store, storage: Storage): Promise<Inbox> {
   try {
     const l = await state(storage);
     const [{ sessions, runs }, cloudCredential] = await Promise.all([sessionsAndRuns(store, storage), cloud(store)]);
@@ -223,17 +227,21 @@ async function inbox(showSettled: boolean, now: number, store: Store, storage: S
     const dueIds = new Set(due.map((s) => s.id));
     sessionsSeen = derived.map((s) => (dueIds.has(s.id) ? { ...s, settled: true, status: 'settled' as const } : s));
     const pendingRunIds = new Set(Object.values(runs).filter((r) => r.status === 'waiting_for_approval').map((r) => r.runId));
-    const rows = buildInboxRows({ sessions: sessionsSeen, cards, isSnoozed: () => false, settledCards: settledCards(l), pendingRunIds, runStateLive: true, collapsed: { snoozed: true, settled: !showSettled }, now });
+    l.snoozed = pruneSnoozedLedger(l.snoozed, now / 1000);
+    const snoozed = (id: string) => isSessionSnoozed(l.snoozed, id, now / 1000);
+    const rows = buildInboxRows({ sessions: sessionsSeen, cards, isSnoozed: snoozed, settledCards: settledCards(l), pendingRunIds, runStateLive: true, query, collapsed: { snoozed: !showSnoozed, settled: !showSettled }, now });
     const items = rows.map((row): Item => {
-      if (row.kind === 'session') return sessionItem(row.session, now);
+      if (row.kind === 'session') return sessionItem(row.session, snoozed(row.session.id), now);
       if (row.kind === 'briefing') return briefingItem(row.card, l, now);
       if (row.kind === 'card') return cardItem(row.card, row.settled, l, now);
       const blank = { ...noExtras, id: row.id, subtitle: '', badge: '', tone: 'muted', time: '', settled: false, swipe: '', glyph: '', link: '', actions: [] };
       if (row.kind === 'section') return { ...blank, key: `section-${row.id}`, kind: 'section', title: row.title, count: row.count ?? 0 };
       return { ...blank, key: 'caught-up', kind: 'caughtUp', title: "You're caught up", count: 0 };
     });
-    return { error: cloudError, items };
-  } catch (e) { return { error: e instanceof Unpaired ? '' : message(e), items: [] }; }
+    if (query.trim() && !items.length) items.push({ ...noExtras, key: 'no-matches', kind: 'caughtUp', id: 'no-matches', title: 'No matches', subtitle: '', badge: '', tone: 'muted', time: '', settled: false, swipe: '', count: 0, glyph: '', link: '', actions: [] });
+    const snoozeOptions = resolveSnoozePresets(new Date(now)).map((p) => ({ id: p.id, label: p.label, when: p.whenLabel, until: p.until }));
+    return { error: cloudError, items, snoozeOptions };
+  } catch (e) { return { error: e instanceof Unpaired ? '' : message(e), items: [], snoozeOptions: [] }; }
 }
 
 // ---- Cards ----
@@ -346,7 +354,9 @@ const emptyThread: Thread = {
 };
 
 // iOS shows four quick actions: New thread and the three threads opened last.
+// Opening a snoozed thread returns it to its section, as in Apollo.
 function opened(l: Local, id: string, title: string) {
+  l.snoozed = unsnoozeSession(l.snoozed, id);
   l.recent = [{ id, title }, ...l.recent.filter((r) => r.id !== id)].slice(0, 3);
   return l.recent;
 }
@@ -476,7 +486,13 @@ const sources: Sources = {
     sessionsSeen = []; cardsSeen = [];
     return ok;
   },
-  inbox: ([, , showSettled, now], store, storage) => { setClock(now); return inbox(showSettled, now, store, storage); },
+  inbox: ([, , showSettled, showSnoozed, query, now], store, storage) => { setClock(now); return inbox(showSettled, showSnoozed, query, now, store, storage); },
+  snooze: async ([sessionId, until], _store, storage) => {
+    const l = await state(storage);
+    l.snoozed = until > 0 ? snoozeSession(l.snoozed, sessionId, until) : unsnoozeSession(l.snoozed, sessionId);
+    await save(storage);
+    return ok;
+  },
   card: ([id], _store, storage) => cardView(id, storage),
   transcript: ([sessionId, , now], store, storage) => { setClock(now); return transcript(sessionId, now, store, storage); },
   createThread: async ([input], store, storage) => {
