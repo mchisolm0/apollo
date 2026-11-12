@@ -15,18 +15,9 @@ DEVELOPMENT_TEAM=69V3522FCX EXACT_PROFILE=<iOS Team Provisioning Profile: *> \
 AGENT_DEVICE_MINI_DAILY_DRIVER=1 agent-device-mini install com.matthewchisolm.apollo.exactspike "<path>.app" --udid <udid>
 ```
 
-It pairs with a second connector on the mini, separate from the live one:
-
-| | |
-|---|---|
-| Connector | `~/apollo-exact/connector` on the mini, LaunchAgent `com.matthewchisolm.apollo-exact-connector` |
-| Port | `127.0.0.1:8653`, served at `https://mini.potoroo-tet.ts.net:8453` (tailnet only) |
-| State | `~/.config/apollo-exact/` (no cloud inbox, no push) |
-| Logs | `~/Library/Logs/apollo/com.matthewchisolm.apollo-exact-connector.*.log` |
-| Pairing link | `ssh mini ~/apollo-exact/pair.sh` (one use, 15 minutes) |
-
-Remove it with `launchctl bootout gui/$(id -u)/com.matthewchisolm.apollo-exact-connector`,
-`tailscale serve --https=8453 off`, and deleting the two folders above.
+It pairs with the live connector on the mini, like Apollo itself: `node connector/cli.mjs pair
+--tailscale --ttl 900` in `~/code/apollo` prints a one-use link. Its inbox, cards and settle state
+are the real ones, so settling here settles in Apollo too.
 
 ## Locally
 
@@ -46,5 +37,7 @@ crashes on the Xcode 27.2 SDK). Fixture inputs: `approval`, `hold`, `storm` (2,0
   application/octet-stream`), which Exact reads losslessly: 2,000 of 2,000.
 - Exact won't import files outside the app folder or through symlinks, so a real port would
   move the relay modules into a shared package.
-- Not built: attachments, model and skill pickers, voice, notifications, the cloud inbox,
-  iPad split view, code highlighting.
+- Exact's native list rows (`list appearance="auto"`) blank a long-pressed row until its menu
+  lifts it, so the inbox uses a plain list and paints its own swipe action.
+- Not built: push notifications, snooze, search, attachments and sharing, voice, model and skill
+  pickers, settings, iPad split view, code highlighting.
