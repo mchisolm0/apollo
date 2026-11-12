@@ -11,7 +11,7 @@ node connector/cli.mjs revoke DEVICE_ID
 
 `HERMES_URL` defaults to `http://127.0.0.1:8642`, the connector defaults to `127.0.0.1:8643`, and state defaults to `~/.config/apollo/connector.json`. The CLI creates a local admin credential at `~/.config/apollo/admin-secret`, so normal pairing commands do not require another environment variable. Both files use mode `0600` in a `0700` directory. `APOLLO_ADMIN_SECRET` remains available as an override. The Hermes API key never appears in pairing output or is accepted from a mobile caller.
 
-The public descriptor is `/.well-known/apollo/agent`. Exchange a one-time token at `POST /v1/pair/exchange` with `{ "token": "...", "device_name": "..." }`. The returned bearer token authorizes the documented Hermes HTTP/SSE routes listed in `index.mjs` and the shared inbox API; WebSockets, arbitrary proxying, and artifact upload/download are intentionally not exposed yet.
+The public descriptor is `/.well-known/apollo/agent`. Exchange a one-time token at `POST /v1/pair/exchange` with `{ "token": "...", "device_name": "..." }`. The returned bearer token authorizes the documented Hermes HTTP/SSE routes listed in `index.mjs` and the shared inbox API; WebSockets, arbitrary proxying, and artifact upload/download are intentionally not exposed yet. Routines are read-only: `GET /api/jobs` lists Hermes cron jobs, and nothing that edits, pauses or runs one is proxied.
 
 `pair --tailscale` is the only command that invokes the Tailscale CLI. It reads `tailscale status --json`, configures `tailscale serve --bg --https=<port> http://127.0.0.1:<connector-port>`, and prints a scannable QR code plus the pasteable fallback link.
 

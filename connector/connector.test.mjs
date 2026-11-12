@@ -141,9 +141,11 @@ test("device requests neither wait on a stuck state write nor write on every req
   assert.equal((await req(f.base, "/v1/health", authed)).response.status, 200);
   const settled = updates;
   let release;
-  void update(() => new Promise((resolve) => { release = resolve; }));
+  const held = update(() => new Promise((resolve) => { release = resolve; }));
+  await waitFor(() => release);
   for (let index = 0; index < 3; index++) assert.equal((await req(f.base, "/v1/health", { ...authed, signal: AbortSignal.timeout(2000) })).response.status, 200);
   release();
+  await held;
   assert.equal(updates, settled);
 });
 
@@ -182,17 +184,20 @@ test("run events asked for as bytes keep their SSE frames under a byte content t
   assert.deepEqual([f.hermes.seen.at(-1).url, f.hermes.seen.at(-1).accept], ["/v1/runs/demo/events", "text/event-stream"]);
 });
 
-test("model inventory is device-authenticated and GET-only", async (t) => {
+for (const path of ["/api/model/options", "/api/jobs"]) test(`${path} is device-authenticated and GET-only`, async (t) => {
   const f = await fixture(); t.after(async () => { await f.connector.close(); await f.hermes.close(); });
-  assert.equal((await req(f.base, "/api/model/options")).response.status, 401);
+  assert.equal((await req(f.base, path)).response.status, 401);
   const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
   const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
   const headers = { authorization: `Bearer ${exchange.body.access_token}` };
-  assert.equal((await req(f.base, "/api/model/options", { headers })).response.status, 200);
-  assert.equal(f.hermes.seen.at(-1).url, "/api/model/options");
+  assert.equal((await req(f.base, path, { headers })).response.status, 200);
+  assert.equal(f.hermes.seen.at(-1).url, path);
   const count = f.hermes.seen.length;
   for (const method of ["POST", "PATCH", "DELETE"]) {
-    assert.equal((await req(f.base, "/api/model/options", { method, headers })).response.status, 404);
+    assert.equal((await req(f.base, path, { method, headers })).response.status, 404);
+  }
+  for (const [method, below] of [["GET", "/x"], ["POST", "/x/run"], ["POST", "/x/pause"]]) {
+    assert.equal((await req(f.base, `${path}${below}`, { method, headers })).response.status, 404);
   }
   assert.equal(f.hermes.seen.length, count);
 });
