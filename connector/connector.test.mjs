@@ -141,10 +141,11 @@ test("device requests neither wait on a stuck state write nor write on every req
   assert.equal((await req(f.base, "/v1/health", authed)).response.status, 200);
   const settled = updates;
   let release;
-  void update(() => new Promise((resolve) => { release = resolve; }));
+  const held = update(() => new Promise((resolve) => { release = resolve; }));
   await waitFor(() => release);
   for (let index = 0; index < 3; index++) assert.equal((await req(f.base, "/v1/health", { ...authed, signal: AbortSignal.timeout(2000) })).response.status, 200);
   release();
+  await held;
   assert.equal(updates, settled);
 });
 
@@ -194,6 +195,9 @@ for (const path of ["/api/model/options", "/api/jobs"]) test(`${path} is device-
   const count = f.hermes.seen.length;
   for (const method of ["POST", "PATCH", "DELETE"]) {
     assert.equal((await req(f.base, path, { method, headers })).response.status, 404);
+  }
+  for (const [method, below] of [["GET", "/x"], ["POST", "/x/run"], ["POST", "/x/pause"]]) {
+    assert.equal((await req(f.base, `${path}${below}`, { method, headers })).response.status, 404);
   }
   assert.equal(f.hermes.seen.length, count);
 });
