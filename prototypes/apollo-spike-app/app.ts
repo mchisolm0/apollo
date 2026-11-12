@@ -22,7 +22,7 @@ const SECRET = 'apollo.credential';
 const STATE = 'app:/data/state.json';
 export const appId = 'com.matthewchisolm.apollo.exactspike';
 // `https:` admits the connector and cloud the pairing names; loopback http is tools/fixture.mjs.
-export const grants = ['net.fetch https:', 'net.fetch http://127.0.0.1:19111', 'net.fetch http://127.0.0.1:19113', `secret.keep ${SECRET}`, `fs.read ${STATE}`, `fs.write ${STATE}`, 'fs.read app:/tmp', 'fs.write app:/tmp', 'device.microphone purpose.microphone', 'device.speech-recognition purpose.recognition'].join('\n');
+export const grants = ['net.fetch https:', 'net.fetch http://127.0.0.1:19111', 'net.fetch http://127.0.0.1:19113', `secret.keep ${SECRET}`, `fs.read ${STATE}`, `fs.write ${STATE}`, 'fs.read app:/cache', 'fs.write app:/cache', 'fs.read app:/tmp', 'fs.write app:/tmp', 'device.microphone purpose.microphone', 'device.speech-recognition purpose.recognition'].join('\n');
 
 type Thread = Result<'transcript'>;
 type Row = Thread['rows'][number];
@@ -94,8 +94,9 @@ async function cloud(store: Store): Promise<Credential['cloud']> {
 // `recent` is the threads opened last, newest first: the Home Screen's quick actions.
 // snoozed: Apollo's local snooze ledger, thread id -> wake time in unix seconds.
 // models: the model each thread runs on, as `provider|id`, kept on this phone as Apollo does.
-type Local = { runs: Record<string, string>; read: Record<string, number>; cards: Record<string, number>; recent: { id: string; title: string }[]; snoozed: Record<string, number>; models: Record<string, string> };
-const fresh = (): Local => ({ runs: {}, read: {}, cards: {}, recent: [], snoozed: {}, models: {} });
+// cached: the threads kept in app:/cache, newest first.
+type Local = { runs: Record<string, string>; read: Record<string, number>; cards: Record<string, number>; recent: { id: string; title: string }[]; snoozed: Record<string, number>; models: Record<string, string>; cached: string[] };
+const fresh = (): Local => ({ runs: {}, read: {}, cards: {}, recent: [], snoozed: {}, models: {}, cached: [] });
 let local: Local | undefined;
 async function state(storage: Storage): Promise<Local> {
   if (local) return local;
@@ -107,6 +108,32 @@ async function save(storage: Storage) {
   if (local) await storage.fs.atomicWriteFile(STATE, new TextEncoder().encode(JSON.stringify(local))).catch(() => {});
 }
 const settledCards = (l: Local): SettledCards => new Map(Object.entries(l.cards));
+
+// ---- What the phone keeps to draw before the connector answers ----
+// The inbox's inputs and the threads opened last, in app:/cache. Each is drawn only until the live
+// answer lands, says it is not live, and drives no action. Unpairing clears it.
+
+const INBOX_CACHE = 'app:/cache/inbox.json';
+const threadCache = (id: string) => `app:/cache/thread-${encodeURIComponent(id)}.json`;
+const KEEP_THREADS = 30;
+type InboxInputs = { sessions: InboxSession[]; cards: Card[]; pendingRunIds: string[] };
+
+async function readCache<T>(storage: Storage, path: string): Promise<T | undefined> {
+  const bytes = await storage.fs.readFile(path).catch(() => null);
+  try { return bytes ? (JSON.parse(new TextDecoder().decode(bytes)) as T) : undefined; } catch { return undefined; }
+}
+const writeCache = (storage: Storage, path: string, value: unknown) =>
+  storage.fs.atomicWriteFile(path, new TextEncoder().encode(JSON.stringify(value))).catch(() => {});
+
+async function keepThread(storage: Storage, l: Local, thread: Thread) {
+  const kept = [thread.id, ...l.cached.filter((id) => id !== thread.id)];
+  l.cached = kept.slice(0, KEEP_THREADS);
+  await Promise.all([writeCache(storage, threadCache(thread.id), thread), ...kept.slice(KEEP_THREADS).map((id) => storage.fs.rm(threadCache(id)).catch(() => {}))]);
+}
+async function forgetThread(storage: Storage, l: Local, id: string) {
+  l.cached = l.cached.filter((x) => x !== id);
+  await storage.fs.rm(threadCache(id)).catch(() => {});
+}
 
 // ---- Hermes parsing, as Apollo's hermes-client does it ----
 
@@ -141,6 +168,8 @@ function ago(seconds: number | undefined, now: number) {
 // The last list, so a thread or card screen can answer without asking again.
 let sessionsSeen: InboxSession[] = [];
 let cardsSeen: Card[] = [];
+// False while cardsSeen holds the cache's cards, before the cloud answered this launch.
+let cardsLive = false;
 
 async function sessionsAndRuns(store: Store, storage: Storage) {
   const l = await state(storage);
@@ -214,13 +243,31 @@ function sessionItem(s: InboxSession, snoozed: boolean, now: number): Item {
   };
 }
 
+// The inbox's rows from its inputs, live or kept.
+function inboxOf({ sessions, cards, pendingRunIds }: InboxInputs, l: Local, showSettled: boolean, showSnoozed: boolean, query: string, now: number, live: boolean): Inbox {
+  const snoozed = (id: string) => isSessionSnoozed(l.snoozed, id, now / 1000);
+  const rows = buildInboxRows({ sessions, cards, isSnoozed: snoozed, settledCards: settledCards(l), pendingRunIds: new Set(pendingRunIds), runStateLive: live, fresh: live, query, collapsed: { snoozed: !showSnoozed, settled: !showSettled }, now });
+  const items = rows.map((row): Item => {
+    if (row.kind === 'session') return sessionItem(row.session, snoozed(row.session.id), now);
+    if (row.kind === 'briefing') return briefingItem(row.card, l, now);
+    if (row.kind === 'card') return cardItem(row.card, row.settled, l, now);
+    const blank = { ...noExtras, id: row.id, subtitle: '', badge: '', tone: 'muted', time: '', settled: false, swipe: '', glyph: '', link: '', actions: [] };
+    if (row.kind === 'section') return { ...blank, key: `section-${row.id}`, kind: 'section', title: row.title, count: row.count ?? 0 };
+    return { ...blank, key: 'caught-up', kind: 'caughtUp', title: "You're caught up", count: 0 };
+  });
+  if (query.trim() && !items.length) items.push({ ...noExtras, key: 'no-matches', kind: 'caughtUp', id: 'no-matches', title: 'No matches', subtitle: '', badge: '', tone: 'muted', time: '', settled: false, swipe: '', count: 0, glyph: '', link: '', actions: [] });
+  const snoozeOptions = resolveSnoozePresets(new Date(now)).map((p) => ({ id: p.id, label: p.label, when: p.whenLabel, until: p.until }));
+  // A kept row can't be swiped: settling or snoozing goes by what the connector says now.
+  return { error: '', live, items: live ? items : items.map((it) => ({ ...it, swipe: '', snooze: false })), snoozeOptions };
+}
+
 async function inbox(showSettled: boolean, showSnoozed: boolean, query: string, now: number, store: Store, storage: Storage): Promise<Inbox> {
   try {
     const l = await state(storage);
     const [{ sessions, runs }, cloudCredential] = await Promise.all([sessionsAndRuns(store, storage), cloud(store)]);
     let cards = cardsSeen, cloudError = '';
     if (cloudCredential) {
-      try { cards = [...(parseSnapshot(await request(cloudCredential.url, cloudCredential.token, '/v1/cards'))?.cards ?? cards)]; cardsSeen = cards; }
+      try { cards = [...(parseSnapshot(await request(cloudCredential.url, cloudCredential.token, '/v1/cards'))?.cards ?? cards)]; cardsSeen = cards; cardsLive = true; }
       catch (e) { cloudError = `Cards: ${message(e)}`; }
     }
     const derived = deriveSessionInbox('hermes', { sessions, runs, events: [] }, {}, l.read);
@@ -229,29 +276,30 @@ async function inbox(showSettled: boolean, showSnoozed: boolean, query: string, 
     if (due.length) await settleThreads(store, Object.fromEntries(due.map((s) => [s.id, s.activityAt || Math.floor(now / 1000)]))).catch(() => {});
     const dueIds = new Set(due.map((s) => s.id));
     sessionsSeen = derived.map((s) => (dueIds.has(s.id) ? { ...s, settled: true, status: 'settled' as const } : s));
-    const pendingRunIds = new Set(Object.values(runs).filter((r) => r.status === 'waiting_for_approval').map((r) => r.runId));
+    const pendingRunIds = Object.values(runs).filter((r) => r.status === 'waiting_for_approval').map((r) => r.runId);
     l.snoozed = pruneSnoozedLedger(l.snoozed, now / 1000);
-    const snoozed = (id: string) => isSessionSnoozed(l.snoozed, id, now / 1000);
-    const rows = buildInboxRows({ sessions: sessionsSeen, cards, isSnoozed: snoozed, settledCards: settledCards(l), pendingRunIds, runStateLive: true, query, collapsed: { snoozed: !showSnoozed, settled: !showSettled }, now });
-    const items = rows.map((row): Item => {
-      if (row.kind === 'session') return sessionItem(row.session, snoozed(row.session.id), now);
-      if (row.kind === 'briefing') return briefingItem(row.card, l, now);
-      if (row.kind === 'card') return cardItem(row.card, row.settled, l, now);
-      const blank = { ...noExtras, id: row.id, subtitle: '', badge: '', tone: 'muted', time: '', settled: false, swipe: '', glyph: '', link: '', actions: [] };
-      if (row.kind === 'section') return { ...blank, key: `section-${row.id}`, kind: 'section', title: row.title, count: row.count ?? 0 };
-      return { ...blank, key: 'caught-up', kind: 'caughtUp', title: "You're caught up", count: 0 };
-    });
-    if (query.trim() && !items.length) items.push({ ...noExtras, key: 'no-matches', kind: 'caughtUp', id: 'no-matches', title: 'No matches', subtitle: '', badge: '', tone: 'muted', time: '', settled: false, swipe: '', count: 0, glyph: '', link: '', actions: [] });
-    const snoozeOptions = resolveSnoozePresets(new Date(now)).map((p) => ({ id: p.id, label: p.label, when: p.whenLabel, until: p.until }));
-    return { error: cloudError, items, snoozeOptions };
-  } catch (e) { return { error: e instanceof Unpaired ? '' : message(e), items: [], snoozeOptions: [] }; }
+    const inputs: InboxInputs = { sessions: sessionsSeen, cards, pendingRunIds };
+    await writeCache(storage, INBOX_CACHE, inputs);
+    return { ...inboxOf(inputs, l, showSettled, showSnoozed, query, now, true), error: cloudError };
+  } catch (e) { return { error: e instanceof Unpaired ? '' : message(e), live: false, items: [], snoozeOptions: [] }; }
+}
+
+// The last inbox this phone saw, drawn until the live one lands. Its cards stand in for the card
+// screen until then too, marked not live.
+async function savedInbox(paired: boolean, showSettled: boolean, showSnoozed: boolean, query: string, now: number, storage: Storage): Promise<Inbox> {
+  const none: Inbox = { error: '', live: false, items: [], snoozeOptions: [] };
+  if (!paired) return none;
+  const inputs = await readCache<InboxInputs>(storage, INBOX_CACHE);
+  if (!inputs) return none;
+  if (!cardsSeen.length) cardsSeen = inputs.cards;
+  return inboxOf(inputs, await state(storage), showSettled, showSnoozed, query, now, false);
 }
 
 // ---- Cards ----
 
 const emptyCard: CardView = {
   found: false, id: '', kind: '', source: '', title: '', body: '', plainText: false, outcome: '', url: '', threadId: '', open: false, settled: false,
-  swipe: '', meta: [], metrics: [], picks: [], actions: [], progress: '', progressValue: 0, error: '',
+  swipe: '', meta: [], metrics: [], picks: [], actions: [], progress: '', progressValue: 0, error: '', live: false,
 };
 
 async function cardView(id: string, storage: Storage): Promise<CardView> {
@@ -259,7 +307,7 @@ async function cardView(id: string, storage: Storage): Promise<CardView> {
   if (!card) return { ...emptyCard, error: 'This card is no longer in the inbox.' };
   const l = await state(storage);
   // Opening an update settles it, as Apollo does on first sight.
-  if (cardOpenPlan(card).settle && settleAction(card, settledCards(l)) === 'settle') {
+  if (cardsLive && cardOpenPlan(card).settle && settleAction(card, settledCards(l)) === 'settle') {
     l.cards = Object.fromEntries(updateSettledCards(settledCards(l), cardsSeen, card.id, true));
     await save(storage);
   }
@@ -276,7 +324,7 @@ async function cardView(id: string, storage: Storage): Promise<CardView> {
     picks: picksOf(card),
     actions: unanswered || card.actions?.some((a) => a.repeat) ? (card.actions ?? []).filter((a) => unanswered || a.repeat).map(button) : [],
     progress: card.progress ? `${card.progress.label} · ${card.progress.step} of ${card.progress.of}` : '', progressValue: card.progress ? card.progress.step / Math.max(1, card.progress.of) : 0,
-    error: '',
+    error: '', live: cardsLive,
   };
 }
 
@@ -358,7 +406,7 @@ function toRows(rows: readonly TranscriptRow[]): Row[] {
 }
 
 const emptyThread: Thread = {
-  title: '', rows: [], runId: '', status: '', active: false, ended: false, error: '',
+  id: '', live: false, title: '', rows: [], runId: '', status: '', active: false, ended: false, error: '',
   approvalId: '', approvalTitle: '', approvalCommand: '', approvalReason: '', settled: false, canSettle: false, autoSettle: true, activityAt: 0, recent: [], model: '',
 };
 
@@ -395,8 +443,10 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       // A thread read with nothing running is read, as Apollo marks it.
       if (runId) delete l.runs[sessionId];
       l.read[sessionId] = Math.floor(now / 1000);
+      const thread: Thread = { ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", recent, title, rows: toRows(project({ history: messages, events: [], running: false })) };
+      await keepThread(storage, l, { ...thread, recent: [] });
       await save(storage);
-      return { ...emptyThread, ...inboxFacts(sessionId), model: l.models[sessionId] ?? "", recent, title, rows: toRows(project({ history: messages, events: [], running: false })) };
+      return thread;
     }
     await save(storage);
     const { endpoint, token } = await credential(store);
@@ -410,7 +460,7 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       const command = str(approval?.command) ?? str(approval?.preview);
       const rows = project({ history: messages, events, runId, runStartedAt: current.createdAt, runEndedAt: current.updatedAt, runStatus: current.status, runOutput: current.output, running });
       return {
-        ...emptyThread, ...inboxFacts(sessionId), model: l.models[sessionId] ?? "", canSettle: false, recent, title, rows: toRows(rows), runId, status: current.status, active: running, ended: !running, error,
+        ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", canSettle: false, recent, title, rows: toRows(rows), runId, status: current.status, active: running, ended: !running, error,
         ...(approval && command ? { approvalId: str(approval.request_id) ?? approval.requestId ?? '', approvalTitle: approval.tool ? `Allow ${approval.tool}?` : 'Allow this command?', approvalCommand: command, approvalReason: approval.description ?? '' } : {}),
       };
     };
@@ -452,6 +502,13 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
   } catch (e) {
     return { ...emptyThread, error: message(e), ended: true };
   }
+}
+
+// The thread as last read on this phone, drawn until the live one lands. A thread never kept
+// answers blank, for this id, so no other thread's rows show under its title.
+async function savedTranscript(sessionId: string, storage: Storage): Promise<Thread> {
+  const kept = sessionId ? await readCache<Thread>(storage, threadCache(sessionId)) : undefined;
+  return { ...emptyThread, ...kept, id: sessionId, live: false, recent: [] };
 }
 
 // ---- Models, skills, toolsets and attachments ----
@@ -564,9 +621,11 @@ const sources: Sources = {
   },
   unpair: async (_args, store, storage) => {
     await store.forget(SECRET);
+    const l = await state(storage);
+    await Promise.all([INBOX_CACHE, ...l.cached.map(threadCache)].map((path) => storage.fs.rm(path).catch(() => {})));
     local = fresh();
     await save(storage);
-    sessionsSeen = []; cardsSeen = [];
+    sessionsSeen = []; cardsSeen = []; cardsLive = false;
     return ok;
   },
   inbox: ([, , showSettled, showSnoozed, query, now], store, storage) => { setClock(now); return inbox(showSettled, showSnoozed, query, now, store, storage); },
@@ -576,8 +635,10 @@ const sources: Sources = {
     await save(storage);
     return ok;
   },
+  savedInbox: ([paired, showSettled, showSnoozed, query, now], _store, storage) => savedInbox(paired, showSettled, showSnoozed, query, now, storage),
   card: ([id], _store, storage) => cardView(id, storage),
   transcript: ([sessionId, , now], store, storage) => { setClock(now); return transcript(sessionId, now, store, storage); },
+  savedTranscript: ([sessionId], _store, storage) => savedTranscript(sessionId, storage),
   agentOptions: async (_args, store) => {
     try { return await agentOptions(store); }
     catch (e) { return { models: [], skills: [], toolsets: [], defaultModel: '', platform: '', error: e instanceof Unpaired ? '' : message(e) }; }
@@ -602,6 +663,7 @@ const sources: Sources = {
       const l = await state(storage);
       for (const ledger of [l.runs, l.read, l.snoozed, l.models]) delete ledger[sessionId];
       l.recent = l.recent.filter((r) => r.id !== sessionId);
+      await forgetThread(storage, l, sessionId);
       await save(storage);
       return ok;
     } catch (e) { return failed(e); }
