@@ -659,8 +659,8 @@ component Apollo
     match steered
       case some(s)
         notice = s.error
-        if s.error == "" and draft == steerText and selected == steerThread
-          draft = ""
+        if s.error == "" and selected == steerThread and draft.startsWith(steerText)
+          draft = draft.slice(steerText.length).trim()
       case none
         notice = ""
     refreshAll()

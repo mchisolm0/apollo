@@ -192,7 +192,10 @@ async function sessionsAndRuns(store: Store, storage: Storage) {
       const lost = str(run.pendingSteer);
       if (lost && !isRunActive(run.status)) undelivered.set(sessionId, lost);
       if (!isRunActive(run.status)) delete l.runs[sessionId];
-    } catch { delete l.runs[sessionId]; }
+    } catch (e) {
+      // Only a run Hermes no longer knows leaves the ledger; one that didn't answer is asked again.
+      if ((e as { status?: number }).status === 404) delete l.runs[sessionId];
+    }
   }));
   await save(storage);
   return { sessions, runs };
@@ -475,21 +478,32 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
     const recent = opened(l, sessionId, title);
     const runId = l.runs[sessionId] ?? steeredRun.get(sessionId);
     let unreachable = false;
-    const status = runId ? await api(store, `/v1/runs/${encodeURIComponent(runId)}`).catch(() => { unreachable = true; return { run_id: runId, status: 'unknown' } as Json; }) : undefined;
+    const status = runId ? await api(store, `/v1/runs/${encodeURIComponent(runId)}`).catch((e) => { unreachable = (e as { status?: number }).status !== 404; return { run_id: runId, status: 'unknown' } as Json; }) : undefined;
     let run = status ? parseRun(status) : undefined;
     // A run that ended while the thread was closed still says what it never delivered.
     const lostBefore = str(status?.pending_steer);
     if (lostBefore && run && !isRunActive(run.status)) undelivered.set(sessionId, lostBefore);
     if (!runId || !run || !isRunActive(run.status)) {
+      // A run that didn't answer may still be going: it stays in the ledger with its steers, and
+      // the thread says so with Retry rather than looking idle.
+      if (runId && unreachable) {
+        const thread: Thread = { ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", recent, title, canSettle: false,
+          rows: withSteers(toRows(project({ history: messages, events: [], running: false })), sessionId, runId), error: 'Could not reach the running turn. Retry to check on it.' };
+        await save(storage);
+        return thread;
+      }
       // A thread read with nothing running is read, as Apollo marks it.
       if (runId) delete l.runs[sessionId];
       l.read[sessionId] = Math.floor(now / 1000);
-      const rows = toRows(project({ history: messages, events: [], running: false }));
-      // A steer the ended run neither saved nor named as undelivered never reached it either. A run
-      // that didn't answer may still be going, so its steers wait for the next look.
-      if (runId && !unreachable) {
+      let rows = toRows(project({ history: messages, events: [], running: false }));
+      // A steer the ended run neither saved nor named as undelivered never reached it either. History
+      // read before the run's status can miss a steer saved as it ended, so it is read once more.
+      if (runId) {
+        if (unseen(rows, runId).length) rows = toRows(createTranscriptProjector()({ history: (await history(store, sessionId)).messages, events: [], running: false }));
         const missed = unseen(rows, runId).map((m) => m.text);
-        const lost = [...(lostBefore ? [lostBefore] : []), ...missed.filter((text) => text !== lostBefore)];
+        // Hermes joins every steer it never delivered with newlines.
+        const named = new Set(lostBefore?.split('\n') ?? []);
+        const lost = [...(lostBefore ? [lostBefore] : []), ...missed.filter((text) => !named.has(text))];
         if (lost.length) undelivered.set(sessionId, lost.join('\n'));
         steers.delete(runId);
         steeredRun.delete(sessionId);
@@ -629,7 +643,11 @@ async function upload(store: Store, storage: Storage, file: Draft): Promise<Atta
 
 async function start(store: Store, storage: Storage, sessionId: string, text: string, files: readonly Draft[] = []) {
   const l = await state(storage);
+  // A new message starts over: what the last run left undelivered was said, and its steers are done.
   undelivered.delete(sessionId);
+  const last = steeredRun.get(sessionId);
+  if (last) steers.delete(last);
+  steeredRun.delete(sessionId);
   const attachments = [];
   for (const f of files) attachments.push(await upload(store, storage, f));
   const input = attachmentMessage(text, attachments);

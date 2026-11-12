@@ -122,6 +122,27 @@ test "a steer the run ended before reading says it was not delivered"
   expect state threadRows.2 .kind == "error"
   expect state threadRows.2 .text == "Hermes finished before it read: “never mind”. Send it again as a new message."
 
+test "two steers the run never read are named once each"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "new"
+  type "composer" "hold until I say"
+  tap "send"
+  clock data
+  clock until state thread.status == "running" within 5000
+  type "composer" "skip the logs"
+  tap "steer"
+  clock data
+  type "composer" "never mind"
+  tap "steer"
+  clock data
+  clock until state thread.status == "completed" within 5000
+  clock +300
+  clock data
+  expect state threadRows.2 .text == "Hermes finished before it read: “skip the logs\nnever mind”. Send it again as a new message."
+  expect state threadRows.length == 3
+
 test "a steer Hermes refuses stays in the composer to send again"
   type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
   tap "pair"

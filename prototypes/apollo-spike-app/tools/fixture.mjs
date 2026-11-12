@@ -164,15 +164,19 @@ const hermes = createServer(async (req, res) => {
       const input = await body(req);
       if (run.status !== "running" || /too late/i.test(input.input ?? "")) return json(res, 409, { error: { code: "run_not_accepting_steer", message: `Run is not currently accepting steer input: ${run.id}` } });
       emit(run, "run.steered", { accepted: true });
-      // "never mind" ends the run before the agent reads it, so Hermes hands it back as pending_steer.
+      // "never mind" ends the run before the agent reads it, so Hermes hands back every steer still
+      // waiting as pending_steer, joined with newlines.
+      run.waiting = [...(run.waiting ?? []), input.input];
       if (/never mind/i.test(input.input ?? "")) setTimeout(() => {
-        run.status = "completed"; run.output = "Stopped early."; run.pendingSteer = input.input;
+        run.status = "completed"; run.output = "Stopped early."; run.pendingSteer = run.waiting.join("\n");
         messages.get(run.sessionId)?.push({ id: `assistant-${run.id}`, role: "assistant", content: run.output, timestamp: now() });
-        emit(run, "run.completed", { output: run.output, pending_steer: input.input }); end(run);
+        emit(run, "run.completed", { output: run.output, pending_steer: run.pendingSteer }); end(run);
       }, 600);
       // Otherwise Hermes saves the steer when the agent reads it: a moment later, or at once for a
       // "quick" run, which keeps holding.
       else setTimeout(() => {
+        if (run.pendingSteer) return;
+        run.waiting = run.waiting.filter((text) => text !== input.input);
         messages.get(run.sessionId)?.push({ id: `steer-${run.events.length}-${run.id}`, role: "user", content: `[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]\n${input.input}\n[/OUT-OF-BAND USER MESSAGE]`, timestamp: now() });
         if (/hold/i.test(run.input) && !/quick/i.test(run.input)) stream(run, `Steered: ${input.input}`, 35);
       }, /quick/i.test(run.input) ? 0 : 800);
