@@ -2,6 +2,8 @@
 // cards, settle), open a card and answer it, start a thread, and follow a run live with Stop and
 // approvals. app.ts holds the data and the connection.
 
+use setAppShortcuts, ShortcutItem, AppleShortcutItem from "@exact/quick-actions"
+
 routes nav
   home "/"
     session "/s/:id"
@@ -20,6 +22,16 @@ shape CardButton
   input: bool
   url: string
 
+shape Pick
+  n: number
+  text: string
+  sub: string
+  done: bool
+
+shape Pair
+  key: string
+  value: string
+
 shape Item
   key: string
   kind: string
@@ -35,26 +47,19 @@ shape Item
   glyph: string
   link: string
   actions: CardButton[]
+  picks: Pick[]
+  meta: Pair[]
+  summary: string
 
 shape Inbox
   error: string
   items: Item[]
-
-shape Pair
-  key: string
-  value: string
 
 shape Metric
   label: string
   value: string
   delta: string
   tone: string
-
-shape Pick
-  n: number
-  text: string
-  sub: string
-  done: bool
 
 shape CardView
   found: bool
@@ -108,6 +113,10 @@ shape Row
   startedAt: number
   steps: Step[]
 
+shape Recent
+  id: string
+  title: string
+
 shape Thread
   title: string
   rows: Row[]
@@ -124,6 +133,7 @@ shape Thread
   canSettle: bool
   autoSettle: bool
   activityAt: number
+  recent: Recent[]
 
 shape Created
   id: string
@@ -183,6 +193,8 @@ component Apollo
   derive onHome = top(nav).name == "home"
   derive canSend = draft.trim() != "" and not thread.active and not pending(sent) and not pending(created)
   derive lastId = match thread.rows.at(-1) { case some(r) => r.id, case none => "" }
+  // Quick actions: the manifest's New thread, then the threads opened last (as Apollo does).
+  derive recentKey = thread.recent.map(r => `${r.id}|${r.title}`).join("\n")
   derive shownError = notice != "" ? notice : onHome ? inbox.error : top(nav).name == "card" ? card.error : thread.error
 
   // A finished run hands back to durable history, as Apollo reloads messages after a terminal event.
@@ -201,7 +213,12 @@ component Apollo
     after(1, onReturn)
   task chase when chasing
     after(350, toEnd)
+  task shortcuts when recentKey != "" key=recentKey
+    after(1, publishShortcuts)
 
+  action publishShortcuts
+    setAppShortcuts(shortcuts=thread.recent.map(r => ShortcutItem(name=r.title, short_name=none, description=none, url=`/s/${r.id}`,
+      icons=none, apple=some(AppleShortcutItem(symbol=some("bubble.left"))), android=none)))
   action refreshAll
     tick = performanceNow()
     revision = revision + 1
@@ -265,6 +282,11 @@ component Apollo
       send filed = settleThread(aimed, aimedSwipe == "settle", time.epochAtZero + performanceNow())
     else
       send filed = settleCard(aimed, aimedSwipe == "settle")
+  action settleRow(id: string, kind: string, swipe: string)
+    if kind == "session"
+      send filed = settleThread(id, swipe == "settle", time.epochAtZero + performanceNow())
+    else
+      send filed = settleCard(id, swipe == "settle")
   action settleThread(settle: bool)
     send filed = settleThread(selected, settle, time.epochAtZero + performanceNow())
   action toggleAutoSettle
@@ -306,6 +328,8 @@ component Apollo
   action toggle(p: Pick)
     if card.open
       send responded = togglePick(card.id, p.n, not p.done)
+  action pickRow(id: string, p: Pick)
+    send responded = togglePick(id, p.n, not p.done)
 
   action edit(v: string)
     draft = v
@@ -365,19 +389,22 @@ component Apollo
             if account.paired
               if shownError != ""
                 text shownError font="-exact-footnote" color="-exact-system-red" padding="4px 16px" testId="error"
-              list id="inbox" appearance="auto" listStyle="plain" flex=1 min-height=0 testId="inbox"
-                section
-                  for it in inbox.items key=it.key
-                    if it.kind == "section"
-                      button press=toggleSettled testId=`section-${it.id}`
-                        image (showSettled ? "symbol:sf/chevron.down" : "symbol:forward-chevron") font-size=12 color="-exact-secondary-label"
-                        text `${it.title} · ${it.count}` font="-exact-subheadline" color="-exact-secondary-label"
-                    else if it.kind == "caughtUp"
-                      row justify-content="center" padding="24px 0"
-                        text it.title color="-exact-secondary-label" testId="caught-up"
-                    else
-                      column gap=8 padding-top=6 padding-bottom=6 contextmenu=aim(it.id, it.kind, it.swipe) contextPopover="row-menu"
-                        link href=(it.kind == "session" ? path("session", it.id) : path("card", it.id)) testId=`row-${it.id}`
+              // A plain list: Exact's native row cells blank a long-pressed row until the menu lifts it.
+              list id="inbox" appearance="none" flex=1 min-height=0 testId="inbox"
+                for it in inbox.items key=it.key
+                  if it.kind == "section"
+                    button appearance="none" press=toggleSettled display="flex" flex-direction="row" align-items="center" justify-content="flex-start" gap=6 padding="14px 16px 6px" testId=`section-${it.id}`
+                      image (showSettled ? "symbol:sf/chevron.down" : "symbol:forward-chevron") font-size=12 color="-exact-secondary-label"
+                      text `${it.title} · ${it.count}` font="-exact-subheadline" color="-exact-secondary-label"
+                  else if it.kind == "caughtUp"
+                    row justify-content="center" padding="24px 0"
+                      text it.title color="-exact-secondary-label" testId="caught-up"
+                  else
+                    // Swipe left to settle or reopen, as Apollo's rows do; long press for the same in a menu.
+                    scroll swipeContent="content" swipeTrailing="swipe" display="flex" padding-right=0 overflow-x="scroll" overflow-y="hidden"
+                      scrollbar-width="none" scroll-snap-type="x mandatory" border-bottom="1px solid -exact-separator" margin="0 0 0 16px"
+                      column id="content" width="100%" flex-shrink=0 scroll-snap-align="start" box-sizing="border-box" gap=8 padding="10px 16px 10px 0"
+                        link href=(it.kind == "session" ? path("session", it.id) : path("card", it.id)) contextmenu=aim(it.id, it.kind, it.swipe) contextPopover="row-menu" testId=`row-${it.id}`
                           row gap=10 align-items="flex-start" flex=1 min-width=0
                             if it.glyph != ""
                               text it.glyph font="-exact-footnote" font-weight=600 color="AccentColor" width=24 height=24 border-radius=12
@@ -391,15 +418,27 @@ component Apollo
                                   text it.time font="-exact-footnote" color="-exact-secondary-label" flex-shrink=0
                               if it.subtitle != ""
                                 text it.subtitle font="-exact-subheadline" color="-exact-secondary-label" line-clamp=2
-                        if it.actions.length > 0
+                        if it.picks.length > 0
+                          column padding-left=34 gap=2
+                            for p in it.picks key=p.n
+                              PickRow(pick=p, press=pickRow(it.id, p), off=pending(responded), tid=`row-pick-${it.id}-${p.n}`)
+                        for m in it.meta key=m.key
+                          text `${m.key} ${m.value}` font="-exact-subheadline" color="-exact-secondary-label" line-clamp=2 padding-left=34
+                        if it.summary != ""
+                          text it.summary font="-exact-subheadline" color="-exact-secondary-label" padding-left=34 testId=`summary-${it.id}`
+                        else if it.actions.length > 0
                           row gap=8 padding-left=(it.glyph != "" ? 34 : 0) flex-wrap="wrap"
                             for a in it.actions key=a.id
                               button press=answerCard(it.id, a) buttonStyle=(a.style == "primary" ? "filled" : "bordered") destructive=(a.style == "destructive") disabled=pending(responded) testId=`act-${it.id}-${a.id}`
                                 text a.label
+                      if it.swipe != ""
+                        button id="swipe" appearance="none" press=settleRow(it.id, it.kind, it.swipe) flex-shrink=0 scroll-snap-align="start" width=84 align-self="stretch"
+                          display="flex" align-items="center" justify-content="center" background-color=(it.swipe == "settle" ? "AccentColor" : "-exact-system-indigo") testId=`swipe-${it.id}`
+                          text (it.swipe == "settle" ? "Settle" : "Reopen") font="-exact-subheadline" font-weight=600 color="AccentColorText"
               column id="row-menu" popover="auto" role="menu"
                 if aimedSwipe == "settle"
                   button press=settleAimed popovertarget="row-menu" popovertargetaction="hide" testId="settle"
-                    text (aimedKind == "session" ? "Finish thread" : "Settle")
+                    text "Settle"
                 if aimedSwipe == "reopen"
                   button press=settleAimed popovertarget="row-menu" popovertargetaction="hide" testId="reopen"
                     text "Reopen"
@@ -447,14 +486,9 @@ component Apollo
                       if m.delta != ""
                         text m.delta font="-exact-caption1" color=(m.tone == "good" ? "-exact-system-green" : m.tone == "bad" ? "-exact-system-red" : "-exact-secondary-label")
               if card.picks.length > 0
-                column gap=8
+                column gap=2
                   for p in card.picks key=p.n
-                    button appearance="none" press=toggle(p) disabled=(not card.open or pending(responded)) display="flex" flex-direction="row" gap=10 align-items="flex-start" justify-content="flex-start" text-align="left" align-self="stretch" testId=`pick-${p.n}`
-                      image (p.done ? "symbol:select-fill" : "symbol:circle") font-size=20 color=(p.done ? "AccentColor" : "-exact-secondary-label")
-                      column flex=1 min-width=0 gap=2 align-items="flex-start"
-                        text p.text text-align="left" text-decoration=(p.done ? "line-through" : "none") color=(p.done ? "-exact-secondary-label" : "-exact-label")
-                        if p.sub != ""
-                          text p.sub font="-exact-footnote" color="-exact-secondary-label"
+                    PickRow(pick=p, press=toggle(p), off=(not card.open or pending(responded)), tid=`pick-${p.n}`)
               if card.body != ""
                 if card.plainText
                   text card.body user-select="text" overflow-wrap="anywhere"
@@ -503,7 +537,7 @@ component Apollo
             column id="thread-menu" popover="auto" role="menu"
               if thread.canSettle
                 button press=settleThread(true) popovertarget="thread-menu" popovertargetaction="hide" testId="finish"
-                  text "Finish thread"
+                  text "Settle"
               if thread.settled
                 button press=settleThread(false) popovertarget="thread-menu" popovertargetaction="hide" testId="reopen-thread"
                   text "Reopen thread"
@@ -589,3 +623,21 @@ component Apollo
           text "Unpair"
         button commandfor="unpair" command="close" testId="unpair-cancel"
           text "Cancel"
+
+// A checklist pick as Apollo draws one: its number in a ring, filled when done.
+component PickRow
+  props
+    pick: Pick
+    press: action
+    off: bool
+    tid: string
+  view
+    button appearance="none" press=press disabled=off role="checkbox" aria-checked=pick.done display="flex" flex-direction="row" gap=10 align-items="flex-start"
+      justify-content="flex-start" text-align="left" align-self="stretch" padding="6px 0" testId=tid
+      text `${pick.n}` font="-exact-caption1" font-weight=600 width=22 height=22 border-radius=11 text-align="center" line-height="20px" flex-shrink=0 box-sizing="border-box"
+        border=(pick.done ? "1px solid AccentColor" : "1.5px solid -exact-secondary-label") background-color=(pick.done ? "AccentColor" : "transparent")
+        color=(pick.done ? "AccentColorText" : "-exact-secondary-label")
+      column flex=1 min-width=0 gap=2 align-items="flex-start"
+        text pick.text text-align="left" text-decoration=(pick.done ? "line-through" : "none") color=(pick.done ? "-exact-secondary-label" : "-exact-label")
+        if pick.sub != ""
+          text pick.sub font="-exact-footnote" color="-exact-secondary-label" text-align="left"

@@ -1,0 +1,15 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "apollo-spike-app",
+      "dependencies": {
+        "@exact/quick-actions": "file:/Users/mcc/code/exact/packages/quick-actions",
+      },
+    },
+  },
+  "packages": {
+    "@exact/quick-actions": ["@exact/quick-actions@file:../../../../../../code/exact/packages/quick-actions", {}],
+  }
+}

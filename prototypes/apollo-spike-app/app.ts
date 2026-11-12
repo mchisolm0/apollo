@@ -3,7 +3,7 @@
 // inbox and card modules are reused unchanged (copied in by tools/sync-apollo.sh); the view and
 // this data seam are the new parts.
 import type { Answer, Result, Sources, Storage, Store } from './app.contract.d.ts';
-import type { Card, CardResponse } from './apollo/cloud/src/contract.ts';
+import type { Card, CardAction, CardResponse } from './apollo/cloud/src/contract.ts';
 import { parseCard, parseSnapshot } from './apollo/src/features/cloud/cards.ts';
 import { previewLine } from './apollo/src/features/cloud/card-text.ts';
 import { buildInboxRows, cardOpenPlan, hermesApprovalTarget, isCardSettled, settleAction, updateSettledCards, type InboxCard, type SettledCards } from './apollo/src/features/cloud/inbox-rows.ts';
@@ -88,12 +88,14 @@ async function cloud(store: Store): Promise<Credential['cloud']> {
 
 // ---- Local state: runs this app started, threads read, cards settled ----
 
-type Local = { runs: Record<string, string>; read: Record<string, number>; cards: Record<string, number> };
+// `recent` is the threads opened last, newest first: the Home Screen's quick actions.
+type Local = { runs: Record<string, string>; read: Record<string, number>; cards: Record<string, number>; recent: { id: string; title: string }[] };
+const fresh = (): Local => ({ runs: {}, read: {}, cards: {}, recent: [] });
 let local: Local | undefined;
 async function state(storage: Storage): Promise<Local> {
   if (local) return local;
   const bytes = await storage.fs.readFile(STATE).catch(() => null);
-  try { local = { runs: {}, read: {}, cards: {}, ...(bytes ? JSON.parse(new TextDecoder().decode(bytes)) : {}) }; } catch { local = { runs: {}, read: {}, cards: {} }; }
+  try { local = { ...fresh(), ...(bytes ? JSON.parse(new TextDecoder().decode(bytes)) : {}) }; } catch { local = fresh(); }
   return local!;
 }
 async function save(storage: Storage) {
@@ -160,6 +162,26 @@ async function settleThreads(store: Store, settled: Record<string, number | null
   await api(store, '/v1/inbox', { method: 'PATCH', body: { importOnly: false, settled } });
 }
 
+const picksOf = (card: Card) => (card.picks ?? []).map((p) => ({ n: p.n, text: p.text, sub: p.sub ?? '', done: p.done }));
+const button = (a: CardAction) => ({ id: a.id, label: a.label, style: a.style ?? 'default', input: a.input === 'text', url: a.url ?? '' });
+const noExtras = { picks: [], meta: [], summary: '' } satisfies Pick<Item, 'picks' | 'meta' | 'summary'>;
+
+// The morning card as Apollo's first inbox row: its day, calendar line, up to three picks and its
+// actions, then "Working on these · 1 of 3 done" once answered.
+function briefingItem(card: InboxCard, l: Local, now: number): Item {
+  const { calendar, ...meta } = card.meta ?? {};
+  const picks = picksOf(card).slice(0, 3);
+  const ack = card.resolution?.actionId;
+  const label = ack === 'keep' ? 'Working on these' : ack === 'skip' ? 'No picks today' : card.actions?.find((a) => a.id === ack)?.label ?? ack;
+  return {
+    key: `card-${card.id}`, kind: 'briefing', id: card.id, title: card.title, subtitle: calendar ?? '', badge: '', tone: 'muted',
+    time: ago(Date.parse(card.updatedAt) / 1000, now), settled: false, swipe: settleAction(card, settledCards(l)) ?? '', count: 0,
+    glyph: card.source.charAt(0).toUpperCase(), link: '', picks, meta: Object.entries(meta).map(([key, value]) => ({ key, value })),
+    summary: ack ? `${label} · ${picks.filter((p) => p.done).length} of ${picks.length} done` : '',
+    actions: !ack && card.state === 'open' ? (card.actions ?? []).filter((a) => !a.url).map(button) : [],
+  };
+}
+
 function cardItem(card: InboxCard, settled: boolean, l: Local, now: number): Item {
   const unanswered = card.state === 'open' && !card.resolution && card.kind === 'approval';
   const answer = card.resolution ? (card.actions?.find((a) => a.id === card.resolution!.actionId)?.label ?? 'Answered') : '';
@@ -169,10 +191,10 @@ function cardItem(card: InboxCard, settled: boolean, l: Local, now: number): Ite
     : [card.kind === 'update' ? capitalize(card.source) : '', previewLine(card.body) ?? ''].filter(Boolean).join(' · ');
   const tone = answer ? (card.resolution!.actionId === 'approve' ? 'green' : card.resolution!.actionId === 'reject' ? 'red' : 'muted') : unanswered ? 'amber' : 'muted';
   return {
-    key: `card-${card.id}`, kind: card.kind === 'briefing' ? 'briefing' : 'card', id: card.id, title: card.title, subtitle,
+    ...noExtras, key: `card-${card.id}`, kind: 'card', id: card.id, title: card.title, subtitle,
     badge: answer || (unanswered ? 'Needs answer' : ''), tone, time: ago(Date.parse(card.updatedAt) / 1000, now), settled,
     swipe: settleAction(card, settledCards(l)) ?? '', count: 0, glyph: card.source.charAt(0).toUpperCase(), link: cardOpenPlan(card).target === 'link' ? card.url ?? '' : '',
-    actions: unanswered ? (card.actions ?? []).filter((a) => !a.url).map((a) => ({ id: a.id, label: a.label, style: a.style ?? 'default', input: a.input === 'text', url: '' })) : [],
+    actions: unanswered ? (card.actions ?? []).filter((a) => !a.url).map(button) : [],
   };
 }
 
@@ -180,7 +202,7 @@ function sessionItem(s: InboxSession, now: number): Item {
   const badge = s.pendingApproval ? 'Needs approval' : s.running ? 'Working' : s.failed && s.attention ? 'Failed' : s.attention ? 'New result' : '';
   const tone = s.pendingApproval ? 'amber' : s.running || badge === 'New result' ? 'accent' : badge === 'Failed' ? 'red' : 'muted';
   return {
-    key: `session-${s.id}`, kind: 'session', id: s.id, title: s.title, subtitle: s.settled ? '' : s.preview ?? '', badge, tone,
+    ...noExtras, key: `session-${s.id}`, kind: 'session', id: s.id, title: s.title, subtitle: s.settled ? '' : s.preview ?? '', badge, tone,
     time: ago(s.activityAt, now), settled: s.settled, swipe: canSettleSession(s) ? 'settle' : s.settled ? 'reopen' : '', count: 0, glyph: '', link: '', actions: [],
   };
 }
@@ -204,8 +226,9 @@ async function inbox(showSettled: boolean, now: number, store: Store, storage: S
     const rows = buildInboxRows({ sessions: sessionsSeen, cards, isSnoozed: () => false, settledCards: settledCards(l), pendingRunIds, runStateLive: true, collapsed: { snoozed: true, settled: !showSettled }, now });
     const items = rows.map((row): Item => {
       if (row.kind === 'session') return sessionItem(row.session, now);
-      if (row.kind === 'card' || row.kind === 'briefing') return cardItem(row.card, row.kind === 'card' && row.settled, l, now);
-      const blank = { id: row.id, subtitle: '', badge: '', tone: 'muted', time: '', settled: false, swipe: '', glyph: '', link: '', actions: [] };
+      if (row.kind === 'briefing') return briefingItem(row.card, l, now);
+      if (row.kind === 'card') return cardItem(row.card, row.settled, l, now);
+      const blank = { ...noExtras, id: row.id, subtitle: '', badge: '', tone: 'muted', time: '', settled: false, swipe: '', glyph: '', link: '', actions: [] };
       if (row.kind === 'section') return { ...blank, key: `section-${row.id}`, kind: 'section', title: row.title, count: row.count ?? 0 };
       return { ...blank, key: 'caught-up', kind: 'caughtUp', title: "You're caught up", count: 0 };
     });
@@ -239,8 +262,8 @@ async function cardView(id: string, storage: Storage): Promise<CardView> {
     open: card.state === 'open', settled, swipe: settleAction(card, settledCards(l)) ?? '',
     meta: Object.entries(card.meta ?? {}).map(([key, value]) => ({ key, value })),
     metrics: (card.metrics ?? []).map((m) => ({ label: m.label, value: `${m.value}${m.unit ? ` ${m.unit}` : ''}`, delta: m.delta ?? '', tone: m.trend ?? 'neutral' })),
-    picks: (card.picks ?? []).map((p) => ({ n: p.n, text: p.text, sub: p.sub ?? '', done: p.done })),
-    actions: unanswered || card.actions?.some((a) => a.repeat) ? (card.actions ?? []).filter((a) => unanswered || a.repeat).map((a) => ({ id: a.id, label: a.label, style: a.style ?? 'default', input: a.input === 'text', url: a.url ?? '' })) : [],
+    picks: picksOf(card),
+    actions: unanswered || card.actions?.some((a) => a.repeat) ? (card.actions ?? []).filter((a) => unanswered || a.repeat).map(button) : [],
     progress: card.progress ? `${card.progress.label} · ${card.progress.step} of ${card.progress.of}` : '', progressValue: card.progress ? card.progress.step / Math.max(1, card.progress.of) : 0,
     error: '',
   };
@@ -319,8 +342,14 @@ function toRows(rows: readonly TranscriptRow[]): Row[] {
 
 const emptyThread: Thread = {
   title: '', rows: [], runId: '', status: '', active: false, ended: false, error: '',
-  approvalId: '', approvalTitle: '', approvalCommand: '', approvalReason: '', settled: false, canSettle: false, autoSettle: true, activityAt: 0,
+  approvalId: '', approvalTitle: '', approvalCommand: '', approvalReason: '', settled: false, canSettle: false, autoSettle: true, activityAt: 0, recent: [],
 };
+
+// iOS shows four quick actions: New thread and the three threads opened last.
+function opened(l: Local, id: string, title: string) {
+  l.recent = [{ id, title }, ...l.recent.filter((r) => r.id !== id)].slice(0, 3);
+  return l.recent;
+}
 
 function inboxFacts(sessionId: string) {
   const s = sessionsSeen.find((x) => x.id === sessionId);
@@ -340,6 +369,7 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
     const project = createTranscriptProjector();
     const l = await state(storage);
     const { title, messages } = await history(store, sessionId);
+    const recent = opened(l, sessionId, title);
     const runId = l.runs[sessionId];
     let run = runId ? parseRun(await api(store, `/v1/runs/${encodeURIComponent(runId)}`).catch(() => ({ run_id: runId, status: 'unknown' }))) : undefined;
     if (!runId || !run || !isRunActive(run.status)) {
@@ -347,8 +377,9 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       if (runId) delete l.runs[sessionId];
       l.read[sessionId] = Math.floor(now / 1000);
       await save(storage);
-      return { ...emptyThread, ...inboxFacts(sessionId), title, rows: toRows(project({ history: messages, events: [], running: false })) };
+      return { ...emptyThread, ...inboxFacts(sessionId), recent, title, rows: toRows(project({ history: messages, events: [], running: false })) };
     }
+    await save(storage);
     const { endpoint, token } = await credential(store);
     const events: HermesRunEvent[] = [];
     const seen = new Set<string>();
@@ -360,7 +391,7 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       const command = str(approval?.command) ?? str(approval?.preview);
       const rows = project({ history: messages, events, runId, runStartedAt: current.createdAt, runEndedAt: current.updatedAt, runStatus: current.status, runOutput: current.output, running });
       return {
-        ...emptyThread, ...inboxFacts(sessionId), canSettle: false, title, rows: toRows(rows), runId, status: current.status, active: running, ended: !running, error,
+        ...emptyThread, ...inboxFacts(sessionId), canSettle: false, recent, title, rows: toRows(rows), runId, status: current.status, active: running, ended: !running, error,
         ...(approval && command ? { approvalId: str(approval.request_id) ?? approval.requestId ?? '', approvalTitle: approval.tool ? `Allow ${approval.tool}?` : 'Allow this command?', approvalCommand: command, approvalReason: approval.description ?? '' } : {}),
       };
     };
@@ -440,7 +471,7 @@ const sources: Sources = {
   },
   unpair: async (_args, store, storage) => {
     await store.forget(SECRET);
-    local = { runs: {}, read: {}, cards: {} };
+    local = fresh();
     await save(storage);
     sessionsSeen = []; cardsSeen = [];
     return ok;
