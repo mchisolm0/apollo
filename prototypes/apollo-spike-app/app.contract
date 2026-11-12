@@ -312,8 +312,9 @@ component Apollo
     chasing = false
     scrollIntoView("transcript", lastId, block="end")
 
+  // On a wide window a thread or card shows beside the inbox, and the next one opened replaces it.
   action follow(url: string)
-    nav = go(nav, url)
+    nav = (top(nav).name == "session" or top(nav).name == "card") and (url.startsWith("/s/") or url.startsWith("/c/")) ? replace(nav, url) : go(nav, url)
     draft = ""
     notice = ""
     replying = ""
@@ -544,7 +545,8 @@ component Apollo
     main navigationKey=`${top(nav).id}` navigationBack="back" navigate=follow testId="app" width="100%" height="100%"
       for e in stack(nav) key=e.id
         if e.name == "home"
-          column navigationKey=`${e.id}` navigationScroll="inbox" position="absolute" inset=0 display="flex" flex-direction="column"
+          // iPad and other wide windows: the inbox beside the open thread, as Apollo's split view.
+          column navigationKey=`${e.id}` navigationScroll="inbox" navigationSplit="340" position="absolute" inset=0 display="flex" flex-direction="column"
             header display="flex" flex-wrap="wrap" align-items="center" gap=8 padding="8px 16px"
               text "Inbox" role="heading" aria-level=1 flex=1
               if account.paired
