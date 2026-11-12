@@ -13,7 +13,7 @@ import { RunScreen } from '@/features/relay';
 import { showSessionActions } from '@/features/relay/session-actions';
 import { useSessionInbox } from '@/features/relay/use-session-inbox';
 import { canSettleSession } from '@/features/relay/session-inbox';
-import { createTranscriptProjector } from '@/features/relay/transcript';
+import { createTranscriptProjector, userText } from '@/features/relay/transcript';
 import { selectedSkillNames } from '@/features/relay/composer-skills';
 import { useSessionDraft } from '@/features/relay/use-session-draft';
 import { setVisibleNotificationSession } from '@/features/notifications/foreground';
@@ -329,7 +329,7 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
         onBack={openInbox}
         onSessionActions={() => {
           const item = inbox.sessions.find((candidate) => candidate.id === resolvedId);
-          const lastUserText = [...history].reverse().find((message) => message.role === 'user' && message.content?.trim())?.content?.trim();
+          const lastUserText = [...history].reverse().map((message) => (message.role === 'user' ? userText(message.content ?? '').trim() : '')).find(Boolean);
           const titleInput = lastUserText ?? session?.title?.trim() ?? '';
           showSessionActions(session?.title ?? 'Thread', [
             ...(item?.settled ? [{ label: 'Reopen thread', onPress: () => { void inbox.reopen(item.id); } }] : item && canSettleSession(item) ? [{ label: 'Finish thread', onPress: () => { void inbox.settle(item.id); openInbox?.(); } }] : []),

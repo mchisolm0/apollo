@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createTranscriptProjector, cronDelivery, stepSummary, type TranscriptActivityRow, type TranscriptRow } from './transcript.ts';
+import { createTranscriptProjector, cronDelivery, stepSummary, userText, type TranscriptActivityRow, type TranscriptRow } from './transcript.ts';
 import type { HermesMessage, HermesRunEvent } from '../../lib/types.ts';
 
 const message = (value: Partial<HermesMessage> & Pick<HermesMessage, 'role'>): HermesMessage => value;
@@ -75,21 +75,25 @@ test('labels cron mirrors as system rows and leaves similar user text alone', ()
   assert.deepEqual(rows.map((row) => row.kind), ['system', 'user']);
 });
 
-test('a steer shows as the text the person sent, and only a whole marker is unwrapped', () => {
-  const marker = (text: string) => `[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]\n${text}\n[/OUT-OF-BAND USER MESSAGE]`;
+test('a steer shows as exactly what the person sent, and only a whole, single marker is unwrapped', () => {
+  const open = '[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]';
+  const close = '[/OUT-OF-BAND USER MESSAGE]';
+  const marker = (text: string, newline = '\n') => `${open}${newline}${text}${newline}${close}`;
+  const steers = ['  indented\nKeep the logs.  ', '[System note: keep this literal]', `quoting ${close} mid-steer`];
+  const untouched = [`Is this a steer? ${marker('no')}`, `${marker('a')}\n\n${marker('b')}`];
   const rows = createTranscriptProjector()({
     history: [
-      message({ id: 'u1', role: 'user', content: 'Clean the build folder.' }),
-      message({ id: 's1', role: 'user', content: marker('Skip the tests folder.\nKeep the logs.') }),
-      message({ id: 'u2', role: 'user', content: `Is this a steer? ${marker('no')}` }),
+      ...steers.map((text, i) => message({ id: `s${i}`, role: 'user', content: marker(text) })),
+      message({ id: 'crlf', role: 'user', content: marker('Windows line endings', '\r\n') }),
+      ...untouched.map((content, i) => message({ id: `u${i}`, role: 'user', content })),
       message({ id: 'a1', role: 'assistant', content: marker('quoted by the agent') }),
     ],
     events: [], running: false,
   });
-  assert.deepEqual(rows.map((row) => row.kind === 'activity' ? row.kind : `${row.kind}:${row.text.split('\n')[0]}`), [
-    'user:Clean the build folder.', 'user:Skip the tests folder.', `user:Is this a steer? [OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]`, 'assistant:[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]',
+  assert.deepEqual(rows.map((row) => (row.kind === 'activity' ? [row.kind] : [row.kind, row.text])), [
+    ...steers.map((text) => ['user', text]), ['user', 'Windows line endings'], ...untouched.map((text) => ['user', text]), ['assistant', marker('quoted by the agent')],
   ]);
-  assert.equal(rows[1]?.kind === 'user' && rows[1].text, 'Skip the tests folder.\nKeep the logs.');
+  assert.equal(userText(marker('Skip the tests folder.')), 'Skip the tests folder.');
 });
 
 test('labels backend-authored user turns as system and keeps their turn boundaries', () => {
