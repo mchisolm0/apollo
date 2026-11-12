@@ -1,0 +1,103 @@
+// Paired flows against tools/fixture.mjs, which must be running (tools/test-paired.sh starts it).
+// Pairing with the fixture's reusable link puts its Hermes and cloud back to their seed, so each
+// test starts from the same threads, cards and routines.
+
+test "the inbox lists threads and Bot Chat, and keeps a cron job's own run out"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  expect tree has "row-spike-session"
+  expect tree has "row-bot-chat"
+  expect tree missing "row-cron-run"
+
+test "Bot Chat folds what the cron job handed it to the job's name"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "row-bot-chat"
+  clock data
+  expect tree has "cron-history-history-message-bot-input-0"
+  expect tree missing "say-history-history-message-bot-input-0"
+
+test "an approval offers the tiers Hermes allows, and Always asks before it applies"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "new"
+  type "composer" "approval please"
+  tap "send"
+  clock data
+  clock until state thread.approvalCommand == "rm -rf build/" within 5000
+  expect tree has "approve-once"
+  expect tree has "approve-session"
+  expect tree has "approve-deny"
+  tap "approve-always"
+  clock settle
+  tap "always-cancel"
+  clock settle
+  expect tree has "approval"
+  tap "approve-always"
+  clock settle
+  tap "always-confirm"
+  clock data
+  clock until state thread.status == "completed" within 5000
+  expect tree missing "approval"
+
+test "a smart-denied command offers only once and deny"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "new"
+  type "composer" "approval once only"
+  tap "send"
+  clock data
+  clock until state thread.approvalCommand == "rm -rf build/" within 5000
+  expect tree has "approve-once"
+  expect tree has "approve-deny"
+  expect tree missing "approve-session"
+  expect tree missing "approve-always"
+
+test "a message typed while a turn runs steers it"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "new"
+  type "composer" "hold until I say"
+  tap "send"
+  clock data
+  clock until state thread.status == "running" within 5000
+  expect tree missing "steer"
+  type "composer" "Skip the tests folder"
+  expect tree has "stop"
+  tap "steer"
+  clock data
+  expect state draft == ""
+  clock until state thread.status == "completed" within 5000
+  clock data
+  expect state threadRows.1 .text == "Skip the tests folder"
+  expect state threadRows.1 .kind == "user"
+
+test "Reply quotes a message into the composer"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "row-spike-session"
+  clock data
+  type "composer" "Why?"
+  tap "say-history-history-message-seed-user-0" contextmenu
+  tap "reply-quote"
+  expect state draft == "> What does this thread show?\n\nWhy?"
+
+test "Routines lists what failed first, then the rest, with paused ones marked"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "more"
+  tap "routines"
+  clock data
+  expect state routineList.items.0 .name == "Lot watcher"
+  expect text "routine-status-job-lots" == "Failed 3 times"
+  expect text "routine-error-job-lots" == "eBay search timed out after 60s"
+  expect text "routine-status-job-digest" == "Paused"
+  expect state routineList.items.2 .schedule == "Weekdays at 8:35 AM"
+  expect state routineList.items.1 .schedule == "Daily at 8:45 AM"

@@ -1,4 +1,4 @@
-// Every test launches unpaired with empty storage; the paired flows run against tools/fixture.mjs by hand.
+// Every test launches unpaired with empty storage; the paired flows are tests/paired.test.contract (tools/test-paired.sh).
 
 test "an unpaired phone asks for a pairing link before anything else"
   expect tree has "pair-link"
