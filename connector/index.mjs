@@ -22,7 +22,7 @@ const EXCHANGE_PATH = "/v1/pair/exchange";
 
 const PROXY_ROUTES = new Set([
   "GET /v1/health", "GET /v1/models", "GET /v1/capabilities", "GET /v1/skills", "GET /v1/toolsets",
-  "GET /api/model/options",
+  "GET /api/model/options", "GET /api/jobs",
   "POST /v1/chat/completions", "POST /v1/responses", "GET /v1/responses/:id", "DELETE /v1/responses/:id",
   "POST /v1/runs", "GET /v1/runs/:id", "GET /v1/runs/:id/events", "POST /v1/runs/:id/approval",
   "POST /v1/runs/:id/steer", "POST /v1/runs/:id/stop",
