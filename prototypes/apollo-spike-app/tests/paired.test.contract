@@ -84,6 +84,26 @@ test "a message typed while a turn runs steers it"
   expect state threadRows.2 .text == "Steered: Skip the tests folder"
   expect state threadRows.length == 3
 
+test "the same words steered twice show twice, once each"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "new"
+  type "composer" "hold quick"
+  tap "send"
+  clock data
+  clock until state thread.status == "running" within 5000
+  type "composer" "yes"
+  tap "steer"
+  clock data
+  type "composer" "yes"
+  tap "steer"
+  clock data
+  expect state threadRows.1 .text == "yes"
+  expect state threadRows.2 .text == "yes"
+  expect state threadRows.2 .status == "complete"
+  expect state threadRows.length == 4
+
 test "a steer the run ended before reading says it was not delivered"
   type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
   tap "pair"
@@ -133,7 +153,7 @@ test "Routines lists what failed first, then the rest, with paused ones marked"
   tap "pair"
   clock data
   tap "more"
-  tap "routines"
+  tap "open-routines"
   clock data
   expect state routineList.items.0 .name == "Lot watcher"
   expect text "routine-status-job-lots" == "Failed 3 times"

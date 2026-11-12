@@ -264,6 +264,9 @@ component Apollo
   state alwaysRun = ""
   state alwaysRequest = ""
   state alwaysCommand = ""
+  // What a steer sent, and to which thread: only that leaves the composer once Hermes takes it.
+  state steerText = ""
+  state steerThread = ""
   state chasing = false
   state wasHidden = false
   derive selected = match stack(nav).filter(e => e.name == "session").at(-1) { case some(e) => e.params.id, case none => "" }
@@ -308,7 +311,7 @@ component Apollo
   derive thread = threadLive ? liveThread : savedThread
   // The kept thread for the last id stands for a moment after another opens: draw none of it.
   derive threadRows = thread.id == selected ? thread.rows : []
-  derive canSend = (draft.trim() != "" or files.length > 0) and threadLive and not dictating and not thread.active and not pending(sent) and not pending(created)
+  derive canSend = (draft.trim() != "" or files.length > 0) and threadLive and not dictating and (top(nav).name == "compose" or not thread.active) and not pending(sent) and not pending(created)
   // A message typed while a turn runs steers it; files wait for a new message.
   derive canSteer = top(nav).name == "session" and draft.trim() != "" and files.length == 0 and threadLive and thread.active and thread.runId != "" and thread.status == "running" and not dictating and not pending(steered)
   derive lastId = match threadRows.at(-1) { case some(r) => r.id, case none => "" }
@@ -518,6 +521,8 @@ component Apollo
   action submit
     // A steer keeps its text in the composer until Hermes takes it.
     if canSteer
+      steerText = draft
+      steerThread = selected
       send steered = steerRun(thread.runId, selected, draft.trim())
     else if canSend
       if top(nav).name == "compose"
@@ -654,7 +659,7 @@ component Apollo
     match steered
       case some(s)
         notice = s.error
-        if s.error == ""
+        if s.error == "" and draft == steerText and selected == steerThread
           draft = ""
       case none
         notice = ""
@@ -719,7 +724,7 @@ component Apollo
               if account.paired
                 input type="search" value=searchText input=search placeholder="Search" aria-label="Search threads" testId="search" width="100%"
             column id="home-menu" popover="auto" role="menu" aria-label=account.label
-              button press=openRoutines popovertarget="home-menu" popovertargetaction="hide" testId="routines"
+              button press=openRoutines popovertarget="home-menu" popovertargetaction="hide" testId="open-routines"
                 text "Routines"
               button press=openSettings popovertarget="home-menu" popovertargetaction="hide" testId="settings"
                 text "Settings"

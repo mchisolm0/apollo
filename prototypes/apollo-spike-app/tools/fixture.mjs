@@ -170,11 +170,12 @@ const hermes = createServer(async (req, res) => {
         messages.get(run.sessionId)?.push({ id: `assistant-${run.id}`, role: "assistant", content: run.output, timestamp: now() });
         emit(run, "run.completed", { output: run.output, pending_steer: input.input }); end(run);
       }, 600);
-      // Otherwise Hermes saves the steer when the agent reads it, a moment later, as below.
+      // Otherwise Hermes saves the steer when the agent reads it: a moment later, or at once for a
+      // "quick" run, which keeps holding.
       else setTimeout(() => {
         messages.get(run.sessionId)?.push({ id: `steer-${run.events.length}-${run.id}`, role: "user", content: `[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]\n${input.input}\n[/OUT-OF-BAND USER MESSAGE]`, timestamp: now() });
-        if (/hold/i.test(run.input)) stream(run, `Steered: ${input.input}`, 35);
-      }, 800);
+        if (/hold/i.test(run.input) && !/quick/i.test(run.input)) stream(run, `Steered: ${input.input}`, 35);
+      }, /quick/i.test(run.input) ? 0 : 800);
       return json(res, 200, { object: "hermes.run.steer", run_id: run.id, accepted: true });
     }
     if (runMatch[2] === "stop") { run.status = "cancelled"; emit(run, "run.cancelled"); end(run); return json(res, 200, runStatus(run)); }
@@ -182,7 +183,7 @@ const hermes = createServer(async (req, res) => {
       // As Hermes: an answer must name the open request and one of its offered tiers. The reply
       // names the tier, so a test can tell which one the app sent.
       const input = await body(req);
-      if (!run.approval || (input.request_id && input.request_id !== run.approval.request_id)) return json(res, 409, { error: { code: "approval_not_pending", message: "That request was already answered." } });
+      if (!run.approval || input.request_id !== run.approval.request_id) return json(res, 409, { error: { code: "approval_not_pending", message: "That request was already answered." } });
       if (!run.approval.choices.includes(input.choice)) return json(res, 400, { error: { code: "invalid_choice", message: `Choice must be one of ${run.approval.choices.join(", ")}` } });
       run.approval = undefined; emit(run, "approval.responded", { choice: input.choice });
       if (input.choice === "deny") { run.status = "running"; stream(run, "Okay, I left the build folder alone.", 35); }

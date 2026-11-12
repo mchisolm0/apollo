@@ -145,9 +145,10 @@ const parseMessage = (v: Json): HermesMessage => ({
   timestamp: num(v.timestamp), finishReason: str(v.finish_reason), reasoning: str(v.reasoning), reasoningContent: str(v.reasoning_content), displayKind: str(v.display_kind),
 });
 const parseEvent = (v: Json): HermesRunEvent => ({ ...v, event: String(v.event), runId: str(v.run_id), timestamp: num(v.timestamp), text: str(v.text), tool: str(v.tool), preview: str(v.preview) });
-const parseRun = (v: Json): HermesRunStatus => ({
+// `pending_steer`: steer text Hermes never delivered, on an ended run's status.
+const parseRun = (v: Json): HermesRunStatus & { pendingSteer?: string } => ({
   runId: String(v.run_id), status: (str(v.status) ?? 'unknown') as HermesRunState, sessionId: str(v.session_id), output: str(v.output),
-  error: str(v.error), createdAt: num(v.created_at), updatedAt: num(v.updated_at), approval: v.approval as HermesRunStatus['approval'],
+  error: str(v.error), createdAt: num(v.created_at), updatedAt: num(v.updated_at), approval: v.approval as HermesRunStatus['approval'], pendingSteer: str(v.pending_steer),
 });
 const parseSession = (v: Json): HermesSession => ({
   id: String(v.id), source: str(v.source), model: str(v.model), title: str(v.title), startedAt: num(v.started_at), endedAt: num(v.ended_at),
@@ -187,6 +188,9 @@ async function sessionsAndRuns(store: Store, storage: Storage) {
     try {
       const run = { ...parseRun(await api(store, `/v1/runs/${encodeURIComponent(runId)}`)), sessionId };
       runs[runId] = run;
+      // What an ended run never delivered outlives the run's place in the ledger.
+      const lost = str(run.pendingSteer);
+      if (lost && !isRunActive(run.status)) undelivered.set(sessionId, lost);
       if (!isRunActive(run.status)) delete l.runs[sessionId];
     } catch { delete l.runs[sessionId]; }
   }));
@@ -424,15 +428,17 @@ const approvalChoices = (choices: unknown) => {
 
 // Steers this phone sent into a running turn, drawn under it until Hermes's history has them, and
 // what Hermes said it never delivered (`pending_steer` on a terminal event), until the next send.
-// A steer is in history once its text shows more often than it did when it was sent, so an
-// earlier message with the same words doesn't hide it.
+// A steer is in history once its text shows more often than `before`: what history held when it
+// was sent, plus the same words still waiting then. So an earlier message with the same words
+// doesn't hide it, and a repeated steer waits for its own copy.
 const steers = new Map<string, { text: string; before: number }[]>();
+// The run each thread last steered, kept past the run ledger so a reopened thread can still check it.
+const steeredRun = new Map<string, string>();
 const undelivered = new Map<string, string>();
 const rowsSeen = new Map<string, Row[]>();
 const said = (rows: Row[], text: string) => rows.filter((r) => r.kind === 'user' && r.text.trim() === text).length;
 // The steers sent into a run that history doesn't show yet, with their place in the order sent.
-const unseen = (rows: Row[], runId: string) => (steers.get(runId) ?? []).flatMap(({ text, before }, i, sent) =>
-  said(rows, text) > before + sent.slice(0, i).filter((s) => s.text === text).length ? [] : [{ text, i }]);
+const unseen = (rows: Row[], runId: string) => (steers.get(runId) ?? []).flatMap(({ text, before }, i) => (said(rows, text) > before ? [] : [{ text, i }]));
 function withSteers(rows: Row[], sessionId: string, runId: string): Row[] {
   rowsSeen.set(sessionId, rows);
   const echoes = unseen(rows, runId).map(({ text, i }): Row => ({ ...plain, id: `steer-${runId}-${i}`, kind: 'user', text, status: 'steered' }));
@@ -467,8 +473,9 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
     const l = await state(storage);
     const { title, messages } = await history(store, sessionId);
     const recent = opened(l, sessionId, title);
-    const runId = l.runs[sessionId];
-    const status = runId ? await api(store, `/v1/runs/${encodeURIComponent(runId)}`).catch(() => ({ run_id: runId, status: 'unknown' } as Json)) : undefined;
+    const runId = l.runs[sessionId] ?? steeredRun.get(sessionId);
+    let unreachable = false;
+    const status = runId ? await api(store, `/v1/runs/${encodeURIComponent(runId)}`).catch(() => { unreachable = true; return { run_id: runId, status: 'unknown' } as Json; }) : undefined;
     let run = status ? parseRun(status) : undefined;
     // A run that ended while the thread was closed still says what it never delivered.
     const lostBefore = str(status?.pending_steer);
@@ -478,10 +485,15 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       if (runId) delete l.runs[sessionId];
       l.read[sessionId] = Math.floor(now / 1000);
       const rows = toRows(project({ history: messages, events: [], running: false }));
-      // A steer the ended run neither saved nor named as undelivered never reached it either.
-      const missed = runId ? unseen(rows, runId).map((m) => m.text) : [];
-      if (missed.length && !lostBefore) undelivered.set(sessionId, missed.join('\n'));
-      if (runId) steers.delete(runId);
+      // A steer the ended run neither saved nor named as undelivered never reached it either. A run
+      // that didn't answer may still be going, so its steers wait for the next look.
+      if (runId && !unreachable) {
+        const missed = unseen(rows, runId).map((m) => m.text);
+        const lost = [...(lostBefore ? [lostBefore] : []), ...missed.filter((text) => text !== lostBefore)];
+        if (lost.length) undelivered.set(sessionId, lost.join('\n'));
+        steers.delete(runId);
+        steeredRun.delete(sessionId);
+      }
       const thread: Thread = { ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", recent, title, rows: withSteers(rows, sessionId, '') };
       // The kept copy leaves out the undelivered note, which lasts only until the next send.
       await keepThread(storage, l, { ...thread, recent: [], rows: thread.rows.filter((r) => !r.id.startsWith('undelivered-')).slice(-KEEP_ROWS) });
@@ -673,7 +685,8 @@ const when = (iso: unknown) => { const t = typeof iso === 'string' ? Date.parse(
 async function routines(store: Store, now: number): Promise<Routines> {
   try {
     const body = await api(store, '/api/jobs');
-    const jobs = (Array.isArray(body.jobs) ? body.jobs : []) as Json[];
+    if (!Array.isArray(body.jobs)) throw new Error('Hermes sent routines in a form this app does not read.');
+    const jobs = body.jobs as Json[];
     const items = jobs.map((j) => {
       const paused = j.enabled === false || j.state === 'paused';
       const failed = !paused && j.last_status != null && j.last_status !== 'ok';
@@ -730,7 +743,7 @@ const sources: Sources = {
     local = fresh();
     await save(storage);
     sessionsSeen = []; cardsSeen = []; cardsLive = false;
-    steers.clear(); undelivered.clear(); rowsSeen.clear();
+    steers.clear(); undelivered.clear(); rowsSeen.clear(); steeredRun.clear();
     return ok;
   },
   inbox: ([, , showSettled, showSnoozed, query, now], store, storage) => { setClock(now); return inbox(showSettled, showSnoozed, query, now, store, storage); },
@@ -768,7 +781,7 @@ const sources: Sources = {
       const l = await state(storage);
       const runId = l.runs[sessionId];
       if (runId) steers.delete(runId);
-      undelivered.delete(sessionId); rowsSeen.delete(sessionId);
+      undelivered.delete(sessionId); rowsSeen.delete(sessionId); steeredRun.delete(sessionId);
       for (const ledger of [l.runs, l.read, l.snoozed, l.models]) delete ledger[sessionId];
       l.recent = l.recent.filter((r) => r.id !== sessionId);
       await forgetThread(storage, l, sessionId);
@@ -792,7 +805,10 @@ const sources: Sources = {
       const body = await api(store, `/v1/runs/${encodeURIComponent(runId)}/steer`, { method: 'POST', body: { input: text } });
       if (body.accepted !== true) throw new Error('Hermes did not take the message. Send it again when the run ends.');
       const sent = text.trim();
-      steers.set(runId, [...(steers.get(runId) ?? []), { text: sent, before: said(rowsSeen.get(sessionId) ?? [], sent) }]);
+      const rows = rowsSeen.get(sessionId) ?? [];
+      const waiting = unseen(rows, runId).filter((m) => m.text === sent).length;
+      steers.set(runId, [...(steers.get(runId) ?? []), { text: sent, before: said(rows, sent) + waiting }]);
+      steeredRun.set(sessionId, runId);
       return ok;
     } catch (e) {
       return failed((e as { code?: string }).code === 'run_not_accepting_steer' ? new Error('The run already finished. Send it as a new message.') : e);

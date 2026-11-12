@@ -40,7 +40,7 @@ allows before the data function's first await.
 
 Add a paired test for each new flow. The fixture's inputs: a message containing `approval` asks to
 run a command with every tier, `approval once only` offers only once and deny, `hold` runs until
-stopped or steered (Hermes refuses a steer saying `too late`), `storm` floods 2,000 deltas. Wait on a run with
+stopped or steered (Hermes refuses a steer saying `too late`, hands back `never mind` undelivered, and saves a steer at once in a `hold quick` run), `storm` floods 2,000 deltas. Wait on a run with
 `clock until state thread.status == "completed" within 5000`, never real sleeps. Give every new
 control a `testId`.
 
