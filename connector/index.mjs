@@ -532,6 +532,10 @@ export function createConnectorServer(options = {}) {
     const headers = forwardedHeaders(req);
     headers.authorization = `Bearer ${hermesApiKey}`;
     headers["x-apollo-device-id"] = device.id;
+    // Exact's SSE reader coalesces events that arrive faster than it commits, losing deltas. A client
+    // that asks for bytes gets the same SSE frames labelled as bytes, which Exact reads losslessly.
+    const eventBytes = req.method === "GET" && /^\/v1\/runs\/[^/]+\/events$/u.test(url.pathname) && req.headers.accept === "application/octet-stream";
+    if (eventBytes) headers.accept = "text/event-stream";
     let upstream;
     try {
       upstream = await (options.fetchImpl ?? fetch)(new URL(`${url.pathname}${url.search}`, hermesUrl), { method: req.method, headers, body, redirect: "error", signal: controller.signal });
@@ -544,6 +548,7 @@ export function createConnectorServer(options = {}) {
       const value = upstream.headers.get(name);
       if (value) responseHeaders[name] = value;
     }
+    if (eventBytes && upstream.ok) responseHeaders["content-type"] = "application/octet-stream";
     // Session lists and single sessions: fill empty previews from the latest assistant message.
     if (req.method === "GET" && /^\/api\/sessions(?:\/[^/]+)?$/u.test(url.pathname) && upstream.ok && /json/u.test(upstream.headers.get("content-type") ?? "")) {
       let responseBody = Buffer.from(await upstream.arrayBuffer());
