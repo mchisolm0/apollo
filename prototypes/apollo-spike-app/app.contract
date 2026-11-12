@@ -12,6 +12,7 @@ routes nav
     session "/s/:id"
     compose "/new"
     settings "/settings"
+    routines "/routines"
     share "/share"
     card "/c/:id"
 
@@ -180,12 +181,30 @@ shape Thread
   approvalTitle: string
   approvalCommand: string
   approvalReason: string
+  // Hermes's tiers for this request, of once, session, always and deny.
+  approvalChoices: string[]
   settled: bool
   canSettle: bool
   autoSettle: bool
   activityAt: number
   recent: Recent[]
   model: string
+
+// status: ok, failed, paused, or new (never run).
+shape Routine
+  id: string
+  name: string
+  schedule: string
+  status: string
+  last: string
+  next: string
+  error: string
+  streak: number
+
+shape Routines
+  error: string
+  live: bool
+  items: Routine[]
 
 shape Created
   id: string
@@ -206,6 +225,10 @@ shape Time
 
 fn secs(t: number): number = t > 100000000000 ? t / 1000 : t
 fn took(s: number): string = s < 60 ? `${floor(s)}s` : s < 3600 ? `${floor(s / 60)}m ${floor(s - floor(s / 60) * 60)}s` : `${floor(s / 3600)}h ${floor((s - floor(s / 3600) * 3600) / 60)}m`
+fn choiceLabel(c: string): string = c == "once" ? "Allow once" : c == "session" ? "Allow for thread" : c == "always" ? "Always allow" : "Deny"
+// A reply quotes the start of a message, each line marked, then leaves room to write.
+fn quoted(t: string): string = `${t.slice(0, 280).split("\n").slice(0, 4).map(l => `> ${l}`).join("\n")}\n\n`
+fn routineColor(s: string): string = s == "failed" ? "-exact-system-red" : s == "paused" ? "-exact-system-orange" : "-exact-secondary-label"
 fn toneColor(t: string): string = t == "amber" ? "-exact-system-orange" : t == "accent" ? "AccentColor" : t == "green" ? "-exact-system-green" : t == "red" ? "-exact-system-red" : "-exact-secondary-label"
 
 component Apollo
@@ -236,6 +259,7 @@ component Apollo
   state aimed = ""
   state aimedSwipe = ""
   state aimedKind = ""
+  state aimedText = ""
   state chasing = false
   state wasHidden = false
   derive selected = match stack(nav).filter(e => e.name == "session").at(-1) { case some(e) => e.params.id, case none => "" }
@@ -252,6 +276,7 @@ component Apollo
   resource savedThread = savedTranscript(selected) as shape Thread
   // Asked again once the inbox is live, since a kept card stands in until then.
   resource card = card(selectedCard, revision) with liveInbox.live as shape CardView transient
+  resource routineList = routines(top(nav).name == "routines", revision) with now as shape Routines transient
   resource options = agentOptions(account.paired, accountRevision) as shape Options
   resource voice = speechRecognitionAvailability(langs=["en-US"], processLocally=true) as shape SpeechRecognitionAvailability else empty()
   resource heard = speechRecognitionState(recognition=recognitionId, interval=100) as shape SpeechRecognitionState else empty()
@@ -269,6 +294,7 @@ component Apollo
   mutation created as shape Created then afterCreate
   mutation sent as shape Ack then afterSend
   mutation stopped as shape Ack
+  mutation steered as shape Ack then afterSend
   mutation answered as shape Ack
   mutation filed as shape Ack then afterWrite
   mutation responded as shape Ack then afterWrite
@@ -279,6 +305,8 @@ component Apollo
   // The kept thread for the last id stands for a moment after another opens: draw none of it.
   derive threadRows = thread.id == selected ? thread.rows : []
   derive canSend = (draft.trim() != "" or files.length > 0) and threadLive and not dictating and not thread.active and not pending(sent) and not pending(created)
+  // A message typed while a turn runs steers it; files wait for a new message.
+  derive canSteer = draft.trim() != "" and files.length == 0 and threadLive and thread.active and thread.runId != "" and thread.status == "running" and not dictating and not pending(steered)
   derive lastId = match threadRows.at(-1) { case some(r) => r.id, case none => "" }
   // Quick actions: the manifest's New thread, then the threads opened last (as Apollo does).
   derive recentKey = thread.recent.map(r => `${r.id}|${r.title}`).join("\n")
@@ -297,7 +325,7 @@ component Apollo
   derive shareText = [searchParam(top(nav), "title"), searchParam(top(nav), "text"), searchParam(top(nav), "url")].filter(t => t != "").join(" · ")
   derive shareIncoming = sharedFiles(top(nav), "files")
   derive shareThreads = inbox.items.filter(i => i.kind == "session" and not i.settled).slice(0, 8)
-  derive shownError = notice != "" ? notice : dictationError != "" ? dictationError : onHome ? liveInbox.error : top(nav).name == "card" ? card.error : liveThread.error
+  derive shownError = notice != "" ? notice : dictationError != "" ? dictationError : onHome ? liveInbox.error : top(nav).name == "card" ? card.error : top(nav).name == "routines" ? routineList.error : liveThread.error
 
   // A finished run hands back to durable history, as Apollo reloads messages after a terminal event.
   task settle when thread.ended and thread.runId != ""
@@ -481,7 +509,10 @@ component Apollo
       preventDefault()
       submit()
   action submit
-    if canSend
+    if canSteer
+      send steered = steerRun(thread.runId, selected, draft.trim())
+      draft = ""
+    else if canSend
       if top(nav).name == "compose"
         send created = createThread(draft.trim(), composeModel, files)
       else
@@ -613,20 +644,29 @@ component Apollo
       case none
         notice = ""
   action afterSend
-    match sent
-      case some(s)
-        notice = s.error
-      case none
-        notice = ""
+    let a = match sent { case some(s) => s.error, case none => "" }
+    let b = match steered { case some(s) => s.error, case none => "" }
+    notice = a != "" ? a : b
     refreshAll()
     chasing = true
   action stop
     if thread.runId != ""
       send stopped = stopRun(thread.runId)
-  action approve
-    send answered = answerApproval(thread.runId, thread.approvalId, "once")
-  action deny
-    send answered = answerApproval(thread.runId, thread.approvalId, "deny")
+  // "Always" adds the command to Hermes's allowlist for every thread, so it asks first.
+  action choose(choice: string)
+    if choice == "always"
+      showModal("always-allow")
+    else
+      send answered = answerApproval(thread.runId, thread.approvalId, choice)
+  action allowAlways
+    send answered = answerApproval(thread.runId, thread.approvalId, "always")
+  action aimMessage(text: string)
+    aimedText = text
+  action replyAimed
+    draft = `${quoted(aimedText)}${draft}`
+    focus("composer")
+  action openRoutines
+    nav = push(nav, "/routines")
   action toggleSteps(id: string)
     opened = opened.includes(id) ? opened.filter(x => x != id) : opened.concat([id])
 
@@ -648,6 +688,8 @@ component Apollo
               if account.paired
                 input type="search" value=searchText input=search placeholder="Search" aria-label="Search threads" testId="search" width="100%"
             column id="home-menu" popover="auto" role="menu" aria-label=account.label
+              button press=openRoutines popovertarget="home-menu" popovertargetaction="hide" testId="routines"
+                text "Routines"
               button press=openSettings popovertarget="home-menu" popovertargetaction="hide" testId="settings"
                 text "Settings"
               button press=askUnpair destructive=true popovertarget="home-menu" popovertargetaction="hide" testId="unpair"
@@ -820,6 +862,9 @@ component Apollo
               if e.name == "session"
                 button popovertarget="thread-menu" aria-label="Thread actions" testId="thread-more"
                   image "symbol:more"
+            column id="message-menu" popover="auto" role="menu"
+              button press=replyAimed popovertarget="message-menu" popovertargetaction="hide" testId="reply-quote"
+                text "Reply"
             column id="thread-menu" popover="auto" role="menu"
               if thread.canSettle and threadLive
                 button press=settleThread(true) popovertarget="thread-menu" popovertargetaction="hide" testId="finish"
@@ -844,13 +889,15 @@ component Apollo
                       column align-items="flex-end" padding-left=48 gap=4
                         if r.text != ""
                           text r.text padding="8px 12px" border-radius=18 overflow-wrap="anywhere" user-select="text"
-                            background-color="AccentColor" color="AccentColorText"
+                            background-color="AccentColor" color="AccentColorText" contextmenu=aimMessage(r.text) contextPopover="message-menu" testId=`say-${r.id}`
+                        if r.status == "steered"
+                          text "Sent to the running turn" font="-exact-caption1" color="-exact-secondary-label" testId=`steered-${r.id}`
                         if r.summary != ""
                           row gap=4 align-items="center"
                             image "symbol:sf/paperclip" font-size=11 color="-exact-secondary-label"
                             text r.summary font="-exact-footnote" color="-exact-secondary-label" testId=`files-${r.id}`
                     if r.kind == "text"
-                      text r.text markup="markdown" user-select="text" overflow-wrap="anywhere"
+                      text r.text markup="markdown" user-select="text" overflow-wrap="anywhere" contextmenu=aimMessage(r.text) contextPopover="message-menu" testId=`say-${r.id}`
                     if r.kind == "live"
                       text r.text markup="markdown" user-select="text" overflow-wrap="anywhere" font="-exact-subheadline" color="-exact-secondary-label"
                         padding-left=10 border-left="2px solid -exact-separator"
@@ -901,11 +948,10 @@ component Apollo
                 if thread.approvalReason != ""
                   text thread.approvalReason font="-exact-subheadline" color="-exact-secondary-label"
                 text thread.approvalCommand font-family="ui-monospace" font="-exact-footnote" user-select="text" line-clamp=8
-                row gap=8 justify-content="flex-end"
-                  button press=deny buttonStyle="bordered" disabled=pending(answered) testId="deny"
-                    text "Deny"
-                  button press=approve buttonStyle="filled" disabled=pending(answered) testId="approve"
-                    text "Allow once"
+                row gap=8 justify-content="flex-end" flex-wrap="wrap"
+                  for c in thread.approvalChoices.filter(c => c != "once").concat(thread.approvalChoices.filter(c => c == "once")) key=c
+                    button press=choose(c) buttonStyle=(c == "once" ? "filled" : "bordered") destructive=(c == "deny") disabled=pending(answered) testId=`approve-${c}`
+                      text choiceLabel(c)
             if shownError != ""
               row gap=8 align-items="center" padding="4px 16px"
                 text shownError font="-exact-footnote" color="-exact-system-red" flex=1 min-width=0 testId="error"
@@ -935,11 +981,14 @@ component Apollo
                         image "symbol:close" font-size=11 color="-exact-secondary-label"
                 row align-items="flex-end" padding="0 4px 0 12px"
                   textarea id="composer" value=draft input=edit key=composerKey rows=1 field-sizing="content" max-height=160
-                    placeholder="Message" aria-label="Message" testId="composer" flex=1 min-width=0 padding="10px 0"
+                    placeholder=(thread.status == "running" and threadLive and e.name == "session" ? "Steer this turn" : "Message") aria-label="Message" testId="composer" flex=1 min-width=0 padding="10px 0"
                     border="none" background-color="transparent" autofocus=(e.name == "compose")
                   if thread.active and e.name == "session"
                     button press=stop buttonStyle="bordered" margin="4px 0" aria-label="Stop" testId="stop"
                       image "symbol:stop-fill"
+                    if draft.trim() != ""
+                      button press=submit disabled=(not canSteer) buttonStyle="filled" margin="4px 0 4px 6px" retainFocus=true aria-label="Steer" testId="steer"
+                        image "symbol:send"
                   else
                     button press=submit disabled=(not canSend) buttonStyle="filled" margin="4px 0" retainFocus=true aria-label="Send" testId="send"
                       image "symbol:send"
@@ -995,6 +1044,28 @@ component Apollo
               section
                 button press=back destructive=true testId="share-discard"
                   text "Discard"
+        if e.name == "routines"
+          column navigationKey=`${e.id}` navigationScroll="routines" position="absolute" inset=0 display="flex" flex-direction="column"
+            header display="flex" align-items="center" gap=8 padding="8px 16px"
+              text "Routines" role="heading" aria-level=2 flex=1
+              if not routineList.live and routineList.error == ""
+                progress aria-label="Loading" width=14 height=14 testId="routines-loading"
+            if shownError != ""
+              text shownError font="-exact-footnote" color="-exact-system-red" padding="4px 16px" testId="error"
+            list id="routines" appearance="auto" listStyle="plain" flex=1 min-height=0 testId="routines"
+              section
+                for j in routineList.items key=j.id
+                  column gap=2 padding="8px 16px" testId=`routine-${j.id}`
+                    row gap=8 align-items="baseline"
+                      text j.name font="-exact-headline" color=(j.status == "paused" ? "-exact-secondary-label" : "-exact-label") flex=1 min-width=0
+                      text (j.status == "failed" ? (j.streak > 1 ? `Failed ${j.streak} times` : "Failed") : j.status == "paused" ? "Paused" : j.next != "" ? `Next ${j.next}` : "")
+                        font="-exact-footnote" color=routineColor(j.status) flex-shrink=0 testId=`routine-status-${j.id}`
+                    text (j.last != "" ? `${j.schedule} · ran ${j.last}` : j.schedule) font="-exact-subheadline" color="-exact-secondary-label"
+                    if j.error != ""
+                      text j.error font="-exact-footnote" color="-exact-system-red" line-clamp=2 user-select="text" testId=`routine-error-${j.id}`
+                if routineList.live and routineList.items.length == 0
+                  row justify-content="center" padding="24px 0"
+                    text "No routines yet" color="-exact-secondary-label" testId="routines-empty"
         if e.name == "settings"
           column navigationKey=`${e.id}` navigationScroll="settings" position="absolute" inset=0 display="flex" flex-direction="column"
             header display="flex" align-items="center" padding="8px 16px"
@@ -1034,6 +1105,12 @@ component Apollo
         button press=deleteAimed destructive=true commandfor="delete-thread" command="close" testId="delete-confirm"
           text "Delete"
         button commandfor="delete-thread" command="close" testId="delete-cancel"
+          text "Cancel"
+      dialog id="always-allow" role="alertdialog" aria-label="Always allow this command?"
+        text "Hermes won't ask before running it again, in any thread."
+        button press=allowAlways commandfor="always-allow" command="close" testId="always-confirm"
+          text "Always allow"
+        button commandfor="always-allow" command="close" testId="always-cancel"
           text "Cancel"
       dialog id="unpair" role="alertdialog" aria-label="Unpair this phone?"
         text "You'll need a new pairing link to connect again."

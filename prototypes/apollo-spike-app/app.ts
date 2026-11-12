@@ -412,8 +412,26 @@ function toRows(rows: readonly TranscriptRow[]): Row[] {
 
 const emptyThread: Thread = {
   id: '', live: false, title: '', rows: [], runId: '', status: '', active: false, ended: false, error: '',
-  approvalId: '', approvalTitle: '', approvalCommand: '', approvalReason: '', settled: false, canSettle: false, autoSettle: true, activityAt: 0, recent: [], model: '',
+  approvalId: '', approvalTitle: '', approvalCommand: '', approvalReason: '', approvalChoices: [], settled: false, canSettle: false, autoSettle: true, activityAt: 0, recent: [], model: '',
 };
+
+// The tiers Hermes offers for this request, in its order; a request without them gets its two always-safe ones.
+const CHOICES = ['once', 'session', 'always', 'deny'];
+const approvalChoices = (choices: unknown) => {
+  const offered = Array.isArray(choices) ? CHOICES.filter((c) => choices.includes(c)) : [];
+  return offered.length ? offered : ['once', 'deny'];
+};
+
+// Steers this phone sent into a running turn, drawn under it until Hermes's history has them, and
+// what Hermes said it never delivered (`pending_steer` on a terminal event), until the next send.
+const steers = new Map<string, string[]>();
+const undelivered = new Map<string, string>();
+function withSteers(rows: Row[], sessionId: string, runId: string): Row[] {
+  const sent = new Set(rows.filter((r) => r.kind === 'user').map((r) => r.text.trim()));
+  const echoes = (steers.get(runId) ?? []).filter((text) => !sent.has(text)).map((text, i): Row => ({ ...plain, id: `steer-${runId}-${i}`, kind: 'user', text, status: 'steered' }));
+  const lost = undelivered.get(sessionId);
+  return [...rows, ...echoes, ...(lost ? [{ ...plain, id: `undelivered-${sessionId}`, kind: 'error', text: `Hermes finished before it read: “${lost}”. Send it again as a new message.` }] : [])];
+}
 
 // iOS shows four quick actions: New thread and the three threads opened last.
 // Opening a snoozed thread returns it to its section, as in Apollo.
@@ -448,7 +466,8 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       // A thread read with nothing running is read, as Apollo marks it.
       if (runId) delete l.runs[sessionId];
       l.read[sessionId] = Math.floor(now / 1000);
-      const thread: Thread = { ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", recent, title, rows: toRows(project({ history: messages, events: [], running: false })) };
+      if (runId) steers.delete(runId);
+      const thread: Thread = { ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", recent, title, rows: withSteers(toRows(project({ history: messages, events: [], running: false })), sessionId, '') };
       await keepThread(storage, l, { ...thread, recent: [], rows: thread.rows.slice(-KEEP_ROWS) });
       await save(storage);
       return thread;
@@ -465,8 +484,8 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       const command = str(approval?.command) ?? str(approval?.preview);
       const rows = project({ history: messages, events, runId, runStartedAt: current.createdAt, runEndedAt: current.updatedAt, runStatus: current.status, runOutput: current.output, running });
       return {
-        ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", canSettle: false, recent, title, rows: toRows(rows), runId, status: current.status, active: running, ended: !running, error,
-        ...(approval && command ? { approvalId: str(approval.request_id) ?? approval.requestId ?? '', approvalTitle: approval.tool ? `Allow ${approval.tool}?` : 'Allow this command?', approvalCommand: command, approvalReason: approval.description ?? '' } : {}),
+        ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", canSettle: false, recent, title, rows: withSteers(toRows(rows), sessionId, runId), runId, status: current.status, active: running, ended: !running, error,
+        ...(approval && command ? { approvalId: str(approval.request_id) ?? approval.requestId ?? '', approvalTitle: approval.tool ? `Allow ${approval.tool}?` : 'Allow this command?', approvalCommand: command, approvalReason: approval.description ?? '', approvalChoices: approvalChoices(approval.choices) } : {}),
       };
     };
     const take = (data: string) => {
@@ -477,6 +496,8 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       events.push(event);
       run = statusAfterEvent(run!, event);
       if (event.event === 'run.completed') run = { ...run, output: str(event.output) ?? str(event.final_response) ?? run.output };
+      const lost = str(event.pending_steer);
+      if (lost && !isRunActive(run.status)) undelivered.set(sessionId, lost);
     };
     // Exact coalesces SSE messages that arrive faster than it commits, losing deltas, so the
     // connector is asked for the same frames as bytes, which Exact never drops. A connector
@@ -580,6 +601,7 @@ async function upload(store: Store, storage: Storage, file: Draft): Promise<Atta
 
 async function start(store: Store, storage: Storage, sessionId: string, text: string, files: readonly Draft[] = []) {
   const l = await state(storage);
+  undelivered.delete(sessionId);
   const attachments = [];
   for (const f of files) attachments.push(await upload(store, storage, f));
   const input = attachmentMessage(text, attachments);
@@ -595,6 +617,65 @@ async function start(store: Store, storage: Storage, sessionId: string, text: st
   });
   l.runs[sessionId] = String(run.run_id);
   await save(storage);
+}
+
+// ---- Routines: Hermes's cron jobs, read-only ----
+
+type Routines = Result<'routines'>;
+const WEEKDAYS = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
+const clockTime = (h: number, m: number) => `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`;
+const every = (minutes: number) => minutes % 1440 === 0 ? (minutes === 1440 ? 'Every day' : `Every ${minutes / 1440} days`)
+  : minutes % 60 === 0 ? (minutes === 60 ? 'Every hour' : `Every ${minutes / 60} hours`) : minutes === 1 ? 'Every minute' : `Every ${minutes} minutes`;
+
+// A job's schedule as a person says it; anything else stays as Hermes wrote it.
+function scheduleLabel(display: string): string {
+  const interval = /^every (\d+)m$/u.exec(display);
+  if (interval) return every(Number(interval[1]));
+  const cron = /^(\S+) (\S+) \* \* (\S+)$/u.exec(display);
+  if (!cron) return capitalize(display);
+  const [, minute, hour, days] = cron as unknown as [string, string, string, string];
+  if (hour === '*' && days === '*') return minute === '*' ? 'Every minute' : /^\*\/\d+$/u.test(minute) ? every(Number(minute.slice(2))) : display;
+  if (!/^\d+$/u.test(minute) || !/^\d+$/u.test(hour)) return display;
+  const at = clockTime(Number(hour), Number(minute));
+  if (days === '*') return `Daily at ${at}`;
+  if (days === '1-5') return `Weekdays at ${at}`;
+  if (/^[0-6]$/u.test(days)) return `${WEEKDAYS[Number(days)]} at ${at}`;
+  return display;
+}
+
+const until = (seconds: number, now: number) => {
+  const s = seconds - now / 1000;
+  if (s < 60) return 'soon';
+  if (s < 3600) return `in ${Math.round(s / 60)}m`;
+  if (s < 86400) return `in ${Math.round(s / 3600)}h`;
+  return `in ${Math.round(s / 86400)}d`;
+};
+const when = (iso: unknown) => { const t = typeof iso === 'string' ? Date.parse(iso) : NaN; return Number.isFinite(t) ? t / 1000 : undefined; };
+
+async function routines(store: Store, now: number): Promise<Routines> {
+  try {
+    const body = await api(store, '/api/jobs');
+    const jobs = (Array.isArray(body.jobs) ? body.jobs : []) as Json[];
+    const items = jobs.map((j) => {
+      const paused = j.enabled === false || j.state === 'paused';
+      const failed = !paused && j.last_status != null && j.last_status !== 'ok';
+      const last = when(j.last_run_at), next = when(j.next_run_at);
+      const streak = num(j.failure_streak) ?? 0;
+      return {
+        id: String(j.id), name: str(j.name) ?? 'Routine', schedule: scheduleLabel(str(j.schedule_display) ?? ''),
+        status: paused ? 'paused' : failed ? 'failed' : last ? 'ok' : 'new',
+        last: last ? ago(last, now) : '', next: !paused && next ? until(next, now) : '',
+        error: failed ? str(j.last_error) ?? '' : '', streak: failed ? streak : 0,
+      };
+    });
+    // What needs you first, then by name.
+    const rank = (s: string) => (s === 'failed' ? 0 : s === 'paused' ? 2 : 1);
+    items.sort((a, b) => rank(a.status) - rank(b.status) || a.name.localeCompare(b.name));
+    return { error: '', live: true, items };
+  } catch (e) {
+    const status = (e as { status?: number }).status;
+    return { error: e instanceof Unpaired ? '' : status === 404 ? 'Update the Apollo connector to see routines.' : message(e), live: false, items: [] };
+  }
 }
 
 const ok = { error: '' };
@@ -683,6 +764,20 @@ const sources: Sources = {
     } catch (e) { return { id: '', error: message(e) }; }
   },
   startRun: async ([sessionId, input, files], store, storage) => { try { await start(store, storage, sessionId, input, files); return ok; } catch (e) { return failed(e); } },
+  // A steer joins the running turn, as Apollo's "Steer now" does; files go with a new message instead.
+  steerRun: async ([runId, sessionId, text], store) => {
+    try {
+      const body = await api(store, `/v1/runs/${encodeURIComponent(runId)}/steer`, { method: 'POST', body: { input: text } });
+      if (body.accepted !== true) throw new Error('Hermes did not take the message. Send it again when the run ends.');
+      steers.set(runId, [...(steers.get(runId) ?? []), text.trim()]);
+      undelivered.delete(sessionId);
+      return ok;
+    } catch (e) {
+      return failed((e as { code?: string }).code === 'run_not_accepting_steer' ? new Error('The run already finished. Send it as a new message.') : e);
+    }
+  },
+  // Asked only while the Routines screen is open.
+  routines: async ([open, , now], store) => (open ? routines(store, now) : { error: '', live: false, items: [] }),
   stopRun: async ([runId], store) => { try { await api(store, `/v1/runs/${encodeURIComponent(runId)}/stop`, { method: 'POST' }); return ok; } catch (e) { return failed(e); } },
   answerApproval: async ([runId, requestId, choice], store) => {
     try { await api(store, `/v1/runs/${encodeURIComponent(runId)}/approval`, { method: 'POST', body: { choice, ...(requestId ? { request_id: requestId } : {}) } }); return ok; }
