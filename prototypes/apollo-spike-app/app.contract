@@ -269,9 +269,11 @@ component Apollo
   derive recentKey = thread.recent.map(r => `${r.id}|${r.title}`).join("\n")
   derive currentModel = top(nav).name == "compose" ? composeModel : thread.model
   derive modelLabel = match options.models.filter(m => m.key == currentModel).at(0) { case some(m) => m.label, case none => "Default model" }
-  derive spoken = heard.results.map(r => r.alternatives.slice(0, 1).map(a => a.transcript).join("")).join(" ")
-  derive interim = match heard.interim { case some(i) => i.alternatives.slice(0, 1).map(a => a.transcript).join(""), case none => "" }
-  derive hearing = dictating and heard.audio
+  derive heardNow = recognitionId != "" and heard.id == recognitionId
+  derive spoken = not heardNow ? "" : heard.results.map(r => r.alternatives.slice(0, 1).map(a => a.transcript).join("")).join(" ")
+  derive interim = not heardNow ? "" : match heard.interim { case some(i) => i.alternatives.slice(0, 1).map(a => a.transcript).join(""), case none => "" }
+  derive hearing = dictating and heardNow and heard.audio
+  derive micSilent = dictating and level.totalSamplesDuration == 0 and spoken == "" and interim == ""
   derive voiceSeconds = floor(level.totalSamplesDuration)
   derive voiceClock = `${floor(voiceSeconds / 60)}:${voiceSeconds % 60 < 10 ? "0" : ""}${voiceSeconds % 60}`
   derive voiceBar = voicing and dictationError == ""
@@ -302,8 +304,13 @@ component Apollo
   task searching when searchText != query key=searchText
     after(250, applySearch)
   // Dictation ends on its own after a pause too; either way its words land in the draft.
-  task heardOut when dictating and heard.state == "ended"
+  // `heard` keeps the last recognition's state until the new one's first reply: match the id, or a
+  // second dictation reads the first one's "ended" and closes at once.
+  task heardOut when dictating and heardNow and heard.state == "ended"
     after(1, finishDictation)
+  // A microphone that never delivers a sample would leave the bar spinning: say so instead.
+  task voiceStall when micSilent
+    after(6000, voiceStalled)
   task shortcuts when recentKey != "" key=recentKey
     after(1, publishShortcuts)
 
@@ -494,6 +501,11 @@ component Apollo
       send micOpened = getUserMedia(audio=true)
     else
       send voiceInstalled = installSpeechRecognition(langs=["en-US"], processLocally=true)
+  action voiceStalled
+    if micSilent
+      voiceCancelled = true
+      notice = "The microphone didn't start. Try again."
+      send abortedListening = abortSpeechRecognition(recognition=recognitionId)
   action finishVoice
     send stoppedListening = stopSpeechRecognition(recognition=recognitionId)
   action cancelVoice
@@ -548,7 +560,7 @@ component Apollo
         voicing = false
         closeMic()
   action finishDictation
-    notice = voiceCancelled ? "" : match heard.error { case some(e) => `Dictation stopped: ${match heard.message { case some(m) => m, case none => e }}`, case none => "" }
+    notice = voiceCancelled ? notice : match heard.error { case some(e) => `Dictation stopped: ${match heard.message { case some(m) => m, case none => e }}`, case none => "" }
     draft = voiceCancelled ? dictationBase : dictated
     dictating = false
     voicing = false
