@@ -4,7 +4,7 @@
 
 use setAppShortcuts, ShortcutItem, AppleShortcutItem from "@exact/quick-actions"
 use getUserMedia, stopTrack, MediaStream, MediaStreamTrack from "@exact/media-capture"
-use startSpeechRecognition, stopSpeechRecognition, speechRecognitionState, speechRecognitionAvailability, SpeechRecognitionInfo, SpeechRecognitionState, SpeechRecognitionAvailability from "@exact/speech-recognition"
+use startSpeechRecognition, stopSpeechRecognition, speechRecognitionState, speechRecognitionAvailability, installSpeechRecognition, SpeechRecognitionInfo, SpeechRecognitionState, SpeechRecognitionAvailability, SpeechRecognitionInstall from "@exact/speech-recognition"
 
 routes nav
   home "/"
@@ -242,6 +242,7 @@ component Apollo
   resource voice = speechRecognitionAvailability(langs=["en-US"], processLocally=true) as shape SpeechRecognitionAvailability else empty()
   resource heard = speechRecognitionState(recognition=recognitionId, interval=100) as shape SpeechRecognitionState else empty()
   mutation micOpened as shape MediaStream then micReady
+  mutation voiceInstalled as shape SpeechRecognitionInstall then afterVoiceInstall
   mutation micClosed as shape MediaStreamTrack
   mutation listening as shape SpeechRecognitionInfo then dictationStarted
   mutation stoppedListening as shape SpeechRecognitionInfo
@@ -264,7 +265,7 @@ component Apollo
   derive spoken = heard.results.map(r => r.alternatives.slice(0, 1).map(a => a.transcript).join("")).join(" ")
   derive interim = match heard.interim { case some(i) => i.alternatives.slice(0, 1).map(a => a.transcript).join(""), case none => "" }
   derive dictated = [dictationBase.trim(), spoken.trim(), interim.trim()].filter(t => t != "").join(" ")
-  derive dictationError = match failure(micOpened) { case some(e) => `Microphone: ${e.message}`, case none => match failure(listening) { case some(e) => `Dictation: ${e.message}`, case none => "" } }
+  derive dictationError = match failure(micOpened) { case some(e) => `Microphone: ${e.message}`, case none => match failure(listening) { case some(e) => `Dictation: ${e.message}`, case none => match failure(voiceInstalled) { case some(e) => `Speech model: ${e.message}`, case none => "" } } }
   derive shareText = [searchParam(top(nav), "title"), searchParam(top(nav), "text"), searchParam(top(nav), "url")].filter(t => t != "").join(" · ")
   derive shareIncoming = sharedFiles(top(nav), "files")
   derive shareThreads = inbox.items.filter(i => i.kind == "session" and not i.settled).slice(0, 8)
@@ -475,7 +476,20 @@ component Apollo
       send stoppedListening = stopSpeechRecognition(recognition=recognitionId)
     else
       dictationBase = draft
-      send micOpened = getUserMedia(audio=true)
+      // iOS 26 transcribes on the device only once its English model is installed.
+      if voice.availability == "available"
+        send micOpened = getUserMedia(audio=true)
+      else
+        send voiceInstalled = installSpeechRecognition(langs=["en-US"], processLocally=true)
+  action afterVoiceInstall
+    match voiceInstalled
+      case some(i)
+        if i.installed
+          send micOpened = getUserMedia(audio=true)
+        else
+          notice = "Dictation: this iPhone could not install the English speech model"
+      case none
+        notice = ""
   action micReady
     match micOpened
       case some(m)
@@ -487,12 +501,19 @@ component Apollo
   action dictationStarted
     match listening
       case some(r)
-        recognitionId = r.id
-        dictating = true
+        match r.error
+          case some(e)
+            notice = `Dictation stopped: ${e}`
+            if trackId != ""
+              send micClosed = stopTrack(track=trackId)
+            trackId = ""
+          case none
+            recognitionId = r.id
+            dictating = true
       case none
         dictating = false
   action finishDictation
-    notice = match heard.error { case some(e) => `Dictation stopped: ${e}`, case none => "" }
+    notice = match heard.error { case some(e) => `Dictation stopped: ${match heard.message { case some(m) => m, case none => e }}`, case none => "" }
     draft = dictated
     dictating = false
     recognitionId = ""
@@ -822,7 +843,7 @@ component Apollo
                       image "symbol:close" font-size=11 color="-exact-secondary-label"
               row align-items="flex-end" padding="0 4px 0 12px"
                 textarea id="composer" value=(dictating ? dictated : draft) input=edit key=composerKey rows=1 field-sizing="content" max-height=160
-                  placeholder=(dictating ? "Listening" : pending(micOpened) or pending(listening) ? "Starting dictation" : "Message") aria-label="Message" readonly=dictating testId="composer" flex=1 min-width=0 padding="10px 0"
+                  placeholder=(dictating ? "Listening" : pending(voiceInstalled) ? "Getting the speech model" : pending(micOpened) or pending(listening) ? "Starting dictation" : "Message") aria-label="Message" readonly=dictating testId="composer" flex=1 min-width=0 padding="10px 0"
                   border="none" background-color="transparent" autofocus=(e.name == "compose")
                 if thread.active and e.name == "session"
                   button press=stop buttonStyle="bordered" margin="4px 0" aria-label="Stop" testId="stop"
@@ -839,7 +860,7 @@ component Apollo
                 view flex=1
                 // As in Apollo, the mic shows only where this phone can transcribe on its own.
                 if voice.availability != "unavailable"
-                  button press=dictate appearance="none" padding=8 disabled=(pending(micOpened) or pending(listening)) aria-label=(dictating ? "Stop dictation" : "Dictate") testId="dictate"
+                  button press=dictate appearance="none" padding=8 disabled=(pending(voiceInstalled) or pending(micOpened) or pending(listening)) aria-label=(dictating ? "Stop dictation" : "Dictate") testId="dictate"
                     image (dictating ? "symbol:stop-fill" : "symbol:microphone") color=(dictating ? "-exact-system-red" : "-exact-secondary-label")
             input type="file" id="attach-photo" accept="image/*" multiple=true display="none" change=picked testId="photo-input"
             input type="file" id="attach-file" multiple=true display="none" change=picked testId="file-input"
