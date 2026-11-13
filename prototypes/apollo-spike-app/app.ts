@@ -679,7 +679,8 @@ async function upload(store: Store, storage: Storage, file: Draft): Promise<Atta
   return body.attachment as Attachment;
 }
 
-async function start(store: Store, storage: Storage, sessionId: string, text: string, files: readonly Draft[] = []) {
+// `step.posting` turns true once the run is asked for: past it, a failure may have started the run.
+async function start(store: Store, storage: Storage, sessionId: string, text: string, files: readonly Draft[] = [], step = { posting: false }) {
   const l = await state(storage);
   const attachments = [];
   for (const f of files) attachments.push(await upload(store, storage, f));
@@ -690,6 +691,7 @@ async function start(store: Store, storage: Storage, sessionId: string, text: st
     ? `The user explicitly selected these installed skills: ${JSON.stringify(skills)}. Before responding, call skill_view for each exact name and follow its instructions. The $name references in the message identify these selections. If a skill cannot be loaded, tell the user.`
     : undefined;
   const [provider, model] = (l.models[sessionId] ?? '').split('|');
+  step.posting = true;
   const run = await api(store, '/v1/runs', {
     method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() },
     body: { input, session_id: sessionId, ...(model ? { model, ...(provider && provider !== 'hermes' ? { provider } : {}) } : {}), ...(instructions ? { instructions } : {}) },
@@ -848,16 +850,19 @@ const sources: Sources = {
   createThread: async ([input, model, files], store, storage) => {
     const id = crypto.randomUUID();
     let made = false;
+    const step = { posting: false };
     try {
       await api(store, '/api/sessions', { method: 'POST', body: { id, title: (input.split('\n')[0] || files[0]?.name || 'New thread').slice(0, 72) } });
       made = true;
       if (model) { const l = await state(storage); l.models[id] = model; }
-      await start(store, storage, id, input, files);
+      await start(store, storage, id, input, files, step);
       return { id, error: '' };
     } catch (e) {
-      // The draft stays to send again, so a thread Hermes refused to start goes. One whose reply was
-      // lost may be running, so it stays.
-      if (made && (e as { status?: number }).status) await api(store, `/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
+      // The draft stays to send again, so the empty thread goes, unless the run may have started: its
+      // reply was lost, or the connector lost Hermes (5xx). Only a 4xx is a refusal.
+      const status = (e as { status?: number }).status ?? 0;
+      const uncertain = step.posting && !(status >= 400 && status < 500);
+      if (made && !uncertain) await api(store, `/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
       return { id: '', error: message(e) };
     }
   },

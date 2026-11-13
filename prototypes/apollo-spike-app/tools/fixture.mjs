@@ -144,7 +144,7 @@ const hermes = createServer(async (req, res) => {
     const key = req.headers["idempotency-key"];
     if (typeof key === "string" && idempotency.has(key)) return json(res, 202, runStatus(idempotency.get(key)));
     const input = await body(req);
-    if (/^refuse\b/u.test(input.input ?? "")) return json(res, 503, { error: { message: "Hermes is busy" } });
+    if (/^refuse\b/u.test(input.input ?? "")) return json(res, 422, { error: { message: "Hermes refused the run" } });
     console.log(`run ${input.session_id}: model=${input.model ?? "-"} provider=${input.provider ?? "-"} instructions=${input.instructions ? "yes" : "no"} attachments=${/<apollo-attachments>/.test(input.input ?? "") ? "yes" : "no"}`);
     const run = { input: input.input ?? "", createdAt: now(), id: `spike-run-${randomUUID()}`, sessionId: input.session_id ?? "spike-session", status: "started", events: [], output: undefined };
     messages.get(run.sessionId)?.push({ id: `user-${run.id}`, role: "user", content: run.input, timestamp: run.createdAt });
