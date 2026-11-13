@@ -38,7 +38,7 @@ test "an approval offers the tiers Hermes allows, and Always asks before it appl
   expect tree has "approval"
   tap "approve-always"
   clock settle
-  expect text "always-text" == "rm -rf build/\n\nHermes won't ask before running it again, in any thread."
+  expect text "always-text" == "Hermes won't ask again before it runs “rm -rf build/”, in any thread."
   tap "always-confirm"
   clock data
   clock until state thread.status == "completed" within 5000
@@ -127,7 +127,7 @@ test "two steers the run never read are named once each"
   tap "pair"
   clock data
   tap "new"
-  type "composer" "hold until I say"
+  type "composer" "hold slow"
   tap "send"
   clock data
   clock until state thread.status == "running" within 5000
@@ -142,6 +142,30 @@ test "two steers the run never read are named once each"
   clock data
   expect state threadRows.2 .text == "Hermes finished before it read: “skip the logs\nnever mind”. Send it again as a new message."
   expect state threadRows.length == 3
+
+test "a run that doesn't answer stays running with Retry, and nothing is sent over it"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "new"
+  type "composer" "hold until I say"
+  tap "send"
+  clock data
+  clock until state thread.status == "running" within 5000
+  back
+  clock settle
+  fail fetch "http://127.0.0.1:19111/v1/runs/"
+  clock +15000
+  clock data
+  expect state inbox.items.2 .badge == "Working"
+  expect state inbox.items.2 .swipe == ""
+  tap "hold until I say"
+  clock data
+  expect state thread.status == "unknown"
+  expect text "error" == "Could not reach the running turn. Retry to check on it."
+  expect tree has "stop"
+  expect tree has "retry"
+  expect tree missing "send"
 
 test "a steer Hermes refuses stays in the composer to send again"
   type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"

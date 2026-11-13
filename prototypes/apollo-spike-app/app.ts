@@ -193,8 +193,10 @@ async function sessionsAndRuns(store: Store, storage: Storage) {
       if (lost && !isRunActive(run.status)) undelivered.set(sessionId, lost);
       if (!isRunActive(run.status)) delete l.runs[sessionId];
     } catch (e) {
-      // Only a run Hermes no longer knows leaves the ledger; one that didn't answer is asked again.
+      // Only a run Hermes no longer knows leaves the ledger; one that didn't answer is asked again,
+      // and counts as running meanwhile so its thread can't be settled.
       if ((e as { status?: number }).status === 404) delete l.runs[sessionId];
+      else runs[runId] = { runId, status: 'running', sessionId };
     }
   }));
   await save(storage);
@@ -487,8 +489,9 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       // A run that didn't answer may still be going: it stays in the ledger with its steers, and
       // the thread says so with Retry rather than looking idle.
       if (runId && unreachable) {
+        // Shown as still running, so Stop stays and nothing new is sent over it.
         const thread: Thread = { ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", recent, title, canSettle: false,
-          rows: withSteers(toRows(project({ history: messages, events: [], running: false })), sessionId, runId), error: 'Could not reach the running turn. Retry to check on it.' };
+          rows: withSteers(toRows(project({ history: messages, events: [], running: false })), sessionId, runId), runId, status: 'unknown', active: true, error: 'Could not reach the running turn. Retry to check on it.' };
         await save(storage);
         return thread;
       }
@@ -501,9 +504,10 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       if (runId) {
         if (unseen(rows, runId).length) rows = toRows(createTranscriptProjector()({ history: (await history(store, sessionId)).messages, events: [], running: false }));
         const missed = unseen(rows, runId).map((m) => m.text);
-        // Hermes joins every steer it never delivered with newlines.
-        const named = new Set(lostBefore?.split('\n') ?? []);
-        const lost = [...(lostBefore ? [lostBefore] : []), ...missed.filter((text) => !named.has(text))];
+        // Hermes joins every steer it never delivered with newlines, so a steer it named is a whole
+        // line run of that text.
+        const named = (text: string) => lostBefore !== undefined && `\n${lostBefore}\n`.includes(`\n${text}\n`);
+        const lost = [...(lostBefore ? [lostBefore] : []), ...missed.filter((text) => !named(text))];
         if (lost.length) undelivered.set(sessionId, lost.join('\n'));
         steers.delete(runId);
         steeredRun.delete(sessionId);
@@ -643,11 +647,6 @@ async function upload(store: Store, storage: Storage, file: Draft): Promise<Atta
 
 async function start(store: Store, storage: Storage, sessionId: string, text: string, files: readonly Draft[] = []) {
   const l = await state(storage);
-  // A new message starts over: what the last run left undelivered was said, and its steers are done.
-  undelivered.delete(sessionId);
-  const last = steeredRun.get(sessionId);
-  if (last) steers.delete(last);
-  steeredRun.delete(sessionId);
   const attachments = [];
   for (const f of files) attachments.push(await upload(store, storage, f));
   const input = attachmentMessage(text, attachments);
@@ -662,6 +661,11 @@ async function start(store: Store, storage: Storage, sessionId: string, text: st
     body: { input, session_id: sessionId, ...(model ? { model, ...(provider && provider !== 'hermes' ? { provider } : {}) } : {}), ...(instructions ? { instructions } : {}) },
   });
   l.runs[sessionId] = String(run.run_id);
+  // A new message starts over: what the last run left undelivered was said, and its steers are done.
+  undelivered.delete(sessionId);
+  const last = steeredRun.get(sessionId);
+  if (last) steers.delete(last);
+  steeredRun.delete(sessionId);
   await save(storage);
 }
 

@@ -1143,7 +1143,7 @@ component Apollo
         button commandfor="delete-thread" command="close" testId="delete-cancel"
           text "Cancel"
       dialog id="always-allow" role="alertdialog" aria-label="Always allow this command?"
-        text `${alwaysCommand}\n\nHermes won't ask before running it again, in any thread.` testId="always-text"
+        text `Hermes won't ask again before it runs “${alwaysCommand}”, in any thread.` testId="always-text"
         button press=allowAlways commandfor="always-allow" command="close" testId="always-confirm"
           text "Always allow"
         button commandfor="always-allow" command="close" testId="always-cancel"

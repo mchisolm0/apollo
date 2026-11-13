@@ -179,7 +179,7 @@ const hermes = createServer(async (req, res) => {
         run.waiting = run.waiting.filter((text) => text !== input.input);
         messages.get(run.sessionId)?.push({ id: `steer-${run.events.length}-${run.id}`, role: "user", content: `[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]\n${input.input}\n[/OUT-OF-BAND USER MESSAGE]`, timestamp: now() });
         if (/hold/i.test(run.input) && !/quick/i.test(run.input)) stream(run, `Steered: ${input.input}`, 35);
-      }, /quick/i.test(run.input) ? 0 : 800);
+      }, /quick/i.test(run.input) ? 0 : /slow/i.test(run.input) ? 5000 : 800);
       return json(res, 200, { object: "hermes.run.steer", run_id: run.id, accepted: true });
     }
     if (runMatch[2] === "stop") { run.status = "cancelled"; emit(run, "run.cancelled"); end(run); return json(res, 200, runStatus(run)); }
