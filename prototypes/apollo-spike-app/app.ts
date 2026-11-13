@@ -846,13 +846,19 @@ const sources: Sources = {
     } catch (e) { return failed(e); }
   },
   createThread: async ([input, model, files], store, storage) => {
+    const id = crypto.randomUUID();
+    let made = false;
     try {
-      const id = crypto.randomUUID();
       await api(store, '/api/sessions', { method: 'POST', body: { id, title: (input.split('\n')[0] || files[0]?.name || 'New thread').slice(0, 72) } });
+      made = true;
       if (model) { const l = await state(storage); l.models[id] = model; }
       await start(store, storage, id, input, files);
       return { id, error: '' };
-    } catch (e) { return { id: '', error: message(e) }; }
+    } catch (e) {
+      // The draft stays to send again, so the empty thread it would have started goes.
+      if (made) await api(store, `/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
+      return { id: '', error: message(e) };
+    }
   },
   startRun: async ([sessionId, input, files], store, storage) => { try { await start(store, storage, sessionId, input, files); return ok; } catch (e) { return failed(e); } },
   // A steer joins the running turn, as Apollo's "Steer now" does; files go with a new message instead.

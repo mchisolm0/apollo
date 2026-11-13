@@ -278,8 +278,10 @@ component Apollo
   // What a steer sent, and to which thread: only that leaves the composer once Hermes takes it.
   state steerText = ""
   state steerThread = ""
-  // What the last send took, cleared from the composer once Hermes has it.
+  // What the last send took (text, thread, files), cleared from the composer once Hermes has it.
   state sentText = ""
+  state sentThread = ""
+  state sentFiles: string[] = []
   state chasing = false
   state wasHidden = false
   derive selected = match stack(nav).filter(e => e.name == "session").at(-1) { case some(e) => e.params.id, case none => "" }
@@ -317,7 +319,7 @@ component Apollo
   mutation steered as shape Ack then afterSteer
   mutation answered as shape Ack then afterAnswer
   mutation filed as shape Ack then afterWrite
-  mutation responded as shape Ack then afterWrite
+  mutation responded as shape Ack then afterRespond
   derive onHome = top(nav).name == "home"
   // The request More was opened on is still the one a live thread or the live inbox shows.
   derive askCurrent = alwaysCommand != "" and ((threadLive and alwaysRun == thread.runId and alwaysRequest == thread.approvalId and alwaysCommand == thread.approvalCommand) or (liveInbox.live and liveInbox.items.filter(i => i.runId == alwaysRun and i.requestId == alwaysRequest and i.command == alwaysCommand).length > 0))
@@ -490,11 +492,12 @@ component Apollo
   action settleOpenCard(settle: bool)
     send filed = settleCard(card.id, settle)
   action afterWrite
-    let a = match filed { case some(f) => f.error, case none => "" }
-    let b = match responded { case some(r) => r.error, case none => "" }
-    notice = a != "" ? a : b
-    // A reply that failed stays open to send again.
-    if b == ""
+    notice = match filed { case some(f) => f.error, case none => "" }
+    refreshAll()
+  // A card answer; a reply that failed stays open to send again.
+  action afterRespond
+    notice = match responded { case some(r) => r.error, case none => "" }
+    if notice == ""
       replying = ""
       reply = ""
     refreshAll()
@@ -525,9 +528,9 @@ component Apollo
     replying = ""
   action toggle(p: Pick)
     if card.open
-      send responded = togglePick(card.id, p.n, not p.done)
+      send filed = togglePick(card.id, p.n, not p.done)
   action pickRow(id: string, p: Pick)
-    send responded = togglePick(id, p.n, not p.done)
+    send filed = togglePick(id, p.n, not p.done)
 
   action edit(v: string)
     draft = v
@@ -543,6 +546,8 @@ component Apollo
       send steered = steerRun(thread.runId, selected, draft.trim())
     else if canSend
       sentText = draft
+      sentThread = selected
+      sentFiles = files.map(f => f.path)
       if top(nav).name == "compose"
         send created = createThread(draft.trim(), composeModel, files)
       else
@@ -668,7 +673,7 @@ component Apollo
         notice = c.error
         if c.id != ""
           draft = draft.startsWith(sentText) ? draft.slice(sentText.length).trim() : draft
-          files = []
+          files = files.filter(f => not sentFiles.includes(f.path))
           nav = replace(nav, path("session", c.id))
           chasing = true
       case none
@@ -686,9 +691,9 @@ component Apollo
     match sent
       case some(s)
         notice = s.error
-        if s.error == ""
+        if s.error == "" and selected == sentThread
           draft = draft.startsWith(sentText) ? draft.slice(sentText.length).trim() : draft
-          files = []
+          files = files.filter(f => not sentFiles.includes(f.path))
       case none
         notice = ""
     refreshAll()
@@ -948,7 +953,7 @@ component Apollo
                   image "symbol:more"
             column id="thread-ask-menu" popover="auto" role="menu" aria-label="Allow"
               for c in askChoices.filter(c => c == "session" or c == "always") key=c
-                button press=answerTier(c) destructive=(c == "always") popovertarget="thread-ask-menu" popovertargetaction="hide" disabled=pending(answered) testId=`approve-${c}`
+                button press=answerTier(c) destructive=(c == "always") popovertarget="thread-ask-menu" popovertargetaction="hide" disabled=(pending(answered) or not threadLive) testId=`approve-${c}`
                   text choiceLabel(c)
             column id="message-menu" popover="auto" role="menu"
               button press=replyAimed popovertarget="message-menu" popovertargetaction="hide" testId="reply-quote"
@@ -1044,10 +1049,10 @@ component Apollo
                   text thread.approvalCommand font-family="ui-monospace" font="-exact-footnote" user-select="text" line-clamp=2 flex=1 min-width=0
                 row gap=8 justify-content="flex-end" flex-wrap="wrap"
                   for c in thread.approvalChoices.filter(c => c == "deny").concat(thread.approvalChoices.filter(c => c == "once")) key=c
-                    button press=answerAsk(thread.runId, thread.approvalId, c) buttonStyle=(c == "once" ? "filled" : "bordered") destructive=(c == "deny") disabled=pending(answered) testId=`approve-${c}`
+                    button press=answerAsk(thread.runId, thread.approvalId, c) buttonStyle=(c == "once" ? "filled" : "bordered") destructive=(c == "deny") disabled=(pending(answered) or not threadLive) testId=`approve-${c}`
                       text choiceLabel(c)
                   if thread.approvalChoices.filter(c => c == "session" or c == "always").length > 0
-                    button press=moreAsk(thread.runId, thread.approvalId, thread.approvalCommand, thread.approvalChoices) popovertarget="thread-ask-menu" buttonStyle="bordered" disabled=pending(answered) testId="approve-more"
+                    button press=moreAsk(thread.runId, thread.approvalId, thread.approvalCommand, thread.approvalChoices) popovertarget="thread-ask-menu" buttonStyle="bordered" disabled=(pending(answered) or not threadLive) testId="approve-more"
                       text "More"
             if shownError != ""
               row gap=8 align-items="center" padding="4px 16px"
