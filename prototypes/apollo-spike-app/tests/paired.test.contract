@@ -1,0 +1,260 @@
+// Paired flows against tools/fixture.mjs, which must be running (tools/test-paired.sh starts it).
+// Pairing with the fixture's reusable link puts its Hermes and cloud back to their seed, so each
+// test starts from the same threads, cards and routines.
+
+test "the inbox lists threads and Bot Chat, and keeps a cron job's own run out"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  expect tree has "row-spike-session"
+  expect tree has "row-bot-chat"
+  expect tree missing "row-cron-run"
+
+test "Bot Chat folds what the cron job handed it to the job's name"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "row-bot-chat"
+  clock data
+  expect tree has "cron-history-history-message-bot-input-0"
+  expect tree missing "say-history-history-message-bot-input-0"
+
+test "an approval offers the tiers Hermes allows, and Always asks before it applies"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "new"
+  type "composer" "approval please"
+  tap "send"
+  clock data
+  clock until state thread.approvalCommand == "rm -rf build/" within 5000
+  expect tree has "approval-inline"
+  expect tree has "approve-once"
+  expect tree has "approve-deny"
+  tap "approve-more"
+  clock settle
+  expect tree has "approve-session"
+  tap "approve-always"
+  clock settle
+  tap "always-cancel"
+  clock settle
+  expect tree has "approval"
+  tap "approve-more"
+  clock settle
+  tap "approve-always"
+  clock settle
+  expect text "always-text" == "Hermes won't ask again before it runs “rm -rf build/”, in any thread."
+  tap "always-confirm"
+  clock data
+  clock until state thread.status == "completed" within 5000
+  expect tree missing "approval"
+  expect state threadRows.2 .text == "Cleaned the build folder (allowed always)."
+
+test "a smart-denied command offers only once and deny"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "new"
+  type "composer" "approval once only"
+  tap "send"
+  clock data
+  clock until state thread.approvalCommand == "rm -rf build/" within 5000
+  expect tree has "approve-once"
+  expect tree has "approve-deny"
+  expect tree missing "approve-more"
+
+test "a message typed while a turn runs steers it"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "new"
+  type "composer" "hold until I say"
+  tap "send"
+  clock data
+  clock until state thread.status == "running" within 5000
+  expect tree missing "steer"
+  type "composer" "Skip the tests folder"
+  expect tree has "stop"
+  tap "steer"
+  clock data
+  expect state draft == ""
+  expect state threadRows.2 .text == "Skip the tests folder"
+  expect state threadRows.2 .status == "steered"
+  clock until state thread.status == "completed" within 5000
+  clock +300
+  clock data
+  expect state threadRows.1 .text == "Skip the tests folder"
+  expect state threadRows.1 .status == "complete"
+  expect state threadRows.2 .text == "Steered: Skip the tests folder"
+  expect state threadRows.length == 3
+
+test "the same words steered twice show twice, once each"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "new"
+  type "composer" "hold quick"
+  tap "send"
+  clock data
+  clock until state thread.status == "running" within 5000
+  type "composer" "yes"
+  tap "steer"
+  clock data
+  type "composer" "yes"
+  tap "steer"
+  clock data
+  expect state threadRows.1 .text == "yes"
+  expect state threadRows.2 .text == "yes"
+  expect state threadRows.2 .status == "complete"
+  expect state threadRows.length == 4
+
+test "a steer the run ended before reading says it was not delivered"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "new"
+  type "composer" "hold until I say"
+  tap "send"
+  clock data
+  clock until state thread.status == "running" within 5000
+  type "composer" "never mind"
+  tap "steer"
+  clock data
+  clock until state thread.status == "completed" within 5000
+  clock +300
+  clock data
+  expect state threadRows.2 .kind == "error"
+  expect state threadRows.2 .text == "Hermes finished before it read: “never mind”. Send it again as a new message."
+
+test "two steers the run never read are named once each"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "new"
+  type "composer" "hold slow"
+  tap "send"
+  clock data
+  clock until state thread.status == "running" within 5000
+  type "composer" "skip the logs"
+  tap "steer"
+  clock data
+  type "composer" "never mind"
+  tap "steer"
+  clock data
+  clock until state thread.status == "completed" within 5000
+  clock +300
+  clock data
+  expect state threadRows.2 .text == "Hermes finished before it read: “skip the logs\nnever mind”. Send it again as a new message."
+  expect state threadRows.length == 3
+
+test "a run that doesn't answer stays running with Retry, and nothing is sent over it"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "new"
+  type "composer" "hold until I say"
+  tap "send"
+  clock data
+  clock until state thread.status == "running" within 5000
+  back
+  clock settle
+  fail fetch "http://127.0.0.1:19111/v1/runs/"
+  clock +15000
+  clock data
+  expect state inbox.items.4 .badge == "Working"
+  expect state inbox.items.4 .swipe == ""
+  tap "hold until I say"
+  clock data
+  expect state thread.status == "unknown"
+  expect text "error" == "Could not reach the running turn. Retry to check on it."
+  expect tree has "stop"
+  expect tree has "retry"
+  expect tree missing "send"
+
+test "a steer Hermes refuses stays in the composer to send again"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "new"
+  type "composer" "hold until I say"
+  tap "send"
+  clock data
+  clock until state thread.status == "running" within 5000
+  type "composer" "too late"
+  tap "steer"
+  clock data
+  expect state draft == "too late"
+  expect text "error" == "The run already finished. Send it as a new message."
+
+test "a message Hermes refuses stays in the composer, and no empty thread is left"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "new"
+  type "composer" "refuse this"
+  tap "send"
+  clock data
+  expect state draft == "refuse this"
+  back
+  clock data
+  expect state inbox.items.length == 7
+
+test "Reply quotes a message into the composer"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "row-spike-session"
+  clock data
+  type "composer" "Why?"
+  tap "say-history-history-message-seed-user-0" contextmenu
+  tap "reply-quote"
+  expect state draft == "> What does this thread show?\n\nWhy?"
+
+test "Routines lists what failed first, then the rest, with paused ones marked"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  expect text "badge-routines" == "Lot watcher failed 3×"
+  tap "row-routines"
+  clock data
+  expect state routineList.items.0 .name == "Lot watcher"
+  expect text "routine-status-job-lots" == "Failed 3 times"
+  expect text "routine-error-job-lots" == "eBay search timed out after 60s"
+  expect text "routine-status-job-digest" == "Paused"
+  expect state routineList.items.2 .schedule == "Weekdays at 8:35 AM"
+  expect state routineList.items.1 .schedule == "Daily at 8:45 AM"
+  expect state routineList.items.0 .schedule == "Every 30 minutes"
+  expect state routineList.items.3 .schedule == "Mondays at 8:00 AM"
+
+test "an approval a thread waits on is answered from its inbox row"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "new"
+  type "composer" "approval please"
+  tap "send"
+  clock data
+  clock until state thread.approvalCommand == "rm -rf build/" within 5000
+  back
+  clock settle
+  clock data
+  expect state inbox.items.0 .need == "answer"
+  expect state inbox.items.1 .need == "approve"
+  expect state inbox.items.1 .command == "rm -rf build/"
+  expect state inbox.items.2 .kind == "feedback"
+  tap "Allow once"
+  clock data
+  clock until state inbox.items.1 .kind == "feedback" within 5000
+
+test "Feedback opens every player report, waiting ones first"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  expect text "badge-feedback" == "2 waiting on you"
+  tap "row-feedback"
+  clock settle
+  expect state inbox.feedback.0 .title == "Bug: Life total resets when the phone rotates"
+  expect state inbox.feedback.2 .title == "Idea: Show poison counters next to life"
+  tap "feedback-feedback-1"
+  clock data
+  expect text "card-title" == "Bug: Life total resets when the phone rotates"

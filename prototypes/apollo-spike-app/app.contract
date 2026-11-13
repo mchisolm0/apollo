@@ -1,0 +1,1261 @@
+// PROTOTYPE. Apollo on Exact: pair with an Apollo connector, work Apollo's inbox (threads and cloud
+// cards, settle), open a card and answer it, start a thread, and follow a run live with Stop and
+// approvals. app.ts holds the data and the connection.
+
+use setAppShortcuts, ShortcutItem, AppleShortcutItem from "@exact/quick-actions"
+use getUserMedia, stopTrack, MediaStream, MediaStreamTrack from "@exact/media-capture"
+use audioLevel, AudioLevel from "@exact/recording"
+use startSpeechRecognition, stopSpeechRecognition, abortSpeechRecognition, speechRecognitionState, speechRecognitionAvailability, installSpeechRecognition, SpeechRecognitionInfo, SpeechRecognitionState, SpeechRecognitionAvailability, SpeechRecognitionInstall from "@exact/speech-recognition"
+
+routes nav
+  home "/"
+    session "/s/:id"
+    compose "/new"
+    settings "/settings"
+    routines "/routines"
+    feedback "/feedback"
+    share "/share"
+    card "/c/:id"
+
+shape Account
+  paired: bool
+  label: string
+  endpoint: string
+
+shape CardButton
+  id: string
+  label: string
+  style: string
+  input: bool
+  url: string
+
+shape Pick
+  n: number
+  text: string
+  sub: string
+  url: string
+  done: bool
+
+shape Pair
+  key: string
+  value: string
+
+shape Item
+  key: string
+  kind: string
+  id: string
+  title: string
+  subtitle: string
+  badge: string
+  tone: string
+  time: string
+  settled: bool
+  swipe: string
+  count: number
+  glyph: string
+  link: string
+  actions: CardButton[]
+  picks: Pick[]
+  meta: Pair[]
+  summary: string
+  snooze: bool
+  // What a row waiting on you asks: approve (a thread's command) or answer (a card), else empty.
+  need: string
+  command: string
+  runId: string
+  requestId: string
+  choices: string[]
+
+shape SnoozeOption
+  id: string
+  label: string
+  when: string
+  until: number
+
+// `live`: the connector's answer this launch; false for what the phone kept from before.
+shape Inbox
+  error: string
+  live: bool
+  items: Item[]
+  snoozeOptions: SnoozeOption[]
+  // Player reports, waiting on a reply first: the Feedback row opens them.
+  feedback: Item[]
+
+shape Metric
+  label: string
+  value: string
+  delta: string
+  tone: string
+
+shape CardView
+  found: bool
+  id: string
+  kind: string
+  source: string
+  title: string
+  body: string
+  plainText: bool
+  outcome: string
+  url: string
+  threadId: string
+  open: bool
+  settled: bool
+  swipe: string
+  meta: Pair[]
+  metrics: Metric[]
+  picks: Pick[]
+  actions: CardButton[]
+  progress: string
+  progressValue: number
+  error: string
+  live: bool
+
+shape Step
+  key: string
+  kind: string
+  label: string
+  detail: string
+  running: bool
+  failed: bool
+
+shape Cell
+  key: string
+  text: string
+  align: string
+  first: bool
+
+shape TableRow
+  key: string
+  head: bool
+  cells: Cell[]
+
+shape Row
+  id: string
+  kind: string
+  text: string
+  table: TableRow[]
+  status: string
+  summary: string
+  running: bool
+  startedAt: number
+  steps: Step[]
+
+shape Recent
+  id: string
+  title: string
+
+shape ModelOption
+  key: string
+  id: string
+  provider: string
+  label: string
+  isDefault: bool
+
+shape Skill
+  name: string
+  description: string
+
+shape Toolset
+  name: string
+  label: string
+  enabled: bool
+  tools: number
+
+shape Options
+  models: ModelOption[]
+  skills: Skill[]
+  toolsets: Toolset[]
+  defaultModel: string
+  platform: string
+  error: string
+
+// A picked file waiting to go with the next message.
+shape Draft
+  name: string
+  type: string
+  size: number
+  path: string
+
+shape Thread
+  id: string
+  live: bool
+  title: string
+  rows: Row[]
+  runId: string
+  status: string
+  active: bool
+  ended: bool
+  error: string
+  approvalId: string
+  approvalTitle: string
+  approvalCommand: string
+  approvalReason: string
+  // Hermes's tiers for this request, of once, session, always and deny.
+  approvalChoices: string[]
+  settled: bool
+  canSettle: bool
+  autoSettle: bool
+  activityAt: number
+  recent: Recent[]
+  model: string
+
+// status: ok, failed, paused, or new (never run).
+shape Routine
+  id: string
+  name: string
+  schedule: string
+  status: string
+  last: string
+  next: string
+  error: string
+  streak: number
+
+shape Routines
+  error: string
+  live: bool
+  items: Routine[]
+
+shape Created
+  id: string
+  error: string
+
+shape Ack
+  error: string
+
+shape Page
+  visibilityState: string
+  onLine: bool
+  canShare: bool
+  canShareFiles: bool
+
+shape Time
+  epochAtZero: number
+  utcOffset: number
+
+fn secs(t: number): number = t > 100000000000 ? t / 1000 : t
+fn took(s: number): string = s < 60 ? `${floor(s)}s` : s < 3600 ? `${floor(s / 60)}m ${floor(s - floor(s / 60) * 60)}s` : `${floor(s / 3600)}h ${floor((s - floor(s / 3600) * 3600) / 60)}m`
+fn choiceLabel(c: string): string = c == "once" ? "Allow once" : c == "session" ? "Allow in this thread" : c == "always" ? "Always allow…" : "Deny"
+// A reply quotes the start of a message, each line marked, then leaves room to write.
+fn quoted(t: string): string = `${(t.length > 280 ? `${t.slice(0, 279)}…` : t).split("\n").slice(0, 4).map(l => `> ${l}`).join("\n")}\n\n`
+fn routineColor(s: string): string = s == "failed" ? "-exact-system-red" : s == "paused" ? "-exact-system-orange" : "-exact-secondary-label"
+fn toneColor(t: string): string = t == "amber" ? "-exact-system-orange" : t == "accent" ? "AccentColor" : t == "green" ? "-exact-system-green" : t == "red" ? "-exact-system-red" : "-exact-secondary-label"
+
+component Apollo
+  state draft = ""
+  state link = ""
+  state reply = ""
+  state replying = ""
+  state revision = 0
+  state accountRevision = 0
+  state tick = 0
+  state clock = 0
+  state notice = ""
+  state opened = []
+  state showSettled = false
+  state showSnoozed = false
+  state searchText = ""
+  state query = ""
+  state aimedSnooze = false
+  state composeModel = ""
+  state files: Draft[] = []
+  state recognitionId = ""
+  state dictating = false
+  // The voice bar is up from the mic tap until the words land (or are thrown away).
+  state voicing = false
+  state voiceCancelled = false
+  state dictationBase = ""
+  state trackId = ""
+  state aimed = ""
+  state aimedSwipe = ""
+  state aimedKind = ""
+  state aimedText = ""
+  // The approval "Always allow" was opened for, so a confirm never answers a newer request.
+  state alwaysRun = ""
+  state alwaysRequest = ""
+  state alwaysCommand = ""
+  // Hermes's tiers for the request More was pressed on.
+  state askChoices: string[] = []
+  // What a steer sent, and to which thread: only that leaves the composer once Hermes takes it.
+  state steerText = ""
+  state steerThread = ""
+  // What the last send took (text, thread, files), cleared from the composer once Hermes has it.
+  state sentText = ""
+  state sentThread = ""
+  state sentFiles: string[] = []
+  state chasing = false
+  state wasHidden = false
+  derive selected = match stack(nav).filter(e => e.name == "session").at(-1) { case some(e) => e.params.id, case none => "" }
+  derive selectedCard = match stack(nav).filter(e => e.name == "card").at(-1) { case some(e) => e.params.id, case none => "" }
+  derive now = time.epochAtZero + tick
+  resource page = exactPage() as shape Page
+  resource time = exactTime() as shape Time
+  resource account = account(accountRevision) as shape Account
+  // What the phone kept draws at once and the connector's answer replaces it. Live answers are
+  // transient: Exact keeps none across launches, so a launch never shows an old one as live.
+  resource liveInbox = inbox(revision, account.paired, showSettled, showSnoozed, query) with now as shape Inbox transient
+  resource savedInbox = savedInbox(account.paired, showSettled, showSnoozed, query) with now as shape Inbox
+  resource liveThread = transcript(selected, revision) with now as shape Thread transient
+  resource savedThread = savedTranscript(selected) as shape Thread
+  // Asked again once the inbox is live, since a kept card stands in until then.
+  resource card = card(selectedCard, revision) with liveInbox.live as shape CardView transient
+  resource routineList = routines(top(nav).name == "routines", revision) with now as shape Routines transient
+  resource options = agentOptions(account.paired, accountRevision) as shape Options
+  resource voice = speechRecognitionAvailability(langs=["en-US"], processLocally=true) as shape SpeechRecognitionAvailability else empty()
+  resource heard = speechRecognitionState(recognition=recognitionId, interval=100) as shape SpeechRecognitionState else empty()
+  mutation micOpened as shape MediaStream then micReady
+  mutation voiceInstalled as shape SpeechRecognitionInstall then afterVoiceInstall
+  mutation micClosed as shape MediaStreamTrack
+  mutation listening as shape SpeechRecognitionInfo then dictationStarted
+  mutation stoppedListening as shape SpeechRecognitionInfo
+  mutation abortedListening as shape SpeechRecognitionInfo
+  // Only for the bar's clock: the waveform view meters the track itself.
+  resource level = audioLevel(track=trackId, interval=250, history=1) as shape AudioLevel else empty()
+  mutation removed as shape Ack then afterDelete
+  mutation paired as shape Ack then afterPair
+  mutation unpaired as shape Ack then afterPair
+  mutation created as shape Created then afterCreate
+  mutation sent as shape Ack then afterSend
+  mutation stopped as shape Ack
+  mutation steered as shape Ack then afterSteer
+  mutation answered as shape Ack then afterAnswer
+  mutation filed as shape Ack then afterWrite
+  mutation responded as shape Ack then afterRespond
+  derive onHome = top(nav).name == "home"
+  // The request More was opened on is still the one a live thread or the live inbox shows.
+  derive askCurrent = alwaysCommand != "" and ((threadLive and alwaysRun == thread.runId and alwaysRequest == thread.approvalId and alwaysCommand == thread.approvalCommand) or (liveInbox.live and liveInbox.items.filter(i => i.runId == alwaysRun and i.requestId == alwaysRequest and i.command == alwaysCommand).length > 0))
+  derive inbox = liveInbox.live ? liveInbox : savedInbox
+  derive threadLive = liveThread.id == selected
+  derive thread = threadLive ? liveThread : savedThread
+  // The kept thread for the last id stands for a moment after another opens: draw none of it.
+  derive threadRows = thread.id == selected ? thread.rows : []
+  derive canSend = (draft.trim() != "" or files.length > 0) and threadLive and not dictating and (top(nav).name == "compose" or not thread.active) and not pending(sent) and not pending(created)
+  // A message typed while a turn runs steers it; files wait for a new message.
+  derive canSteer = top(nav).name == "session" and draft.trim() != "" and files.length == 0 and threadLive and thread.active and thread.runId != "" and thread.status == "running" and not dictating and not pending(steered)
+  derive lastId = match threadRows.at(-1) { case some(r) => r.id, case none => "" }
+  // Quick actions: the manifest's New thread, then the threads opened last (as Apollo does).
+  derive recentKey = thread.recent.map(r => `${r.id}|${r.title}`).join("\n")
+  derive currentModel = top(nav).name == "compose" ? composeModel : thread.model
+  derive modelLabel = match options.models.filter(m => m.key == currentModel).at(0) { case some(m) => m.label, case none => "Default model" }
+  derive heardNow = recognitionId != "" and heard.id == recognitionId
+  derive spoken = not heardNow ? "" : heard.results.map(r => r.alternatives.slice(0, 1).map(a => a.transcript).join("")).join(" ")
+  derive interim = not heardNow ? "" : match heard.interim { case some(i) => i.alternatives.slice(0, 1).map(a => a.transcript).join(""), case none => "" }
+  derive hearing = dictating and heardNow and heard.audio
+  derive micSilent = dictating and level.totalSamplesDuration == 0 and spoken == "" and interim == ""
+  derive voiceSeconds = floor(level.totalSamplesDuration)
+  derive voiceClock = `${floor(voiceSeconds / 60)}:${voiceSeconds % 60 < 10 ? "0" : ""}${voiceSeconds % 60}`
+  derive voiceBar = voicing and dictationError == ""
+  derive dictated = [dictationBase.trim(), spoken.trim(), interim.trim()].filter(t => t != "").join(" ")
+  derive dictationError = match failure(micOpened) { case some(e) => `Microphone: ${e.message}`, case none => match failure(listening) { case some(e) => `Dictation: ${e.message}`, case none => match failure(voiceInstalled) { case some(e) => `Speech model: ${e.message}`, case none => "" } } }
+  derive shareText = [searchParam(top(nav), "title"), searchParam(top(nav), "text"), searchParam(top(nav), "url")].filter(t => t != "").join(" · ")
+  derive shareIncoming = sharedFiles(top(nav), "files")
+  derive shareThreads = inbox.items.filter(i => i.kind == "session" and not i.settled).slice(0, 8)
+  derive shownError = notice != "" ? notice : dictationError != "" ? dictationError : onHome ? liveInbox.error : top(nav).name == "card" ? card.error : top(nav).name == "routines" ? routineList.error : liveThread.error
+
+  // A finished run hands back to durable history, as Apollo reloads messages after a terminal event.
+  task settle when thread.ended and thread.runId != ""
+    after(300, refreshAll)
+  // The inbox stays fresh while it is on screen.
+  task poll when account.paired and onHome and page.visibilityState == "visible"
+    every(15000, refreshAll)
+  // Routines stay fresh while their screen is up.
+  task routinesPoll when top(nav).name == "routines" and page.visibilityState == "visible"
+    every(30000, refreshAll)
+  // A running turn's elapsed time.
+  task ticker when thread.active
+    every(1000, tickClock)
+  // A return from the background reconnects: the stream does not survive suspension.
+  task hid when page.visibilityState == "hidden"
+    after(1, markHidden)
+  task returned when wasHidden and page.visibilityState == "visible"
+    after(1, onReturn)
+  task chase when chasing
+    after(350, toEnd)
+  // Search filters as you type, a beat after the last key, so each key doesn't refetch the inbox.
+  task searching when searchText != query key=searchText
+    after(250, applySearch)
+  // Dictation ends on its own after a pause too; either way its words land in the draft.
+  // `heard` keeps the last recognition's state until the new one's first reply: match the id, or a
+  // second dictation reads the first one's "ended" and closes at once.
+  task heardOut when dictating and heardNow and heard.state == "ended"
+    after(1, finishDictation)
+  // A microphone that never delivers a sample would leave the bar spinning: say so instead.
+  task voiceStall when micSilent
+    after(6000, voiceStalled)
+  task shortcuts when recentKey != "" key=recentKey
+    after(1, publishShortcuts)
+
+  action publishShortcuts
+    setAppShortcuts(shortcuts=thread.recent.map(r => ShortcutItem(name=r.title, short_name=none, description=none, url=`/s/${r.id}`,
+      icons=none, apple=some(AppleShortcutItem(symbol=some("bubble.left"))), android=none)))
+  action refreshAll
+    tick = performanceNow()
+    revision = revision + 1
+  action tickClock
+    clock = time.epochAtZero + performanceNow()
+  action markHidden
+    wasHidden = true
+  action onReturn
+    wasHidden = false
+    refreshAll()
+  action toEnd
+    chasing = false
+    scrollIntoView("transcript", lastId, block="end")
+
+  // On a wide window a thread or card shows beside the inbox, and the next one opened replaces it.
+  action follow(url: string)
+    nav = (top(nav).name == "session" or top(nav).name == "card") and (url.startsWith("/s/") or url.startsWith("/c/")) ? replace(nav, url) : go(nav, url)
+    draft = ""
+    notice = ""
+    replying = ""
+    tick = performanceNow()
+    clock = time.epochAtZero + performanceNow()
+  action back
+    nav = back(nav)
+    refreshAll()
+  action openNew
+    draft = ""
+    notice = ""
+    nav = top(nav).name == "compose" ? nav : push(nav, "/new")
+  action openLink(url: string)
+    openURL(url)
+  // A pick's text opens its link, or the card when it has none. Only the ring checks it off.
+  action openPick(id: string, p: Pick)
+    if p.url != ""
+      openURL(p.url)
+    else if top(nav).name != "card"
+      nav = go(nav, path("card", id))
+  action toggleSection(id: string)
+    if id == "snoozed"
+      showSnoozed = not showSnoozed
+    else
+      showSettled = not showSettled
+  action search(v: string)
+    searchText = v
+  action applySearch
+    query = searchText
+  // Snooze is this phone's alone, as in Apollo; until 0 wakes the thread.
+  action snoozeAimed(until: number)
+    send filed = snooze(aimed, until)
+
+  action editLink(v: string)
+    link = v
+  action pair
+    if link.trim() != "" and not pending(paired)
+      send paired = pair(link.trim())
+  action askUnpair
+    showModal("unpair")
+  action unpair
+    nav = top(nav).name == "settings" ? back(nav) : nav
+    send unpaired = unpair()
+  action afterPair
+    match paired
+      case some(p)
+        notice = p.error
+        if p.error == ""
+          link = ""
+      case none
+        notice = ""
+    accountRevision = accountRevision + 1
+    refreshAll()
+
+  // Settle and reopen: threads on the connector (every phone sees it), cards on this phone.
+  action aim(id: string, kind: string, swipe: string, canSnooze: bool)
+    aimed = id
+    aimedKind = kind
+    aimedSwipe = swipe
+    aimedSnooze = canSnooze
+  // UIKit's swipe action presses the button but not its popovertarget, so open the menu here.
+  action swipeSnooze(id: string, kind: string, swipe: string)
+    aimed = id
+    aimedKind = kind
+    aimedSwipe = swipe
+    aimedSnooze = true
+    showPopover("snooze-menu")
+  action settleAimed
+    if aimedSwipe == "unsnooze"
+      send filed = snooze(aimed, 0)
+    else if aimedKind == "session"
+      send filed = settleThread(aimed, aimedSwipe == "settle", time.epochAtZero + performanceNow())
+    else
+      send filed = settleCard(aimed, aimedSwipe == "settle")
+  action settleRow(id: string, kind: string, swipe: string)
+    if swipe == "unsnooze"
+      send filed = snooze(id, 0)
+    else if kind == "session"
+      send filed = settleThread(id, swipe == "settle", time.epochAtZero + performanceNow())
+    else
+      send filed = settleCard(id, swipe == "settle")
+  action settleThread(settle: bool)
+    send filed = settleThread(selected, settle, time.epochAtZero + performanceNow())
+  action toggleAutoSettle
+    send filed = setAutoSettle(selected, not thread.autoSettle)
+  action settleOpenCard(settle: bool)
+    send filed = settleCard(card.id, settle)
+  action afterWrite
+    notice = match filed { case some(f) => f.error, case none => "" }
+    refreshAll()
+  // A card answer; a reply that failed stays open to send again.
+  action afterRespond
+    notice = match responded { case some(r) => r.error, case none => "" }
+    if notice == ""
+      replying = ""
+      reply = ""
+    refreshAll()
+
+  action answerCard(id: string, action: CardButton)
+    if action.input
+      nav = go(nav, path("card", id))
+      replying = action.id
+      reply = ""
+    else if action.url != ""
+      openURL(action.url)
+    else
+      send responded = respondCard(id, action.id, "")
+  action startReply(action: CardButton)
+    replying = action.id
+    reply = ""
+  action cardAction(action: CardButton)
+    if action.input
+      startReply(action)
+    else
+      answerCard(card.id, action)
+  action editReply(v: string)
+    reply = v
+  action sendReply
+    if reply.trim() != ""
+      send responded = respondCard(card.id, replying, reply.trim())
+  action cancelReply
+    replying = ""
+  action toggle(p: Pick)
+    if card.open
+      send filed = togglePick(card.id, p.n, not p.done)
+  action pickRow(id: string, p: Pick)
+    send filed = togglePick(id, p.n, not p.done)
+
+  action edit(v: string)
+    draft = v
+  action composerKey(k: string, e: KeyboardEvent)
+    if k == "Enter" and (e.metaKey or e.ctrlKey)
+      preventDefault()
+      submit()
+  action submit
+    // A steer keeps its text in the composer until Hermes takes it.
+    if canSteer
+      steerText = draft
+      steerThread = selected
+      send steered = steerRun(thread.runId, selected, draft.trim())
+    else if canSend
+      sentText = draft
+      sentThread = selected
+      sentFiles = files.map(f => f.path)
+      if top(nav).name == "compose"
+        send created = createThread(draft.trim(), composeModel, files)
+      else
+        send sent = startRun(selected, draft.trim(), files)
+  // Model: a new thread keeps it for its first run; an open thread asks Hermes to switch.
+  action pickModel(key: string)
+    if top(nav).name == "compose"
+      composeModel = key
+    else
+      send filed = setModel(selected, key)
+  // Skills: a $name in the message, as Apollo's composer writes them.
+  action insertSkill(name: string)
+    draft = `${draft == "" or draft.endsWith(" ") ? draft : draft + " "}$${name} `
+  action attach(id: string)
+    showPicker(id)
+  action picked(fs: Picked[])
+    files = files.concat(fs.map(f => Draft(name=f.name, type=f.type, size=f.size, path=f.path))).slice(0, 10)
+  action unattach(path: string)
+    files = files.filter(f => f.path != path)
+  // Voice: on-device recognition, as Apollo's; the words join the draft when it stops.
+  // Voice, as T3 Code does it: the mic swaps the composer for a bar (cancel, waveform and time,
+  // done); the words join the draft when it's done.
+  action dictate
+    voicing = true
+    voiceCancelled = false
+    notice = ""
+    dictationBase = draft
+    // iOS 26 transcribes on the device only once its English model is installed.
+    if voice.availability == "available"
+      send micOpened = getUserMedia(audio=true)
+    else
+      send voiceInstalled = installSpeechRecognition(langs=["en-US"], processLocally=true)
+  action voiceStalled
+    if micSilent
+      voiceCancelled = true
+      notice = "The microphone didn't start. Try again."
+      send abortedListening = abortSpeechRecognition(recognition=recognitionId)
+  action finishVoice
+    send stoppedListening = stopSpeechRecognition(recognition=recognitionId)
+  action cancelVoice
+    voiceCancelled = true
+    if dictating
+      send abortedListening = abortSpeechRecognition(recognition=recognitionId)
+    else
+      voicing = false
+      closeMic()
+  action closeMic
+    if trackId != ""
+      send micClosed = stopTrack(track=trackId)
+    trackId = ""
+  action afterVoiceInstall
+    match voiceInstalled
+      case some(i)
+        if not voicing
+          notice = ""
+        else if i.installed
+          send micOpened = getUserMedia(audio=true)
+        else
+          voicing = false
+          notice = "Dictation: this iPhone could not install the English speech model"
+      case none
+        voicing = false
+  action micReady
+    match micOpened
+      case some(m)
+        let id = match m.tracks.at(0) { case some(t) => t.id, case none => "" }
+        trackId = id
+        if voicing
+          send listening = startSpeechRecognition(track=id, lang="en-US", continuous=true, interimResults=true, processLocally=true)
+        else if id != ""
+          send micClosed = stopTrack(track=id)
+      case none
+        voicing = false
+        trackId = ""
+  action dictationStarted
+    match listening
+      case some(r)
+        match r.error
+          case some(e)
+            voicing = false
+            notice = `Dictation stopped: ${e}`
+            closeMic()
+          case none
+            recognitionId = r.id
+            dictating = true
+            if not voicing
+              send abortedListening = abortSpeechRecognition(recognition=r.id)
+      case none
+        voicing = false
+        closeMic()
+  action finishDictation
+    notice = voiceCancelled ? notice : match heard.error { case some(e) => `Dictation stopped: ${match heard.message { case some(m) => m, case none => e }}`, case none => "" }
+    draft = voiceCancelled ? dictationBase : dictated
+    dictating = false
+    voicing = false
+    recognitionId = ""
+    closeMic()
+  action askDelete(id: string)
+    aimed = id
+    showModal("delete-thread")
+  action deleteAimed
+    send removed = deleteThread(aimed)
+  action afterDelete
+    match removed
+      case some(r)
+        notice = r.error
+        if r.error == "" and top(nav).name == "session" and selected == aimed
+          nav = back(nav)
+      case none
+        notice = ""
+    refreshAll()
+  // Share to Apollo: what another app shared becomes the draft of a new or open thread, as in
+  // Apollo; nothing is sent until the person sends it.
+  action useShare(e: Entry, target: string)
+    draft = [searchParam(e, "title"), searchParam(e, "text"), searchParam(e, "url")].filter(t => t != "").join("\n\n")
+    files = sharedFiles(e, "files").files.map(f => Draft(name=f.name, type=f.type, size=f.size, path=f.path)).slice(0, 10)
+    nav = replace(nav, target == "" ? "/new" : path("session", target))
+  action openSettings
+    nav = push(nav, "/settings")
+  action afterCreate
+    match created
+      case some(c)
+        notice = c.error
+        if c.id != ""
+          files = files.filter(f => not sentFiles.includes(f.path))
+          // Only a compose screen still open moves to its thread; one left meanwhile finds it in the inbox.
+          if top(nav).name == "compose"
+            draft = draft.startsWith(sentText) ? draft.slice(sentText.length).trim() : draft
+            nav = replace(nav, path("session", c.id))
+            chasing = true
+      case none
+        notice = ""
+  action afterSteer
+    match steered
+      case some(s)
+        notice = s.error
+        if s.error == "" and selected == steerThread and draft.startsWith(steerText)
+          draft = draft.slice(steerText.length).trim()
+      case none
+        notice = ""
+    refreshAll()
+  action afterSend
+    match sent
+      case some(s)
+        notice = s.error
+        if s.error == ""
+          if selected == sentThread
+            draft = draft.startsWith(sentText) ? draft.slice(sentText.length).trim() : draft
+          files = files.filter(f => not sentFiles.includes(f.path))
+      case none
+        notice = ""
+    refreshAll()
+    chasing = true
+  action stop
+    if thread.runId != ""
+      send stopped = stopRun(thread.runId)
+  // Once or deny, from an approval's inbox row or its thread.
+  action answerAsk(runId: string, requestId: string, choice: string)
+    send answered = answerApproval(runId, requestId, choice)
+  // A tier from More, sent only while its request is still the one shown. "Always" adds the
+  // command to Hermes's allowlist for every thread, so it asks first.
+  action answerTier(choice: string)
+    if not askCurrent
+      notice = "That request changed. Choose again."
+    else if choice == "always"
+      showModal("always-allow")
+    else
+      send answered = answerApproval(alwaysRun, alwaysRequest, choice)
+  // More holds the wider tiers, this thread and every thread.
+  action moreAsk(runId: string, requestId: string, command: string, choices: string[])
+    alwaysRun = runId
+    alwaysRequest = requestId
+    alwaysCommand = command
+    askChoices = choices
+  action afterAnswer
+    match answered
+      case some(a)
+        notice = a.error
+      case none
+        notice = ""
+    refreshAll()
+  action allowAlways
+    if askCurrent
+      send answered = answerApproval(alwaysRun, alwaysRequest, "always")
+    else
+      notice = "That request changed. Choose again."
+  action aimMessage(text: string)
+    aimedText = text
+  action replyAimed
+    draft = `${quoted(aimedText)}${draft}`
+    focus("composer")
+  action toggleSteps(id: string)
+    opened = opened.includes(id) ? opened.filter(x => x != id) : opened.concat([id])
+
+  view
+    main navigationKey=`${top(nav).id}` navigationBack="back" navigate=follow testId="app" width="100%" height="100%"
+      for e in stack(nav) key=e.id
+        if e.name == "home"
+          // iPad and other wide windows: the inbox beside the open thread, as Apollo's split view.
+          column navigationKey=`${e.id}` navigationScroll="inbox" navigationSplit="340" position="absolute" inset=0 display="flex" flex-direction="column"
+            header display="flex" flex-wrap="wrap" align-items="center" gap=8 padding="8px 16px"
+              text "Inbox" role="heading" aria-level=1 flex=1
+              if account.paired and not liveInbox.live and liveInbox.error == ""
+                progress aria-label="Refreshing" width=14 height=14 testId="inbox-refreshing"
+              if account.paired
+                button popovertarget="home-menu" aria-label="More" testId="more"
+                  image "symbol:more"
+            column id="home-menu" popover="auto" role="menu" aria-label=account.label
+              button press=openSettings popovertarget="home-menu" popovertargetaction="hide" testId="settings"
+                text "Settings"
+              button press=askUnpair destructive=true popovertarget="home-menu" popovertargetaction="hide" testId="unpair"
+                text "Unpair"
+            if account.paired
+              if shownError != ""
+                text shownError font="-exact-footnote" color="-exact-system-red" padding="4px 16px" testId="error"
+              list id="inbox" appearance="auto" listStyle="plain" flex=1 min-height=0 testId="inbox"
+                section
+                  for it in inbox.items key=it.key
+                    if it.kind == "section"
+                      button appearance="none" press=toggleSection(it.id) display="flex" flex-direction="row" align-items="center" justify-content="flex-start" gap=6 padding="14px 16px 6px" testId=`section-${it.id}`
+                        image ((it.id == "snoozed" ? showSnoozed : showSettled) or query != "" ? "symbol:sf/chevron.down" : "symbol:forward-chevron") font-size=12 color="-exact-secondary-label"
+                        text (it.count > 0 ? `${it.title} · ${it.count}` : it.title) font="-exact-subheadline" color="-exact-secondary-label"
+                    else if it.kind == "caughtUp"
+                      row justify-content="center" padding="24px 0"
+                        text it.title color="-exact-secondary-label" testId="caught-up"
+                    else if it.kind == "feedback" or it.kind == "routines"
+                      link href=(it.kind == "feedback" ? path("feedback") : path("routines")) display="flex" flex-direction="row" align-items="center" gap=8 padding="12px 16px" testId=`row-${it.id}`
+                        text it.title font="-exact-headline" flex=1 min-width=0
+                        if it.badge != ""
+                          text it.badge font="-exact-footnote" color=toneColor(it.tone) flex-shrink=0 testId=`badge-${it.id}`
+                        image "symbol:forward-chevron" font-size=12 color="-exact-tertiary-label"
+                    else
+                      // Swipe left to settle or reopen, as Apollo's rows do; long press for the same in a menu.
+                      scroll swipeContent="content" swipeTrailing="swipe" swipeLeading="snooze" display="flex" padding-right=0 overflow-x="scroll" overflow-y="hidden"
+                        scrollbar-width="none" scroll-snap-type="x mandatory"
+                        column id="content" width="100%" flex-shrink=0 scroll-snap-align="start" box-sizing="border-box" gap=8 padding="8px 16px"
+                          link href=(it.kind == "session" ? path("session", it.id) : path("card", it.id)) contextmenu=aim(it.id, it.kind, it.swipe, it.snooze) contextPopover="row-menu" testId=`row-${it.id}`
+                            row gap=10 align-items="flex-start" flex=1 min-width=0
+                              if it.glyph != "" and it.need == ""
+                                text it.glyph font="-exact-footnote" font-weight=600 color="AccentColor" width=24 height=24 border-radius=12
+                                  background-color="-exact-secondary-background" text-align="center" line-height="24px" flex-shrink=0
+                              column flex=1 min-width=0 gap=2
+                                row gap=8 align-items="baseline"
+                                  if it.need != ""
+                                    text (it.need == "approve" ? "APPROVE" : "ANSWER") font="-exact-caption1" font-weight=600 color="-exact-system-orange" flex-shrink=0 testId=`need-${it.id}`
+                                  text it.title font=(it.settled ? "-exact-body" : "-exact-headline") color=(it.settled ? "-exact-secondary-label" : "-exact-label") line-clamp=(it.settled ? 1 : 2) flex=1 min-width=0
+                                  if it.badge != "" and it.need == ""
+                                    text it.badge font="-exact-footnote" color=toneColor(it.tone) flex-shrink=0
+                                  else
+                                    text it.time font="-exact-footnote" color="-exact-secondary-label" flex-shrink=0
+                                if it.subtitle != ""
+                                  text it.subtitle font="-exact-subheadline" color="-exact-secondary-label" line-clamp=2
+                                if it.command != ""
+                                  text it.command font-family="ui-monospace" font="-exact-footnote" line-clamp=2 testId=`command-${it.id}`
+                          if it.picks.length > 0
+                            column padding-left=34 gap=2
+                              for p in it.picks key=p.n
+                                PickRow(pick=p, press=pickRow(it.id, p), open=openPick(it.id, p), off=(pending(filed) or not inbox.live), tid=`row-pick-${it.id}-${p.n}`)
+                          for m in it.meta key=m.key
+                            text `${m.key} ${m.value}` font="-exact-subheadline" color="-exact-secondary-label" line-clamp=2 padding-left=34
+                          if it.summary != ""
+                            text it.summary font="-exact-subheadline" color="-exact-secondary-label" padding-left=34 testId=`summary-${it.id}`
+                          else if it.need == "approve"
+                            row gap=8 flex-wrap="wrap"
+                              for c in it.choices.filter(c => c == "deny").concat(it.choices.filter(c => c == "once")) key=c
+                                button press=answerAsk(it.runId, it.requestId, c) buttonStyle=(c == "once" ? "filled" : "bordered") destructive=(c == "deny") disabled=(pending(answered) or not inbox.live) testId=`ask-${it.id}-${c}`
+                                  text choiceLabel(c)
+                              if it.choices.filter(c => c == "session" or c == "always").length > 0
+                                button press=moreAsk(it.runId, it.requestId, it.command, it.choices) popovertarget="row-ask-menu" buttonStyle="bordered" disabled=(pending(answered) or not inbox.live) testId=`ask-${it.id}-more`
+                                  text "More"
+                          else if it.actions.length > 0
+                            row gap=8 padding-left=(it.glyph != "" and it.need == "" ? 34 : 0) flex-wrap="wrap"
+                              for a in it.actions key=a.id
+                                button press=answerCard(it.id, a) buttonStyle=(a.style == "primary" ? "filled" : "bordered") destructive=(a.style == "destructive") disabled=(pending(responded) or not inbox.live) testId=`act-${it.id}-${a.id}`
+                                  text a.label
+                        // Swipe right to snooze, as in Apollo: the press picks a time from the menu.
+                        if it.snooze
+                          button id="snooze" press=swipeSnooze(it.id, it.kind, it.swipe) accent-color="-exact-system-purple" flex-shrink=0 scroll-snap-align="start" testId=`snooze-${it.id}`
+                            text "Snooze"
+                        if it.swipe != ""
+                          button id="swipe" press=settleRow(it.id, it.kind, it.swipe) accent-color=(it.swipe == "settle" ? "AccentColor" : "-exact-system-indigo") flex-shrink=0 scroll-snap-align="start" testId=`swipe-${it.id}`
+                            text (it.swipe == "settle" ? "Settle" : it.swipe == "unsnooze" ? "Unsnooze" : "Reopen")
+              row gap=8 align-items="center" padding="6px 12px 8px"
+                input type="search" value=searchText input=search placeholder="Search" aria-label="Search threads" testId="search" flex=1 min-width=0
+                button press=openNew aria-label="New Thread" aria-keyshortcuts="Meta+N" testId="new"
+                  image "symbol:compose"
+              column id="row-ask-menu" popover="auto" role="menu" aria-label="Allow"
+                for c in askChoices.filter(c => c == "session" or c == "always") key=c
+                  button press=answerTier(c) destructive=(c == "always") popovertarget="row-ask-menu" popovertargetaction="hide" disabled=pending(answered) testId=`ask-${c}`
+                    text choiceLabel(c)
+              column id="row-menu" popover="auto" role="menu"
+                if aimedSwipe == "settle" and inbox.live
+                  button press=settleAimed popovertarget="row-menu" popovertargetaction="hide" testId="settle"
+                    text "Settle"
+                if aimedSwipe == "reopen" and inbox.live
+                  button press=settleAimed popovertarget="row-menu" popovertargetaction="hide" testId="reopen"
+                    text "Reopen"
+                if aimedSwipe == "unsnooze" and inbox.live
+                  button press=settleAimed popovertarget="row-menu" popovertargetaction="hide" testId="unsnooze"
+                    text "Unsnooze"
+                if aimedSnooze and inbox.live
+                  button popovertarget="snooze-menu" testId="snooze"
+                    text "Snooze"
+                if aimedKind == "session"
+                  button press=askDelete(aimed) destructive=true popovertarget="row-menu" popovertargetaction="hide" testId="delete"
+                    text "Delete"
+              column id="snooze-menu" popover="auto" role="menu" aria-label="Snooze until"
+                for o in inbox.snoozeOptions key=o.id
+                  button press=snoozeAimed(o.until) popovertarget="snooze-menu" popovertargetaction="hide" testId=`snooze-${o.id}`
+                    text `${o.label} · ${o.when}`
+            else
+              list id="pair-form" appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+                section
+                  header
+                    text "Pair with Hermes"
+                  row
+                    input value=link input=editLink placeholder="apollo://pair?host=…" aria-label="Pairing link" autocapitalize="off" autocorrect="off" spellcheck=false flex=1 min-width=0 testId="pair-link"
+                  footer
+                    text "Paste the apollo://pair link from the connector. It works once and expires after a few minutes."
+                section
+                  button press=pair disabled=(link.trim() == "" or pending(paired)) testId="pair"
+                    text (pending(paired) ? "Pairing…" : "Pair")
+                if notice != ""
+                  section
+                    row
+                      text notice color="-exact-system-red" testId="pair-error"
+        if e.name == "card"
+          column navigationKey=`${e.id}` navigationScroll="card" position="absolute" inset=0 display="flex" flex-direction="column"
+            interactive-widget="resizes-content"
+            header display="flex" align-items="center" gap=8 padding="8px 16px"
+              text card.source role="heading" aria-level=2 flex=1
+              if card.found and not card.live
+                progress aria-label="Refreshing" width=14 height=14 testId="card-refreshing"
+            column id="card" flex=1 min-height=0 overflow-y="auto" padding="8px 20px 24px" gap=14
+              text card.title font="-exact-title2" font-weight=700 user-select="text" testId="card-title"
+              if card.outcome != ""
+                text card.outcome font="-exact-subheadline" color="-exact-secondary-label" testId="card-outcome"
+              if card.progress != ""
+                column gap=4
+                  text card.progress font="-exact-footnote" color="-exact-secondary-label"
+                  progress value=card.progressValue aria-label=card.progress
+              if card.meta.length > 0
+                column gap=4
+                  for m in card.meta key=m.key
+                    row gap=8
+                      text m.key font="-exact-footnote" color="-exact-secondary-label" width=96 flex-shrink=0
+                      text m.value markup="markdown" font="-exact-footnote" flex=1 min-width=0 user-select="text"
+              if card.metrics.length > 0
+                row gap=16 flex-wrap="wrap"
+                  for m in card.metrics key=m.label
+                    column gap=1
+                      text m.value font="-exact-title3" font-weight=600
+                      text m.label font="-exact-caption1" color="-exact-secondary-label"
+                      if m.delta != ""
+                        text m.delta font="-exact-caption1" color=(m.tone == "good" ? "-exact-system-green" : m.tone == "bad" ? "-exact-system-red" : "-exact-secondary-label")
+              if card.picks.length > 0
+                column gap=2
+                  for p in card.picks key=p.n
+                    PickRow(pick=p, press=toggle(p), open=openPick(card.id, p), off=(not card.open or pending(filed) or not card.live), tid=`pick-${p.n}`)
+              if card.body != ""
+                if card.plainText
+                  text card.body user-select="text" overflow-wrap="anywhere"
+                else
+                  text card.body markup="markdown" user-select="text" overflow-wrap="anywhere" testId="card-body"
+            if shownError != ""
+              text shownError font="-exact-footnote" color="-exact-system-red" padding="4px 16px" testId="error"
+            if replying != ""
+              column margin="6px 12px" gap=8
+                textarea id="reply" value=reply input=editReply rows=3 field-sizing="content" max-height=200 placeholder="Reply" aria-label="Reply" autofocus=true
+                  padding="10px 12px" border-radius=12 border="1px solid -exact-separator" background-color="transparent" testId="reply"
+                row gap=8 justify-content="flex-end"
+                  button press=cancelReply buttonStyle="bordered" testId="reply-cancel"
+                    text "Cancel"
+                  button press=sendReply buttonStyle="filled" disabled=(reply.trim() == "" or pending(responded) or not card.live) testId="reply-send"
+                    text "Send"
+            else
+              row gap=8 padding="8px 16px 12px" flex-wrap="wrap" justify-content="flex-end"
+                for a in card.actions key=a.id
+                  button press=cardAction(a) buttonStyle=(a.style == "primary" ? "filled" : "bordered") destructive=(a.style == "destructive") disabled=(pending(responded) or not card.live) testId=`card-act-${a.id}`
+                    text a.label
+                if card.threadId != ""
+                  link href=path("session", card.threadId) testId="card-thread"
+                    text "Open thread"
+                if card.url != ""
+                  button press=openLink(card.url) buttonStyle="bordered" testId="card-link"
+                    text "Open link"
+                if card.swipe == "settle" and card.live
+                  button press=settleOpenCard(true) buttonStyle="bordered" testId="card-settle"
+                    text "Settle"
+                if card.swipe == "reopen" and card.live
+                  button press=settleOpenCard(false) buttonStyle="bordered" testId="card-reopen"
+                    text "Reopen"
+        if e.name == "session" or e.name == "compose"
+          column navigationKey=`${e.id}` navigationScroll="transcript" position="absolute" inset=0 display="flex" flex-direction="column"
+            interactive-widget="resizes-content"
+            header display="flex" align-items="center" gap=8 padding="8px 16px"
+              column flex=1 min-width=0 gap=1
+                text (e.name == "compose" ? "New Thread" : thread.id != selected or thread.title == "" ? "Thread" : thread.title) role="heading" aria-level=2 line-clamp=1 testId="title"
+                if thread.active and e.name == "session"
+                  text (thread.status == "waiting_for_approval" ? "Needs approval" : thread.status == "stopping" ? "Stopping" : "Working") font="-exact-caption1"
+                    color=(thread.status == "waiting_for_approval" ? "-exact-system-orange" : "AccentColor") testId="status"
+              if e.name == "session" and not threadLive and liveThread.error == ""
+                progress aria-label="Refreshing" width=14 height=14 testId="thread-refreshing"
+              if e.name == "session"
+                button popovertarget="thread-menu" aria-label="Thread actions" testId="thread-more"
+                  image "symbol:more"
+            column id="thread-ask-menu" popover="auto" role="menu" aria-label="Allow"
+              for c in askChoices.filter(c => c == "session" or c == "always") key=c
+                button press=answerTier(c) destructive=(c == "always") popovertarget="thread-ask-menu" popovertargetaction="hide" disabled=(pending(answered) or not threadLive) testId=`approve-${c}`
+                  text choiceLabel(c)
+            column id="message-menu" popover="auto" role="menu"
+              button press=replyAimed popovertarget="message-menu" popovertargetaction="hide" testId="reply-quote"
+                text "Reply"
+            column id="thread-menu" popover="auto" role="menu"
+              if thread.canSettle and threadLive
+                button press=settleThread(true) popovertarget="thread-menu" popovertargetaction="hide" testId="finish"
+                  text "Settle"
+              if thread.settled and threadLive
+                button press=settleThread(false) popovertarget="thread-menu" popovertargetaction="hide" testId="reopen-thread"
+                  text "Reopen thread"
+              if threadLive
+                button press=toggleAutoSettle role="menuitemcheckbox" aria-checked=thread.autoSettle popovertarget="thread-menu" popovertargetaction="hide" testId="auto-settle"
+                  text "Auto-settle"
+              button press=askDelete(selected) destructive=true popovertarget="thread-menu" popovertargetaction="hide" testId="delete-thread"
+                text "Delete"
+            if e.name == "compose"
+              column flex=1 display="flex" justify-content="center" align-items="center" padding=24 gap=6
+                image "symbol:sparkles" width=28 height=28 color="AccentColor"
+                text "What should Hermes do?" font="-exact-title3" text-align="center"
+            else
+              list id="transcript" appearance="none" virtualized=true scroll-start="end" scrollFollowEnd=true flex=1 min-height=0 padding-top=8 padding-bottom=16 testId="transcript"
+                for r in threadRows key=r.id
+                  column padding=(r.kind == "live" ? "0 16px 0 30px" : r.kind == "text" or r.kind == "table" ? "4px 16px" : "8px 16px") testId=`row-${r.id}`
+                    if r.kind == "user"
+                      column align-items="flex-end" padding-left=48 gap=4
+                        if r.text != ""
+                          text r.text padding="8px 12px" border-radius=18 overflow-wrap="anywhere" user-select="text"
+                            background-color="AccentColor" color="AccentColorText" contextmenu=aimMessage(r.text) contextPopover="message-menu" testId=`say-${r.id}`
+                        if r.status == "steered"
+                          text "Sent to the running turn" font="-exact-caption1" color="-exact-secondary-label" testId=`steered-${r.id}`
+                        if r.summary != ""
+                          row gap=4 align-items="center"
+                            image "symbol:sf/paperclip" font-size=11 color="-exact-secondary-label"
+                            text r.summary font="-exact-footnote" color="-exact-secondary-label" testId=`files-${r.id}`
+                    if r.kind == "text"
+                      text r.text markup="markdown" user-select="text" overflow-wrap="anywhere" contextmenu=aimMessage(r.text) contextPopover="message-menu" testId=`say-${r.id}`
+                    if r.kind == "live"
+                      text r.text markup="markdown" user-select="text" overflow-wrap="anywhere" font="-exact-subheadline" color="-exact-secondary-label"
+                        padding-left=10 border-left="2px solid -exact-separator"
+                    if r.kind == "table"
+                      column border-width=1 border-style="solid" border-color="-exact-separator" border-radius=8 overflow="hidden"
+                        for t in r.table key=t.key
+                          row border-top-width=(t.head ? 0 : 1) border-right-width=0 border-bottom-width=0 border-left-width=0 border-style="solid" border-color="-exact-separator"
+                            background-color=(t.head ? "-exact-secondary-background" : "transparent")
+                            for c in t.cells key=c.key
+                              text c.text markup="markdown" user-select="text" overflow-wrap="anywhere" flex="1 1 0" min-width=0 font="-exact-subheadline"
+                                padding="6px 8px" text-align=c.align border-top-width=0 border-right-width=0 border-bottom-width=0 border-left-width=(c.first ? 0 : 1) border-style="solid" border-color="-exact-separator"
+                    if r.kind == "system"
+                      text r.text font="-exact-footnote" color="-exact-secondary-label" user-select="text"
+                    if r.kind == "cron"
+                      column gap=6
+                        button appearance="none" press=toggleSteps(r.id) disabled=(r.text == "") display="flex" flex-direction="row" align-items="center" justify-content="flex-start" text-align="left" gap=8 align-self="stretch" padding="2px 0" testId=`cron-${r.id}`
+                          image "symbol:sf/clock" font-size=11 color="-exact-secondary-label"
+                          text r.summary text-align="left" font="-exact-footnote" color="-exact-secondary-label" line-clamp=1 flex=1 min-width=0
+                          if r.text != ""
+                            image (opened.includes(r.id) ? "symbol:sf/chevron.up" : "symbol:sf/chevron.down") font-size=10 color="-exact-secondary-label"
+                        if opened.includes(r.id)
+                          text r.text markup="markdown" user-select="text" overflow-wrap="anywhere" font="-exact-subheadline" color="-exact-secondary-label"
+                            padding-left=10 border-left="2px solid -exact-separator"
+                    if r.kind == "error"
+                      text r.text font="-exact-footnote" color="-exact-system-red" user-select="text"
+                    if r.kind == "approval"
+                      column gap=4 padding-left=10 border-left="2px solid -exact-system-orange" testId="approval-inline"
+                        text "Run this command?" font="-exact-footnote" font-weight=600 color="-exact-system-orange"
+                        text r.text font-family="ui-monospace" font="-exact-footnote" user-select="text" line-clamp=8
+                        if r.summary != ""
+                          text r.summary font="-exact-footnote" color="-exact-secondary-label"
+                    if r.kind == "activity"
+                      column gap=6
+                        button appearance="none" press=toggleSteps(r.id) display="flex" flex-direction="row" align-items="center" justify-content="flex-start" text-align="left" gap=8 align-self="stretch" padding="2px 0" testId=`activity-${r.id}`
+                          if r.running
+                            progress aria-label="Working" width=14 height=14
+                          else
+                            image (opened.includes(r.id) ? "symbol:sf/chevron.down" : "symbol:forward-chevron") font-size=11 color="-exact-secondary-label"
+                          text r.summary text-align="left" font="-exact-footnote" color=(r.running ? (thread.status == "waiting_for_approval" ? "-exact-system-orange" : "-exact-label") : "-exact-secondary-label") line-clamp=1 flex=1 min-width=0
+                          if r.running and r.startedAt > 0 and clock > 0
+                            text took(clock / 1000 - secs(r.startedAt)) font="-exact-footnote" color="-exact-secondary-label" font-variant-numeric="tabular-nums"
+                        if (opened.includes(r.id) or r.running) and r.steps.length > 0
+                          column gap=5 padding="2px 0 2px 10px" margin-left=6 border-left="2px solid -exact-separator"
+                            for s in r.steps key=s.key
+                              column gap=1
+                                row gap=6 align-items="baseline"
+                                  text (s.running ? "…" : s.failed ? "✕" : s.kind == "tool" ? "✓" : "·") font="-exact-caption1" color=(s.failed ? "-exact-system-red" : "-exact-secondary-label") width=10 flex-shrink=0
+                                  text (s.kind == "tool" ? s.label : s.detail) font="-exact-caption1" color=(s.kind == "tool" ? "-exact-label" : "-exact-secondary-label") line-clamp=3 flex=1 min-width=0 user-select="text"
+                                if s.kind == "tool" and s.detail != ""
+                                  text s.detail font="-exact-caption2" font-family="ui-monospace" color="-exact-secondary-label" line-clamp=2 padding-left=16 user-select="text"
+            // Pinned above the composer while the request waits; the transcript keeps where it was asked.
+            if thread.approvalCommand != "" and e.name == "session"
+              column padding="8px 16px" gap=8 border-top="1px solid -exact-separator" testId="approval"
+                row gap=8 align-items="baseline"
+                  text "Run" font="-exact-subheadline" font-weight=600 color="-exact-system-orange" flex-shrink=0
+                  text thread.approvalCommand font-family="ui-monospace" font="-exact-footnote" user-select="text" line-clamp=2 flex=1 min-width=0
+                row gap=8 justify-content="flex-end" flex-wrap="wrap"
+                  for c in thread.approvalChoices.filter(c => c == "deny").concat(thread.approvalChoices.filter(c => c == "once")) key=c
+                    button press=answerAsk(thread.runId, thread.approvalId, c) buttonStyle=(c == "once" ? "filled" : "bordered") destructive=(c == "deny") disabled=(pending(answered) or not threadLive) testId=`approve-${c}`
+                      text choiceLabel(c)
+                  if thread.approvalChoices.filter(c => c == "session" or c == "always").length > 0
+                    button press=moreAsk(thread.runId, thread.approvalId, thread.approvalCommand, thread.approvalChoices) popovertarget="thread-ask-menu" buttonStyle="bordered" disabled=(pending(answered) or not threadLive) testId="approve-more"
+                      text "More"
+            if shownError != ""
+              row gap=8 align-items="center" padding="4px 16px"
+                text shownError font="-exact-footnote" color="-exact-system-red" flex=1 min-width=0 testId="error"
+                button press=refreshAll buttonStyle="bordered" testId="retry"
+                  text "Retry"
+            if voiceBar
+              row margin="6px 12px" min-height=48 padding="4px 6px" gap=6 align-items="center" border-radius=24 background-color="-exact-secondary-background" testId="voice-bar"
+                button press=cancelVoice appearance="none" padding=8 aria-label="Cancel dictation" testId="voice-cancel"
+                  image "symbol:close" color="-exact-label"
+                if hearing
+                  audio-waveform track=trackId tint="#9b9ba1" flex=1 min-width=0 height=28 testId="waveform"
+                  text voiceClock font="-exact-subheadline" color="-exact-secondary-label" font-variant-numeric="tabular-nums" testId="voice-clock"
+                  button press=finishVoice appearance="none" width=36 height=36 border-radius=18 background-color="AccentColor" display="flex" align-items="center" justify-content="center"
+                    flex-shrink=0 aria-label="Done" testId="voice-done"
+                    image "symbol:checkmark" color="AccentColorText"
+                else
+                  text "Preparing" flex=1 min-width=0 text-align="center" color="-exact-secondary-label" testId="voice-preparing"
+                  progress aria-label="Preparing dictation" width=36 flex-shrink=0
+            else
+              column margin="6px 12px" border-radius=20 border="1px solid -exact-separator"
+                if files.length > 0
+                  row gap=6 flex-wrap="wrap" padding="8px 10px 0"
+                    for f in files key=f.path
+                      button appearance="none" press=unattach(f.path) aria-label=`Remove ${f.name}` display="flex" flex-direction="row" align-items="center" gap=4
+                        padding="4px 8px" border-radius=12 background-color="-exact-secondary-background" max-width="100%" testId=`file-${f.name}`
+                        text f.name font="-exact-footnote" line-clamp=1 min-width=0
+                        image "symbol:close" font-size=11 color="-exact-secondary-label"
+                row align-items="flex-end" padding="0 4px 0 12px"
+                  textarea id="composer" value=draft input=edit key=composerKey rows=1 field-sizing="content" max-height=160
+                    placeholder=(thread.status == "running" and threadLive and e.name == "session" ? "Steer this turn" : "Message") aria-label="Message" testId="composer" flex=1 min-width=0 padding="10px 0"
+                    border="none" background-color="transparent" autofocus=(e.name == "compose")
+                  if thread.active and e.name == "session"
+                    button press=stop buttonStyle="bordered" margin="4px 0" aria-label="Stop" testId="stop"
+                      image "symbol:stop-fill"
+                    if draft.trim() != "" and thread.status == "running"
+                      button press=submit disabled=(not canSteer) buttonStyle="filled" margin="4px 0 4px 6px" retainFocus=true aria-label="Steer" testId="steer"
+                        image "symbol:send"
+                  else
+                    button press=submit disabled=(not canSend) buttonStyle="filled" margin="4px 0" retainFocus=true aria-label="Send" testId="send"
+                      image "symbol:send"
+                row gap=2 align-items="center" padding="0 6px 4px"
+                  button popovertarget="add-menu" appearance="none" padding=8 aria-label="Add" testId="add"
+                    image "symbol:add" color="-exact-secondary-label"
+                  button popovertarget="model-menu" appearance="none" padding="8px 6px" display="flex" flex-direction="row" gap=3 align-items="center" testId="model"
+                    text modelLabel font="-exact-footnote" color="-exact-secondary-label" line-clamp=1
+                    image "symbol:chooser" font-size=10 color="-exact-secondary-label"
+                  view flex=1
+                  // As in Apollo, the mic shows only where this phone can transcribe on its own.
+                  if voice.availability != "unavailable"
+                    button press=dictate appearance="none" padding=8 aria-label="Dictate" testId="dictate"
+                      image "symbol:microphone" color="-exact-secondary-label"
+            input type="file" id="attach-photo" accept="image/*" multiple=true display="none" change=picked testId="photo-input"
+            input type="file" id="attach-file" multiple=true display="none" change=picked testId="file-input"
+            column id="add-menu" popover="auto" role="menu"
+              button press=attach("attach-photo") popovertarget="add-menu" popovertargetaction="hide" testId="add-photo"
+                text "Photo Library"
+              button press=attach("attach-file") popovertarget="add-menu" popovertargetaction="hide" testId="add-file"
+                text "Choose Files"
+              if options.skills.length > 0
+                column role="group" aria-label="Skills"
+                  for k in options.skills key=k.name
+                    button press=insertSkill(k.name) popovertarget="add-menu" popovertargetaction="hide" testId=`skill-${k.name}`
+                      text `$${k.name}`
+            column id="model-menu" popover="auto" role="menu" aria-label="Model"
+              button press=pickModel("") role="menuitemradio" aria-checked=(currentModel == "") popovertarget="model-menu" popovertargetaction="hide" testId="model-default"
+                text "Default model"
+              for m in options.models key=m.key
+                button press=pickModel(m.key) role="menuitemradio" aria-checked=(currentModel == m.key) popovertarget="model-menu" popovertargetaction="hide" testId=`model-${m.key}`
+                  text m.label
+        if e.name == "share"
+          column navigationKey=`${e.id}` navigationScroll="share" position="absolute" inset=0 display="flex" flex-direction="column"
+            header display="flex" align-items="center" padding="8px 16px"
+              text "Share to Apollo" role="heading" aria-level=2
+            list id="share" appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+              section
+                if shareText != ""
+                  text shareText line-clamp=4 overflow-wrap="anywhere" testId="share-text"
+                if shareIncoming.files.length > 0 or shareIncoming.pending > 0
+                  text `${shareIncoming.files.length + shareIncoming.pending} ${shareIncoming.files.length + shareIncoming.pending == 1 ? "file" : "files"}` color="-exact-secondary-label" testId="share-files"
+              section
+                button press=useShare(e, "") disabled=(shareIncoming.pending > 0) testId="share-new"
+                  text "New thread"
+              if shareThreads.length > 0
+                section
+                  header
+                    text "Add to a thread"
+                  for t in shareThreads key=t.id
+                    button press=useShare(e, t.id) disabled=(shareIncoming.pending > 0) testId=`share-to-${t.id}`
+                      text t.title line-clamp=1
+              section
+                button press=back destructive=true testId="share-discard"
+                  text "Discard"
+        if e.name == "routines"
+          column navigationKey=`${e.id}` navigationScroll="routines" position="absolute" inset=0 display="flex" flex-direction="column"
+            header display="flex" align-items="center" gap=8 padding="8px 16px"
+              text "Routines" role="heading" aria-level=2 flex=1
+              if not routineList.live and routineList.error == ""
+                progress aria-label="Loading" width=14 height=14 testId="routines-loading"
+            if shownError != ""
+              text shownError font="-exact-footnote" color="-exact-system-red" padding="4px 16px" testId="error"
+            list id="routines" appearance="auto" listStyle="plain" flex=1 min-height=0 testId="routines"
+              section
+                for j in routineList.items key=j.id
+                  column gap=2 padding="8px 16px" testId=`routine-${j.id}`
+                    row gap=8 align-items="baseline"
+                      text j.name font="-exact-headline" color=(j.status == "paused" ? "-exact-secondary-label" : "-exact-label") flex=1 min-width=0
+                      text (j.status == "failed" ? (j.streak > 1 ? `Failed ${j.streak} times` : "Failed") : j.status == "paused" ? "Paused" : j.next != "" ? `Next ${j.next}` : "")
+                        font="-exact-footnote" color=routineColor(j.status) flex-shrink=0 testId=`routine-status-${j.id}`
+                    text (j.last != "" ? `${j.schedule} · ran ${j.last}` : j.schedule) font="-exact-subheadline" color="-exact-secondary-label"
+                    if j.error != ""
+                      text j.error font="-exact-footnote" color="-exact-system-red" line-clamp=2 user-select="text" testId=`routine-error-${j.id}`
+                if routineList.live and routineList.items.length == 0
+                  row justify-content="center" padding="24px 0"
+                    text "No routines yet" color="-exact-secondary-label" testId="routines-empty"
+        // A first cut of Apollo's Feedback screen: every report, waiting on you first. Filters and the
+        // reply thread come later; a report opens as its card, which answers it.
+        if e.name == "feedback"
+          column navigationKey=`${e.id}` navigationScroll="feedback" position="absolute" inset=0 display="flex" flex-direction="column"
+            header display="flex" align-items="center" padding="8px 16px"
+              text "Feedback" role="heading" aria-level=2
+            list id="feedback" appearance="auto" listStyle="plain" flex=1 min-height=0 testId="feedback"
+              section
+                for f in inbox.feedback key=f.key
+                  link href=path("card", f.id) display="flex" flex-direction="column" gap=2 padding="8px 16px" testId=`feedback-${f.id}`
+                    row gap=8 align-items="baseline"
+                      text f.title font=(f.need != "" ? "-exact-headline" : "-exact-body") flex=1 min-width=0 line-clamp=2
+                      text (f.need != "" ? "Waiting" : f.time) font="-exact-footnote" color=(f.need != "" ? "-exact-system-orange" : "-exact-secondary-label") flex-shrink=0
+                    if f.subtitle != ""
+                      text f.subtitle font="-exact-subheadline" color="-exact-secondary-label" line-clamp=2
+        if e.name == "settings"
+          column navigationKey=`${e.id}` navigationScroll="settings" position="absolute" inset=0 display="flex" flex-direction="column"
+            header display="flex" align-items="center" padding="8px 16px"
+              text "Settings" role="heading" aria-level=2
+            list id="settings" appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+              section
+                header
+                  text "Connection"
+                row justify-content="space-between" gap=12
+                  text "Agent"
+                  text account.label color="-exact-secondary-label" line-clamp=1 testId="settings-agent"
+                row justify-content="space-between" gap=12
+                  text "Endpoint"
+                  text account.endpoint color="-exact-secondary-label" line-clamp=1 overflow-wrap="anywhere"
+                if options.platform != ""
+                  row justify-content="space-between" gap=12
+                    text "Platform"
+                    text options.platform color="-exact-secondary-label"
+                row justify-content="space-between" gap=12
+                  text "Default model"
+                  text (options.defaultModel == "" ? "Unknown" : options.defaultModel) color="-exact-secondary-label" line-clamp=1
+              if options.toolsets.length > 0
+                section
+                  header
+                    text "Toolsets"
+                  for t in options.toolsets key=t.name
+                    row justify-content="space-between" gap=12 testId=`toolset-${t.name}`
+                      column gap=2 flex=1 min-width=0
+                        text t.label
+                        text `${t.tools} ${t.tools == 1 ? "tool" : "tools"}` font="-exact-footnote" color="-exact-secondary-label"
+                      text (t.enabled ? "On" : "Off") color="-exact-secondary-label"
+              section
+                button press=askUnpair destructive=true testId="settings-unpair"
+                  text "Unpair this phone"
+      dialog id="delete-thread" role="alertdialog" aria-label="Delete thread?"
+        text "This removes it from Hermes for every device."
+        button press=deleteAimed destructive=true commandfor="delete-thread" command="close" testId="delete-confirm"
+          text "Delete"
+        button commandfor="delete-thread" command="close" testId="delete-cancel"
+          text "Cancel"
+      dialog id="always-allow" role="alertdialog" aria-label="Always allow this command?"
+        text `Hermes won't ask again before it runs “${alwaysCommand}”, in any thread.` testId="always-text"
+        button press=allowAlways commandfor="always-allow" command="close" testId="always-confirm"
+          text "Always allow"
+        button commandfor="always-allow" command="close" testId="always-cancel"
+          text "Cancel"
+      dialog id="unpair" role="alertdialog" aria-label="Unpair this phone?"
+        text "You'll need a new pairing link to connect again."
+        button press=unpair destructive=true commandfor="unpair" command="close" testId="unpair-confirm"
+          text "Unpair"
+        button commandfor="unpair" command="close" testId="unpair-cancel"
+          text "Cancel"
+
+// A checklist pick as Apollo draws one: its number in a ring, filled when done.
+component PickRow
+  props
+    pick: Pick
+    press: action
+    open: action
+    off: bool
+    tid: string
+  view
+    row gap=10 align-items="flex-start" align-self="stretch"
+      button appearance="none" press=press disabled=off role="checkbox" aria-checked=pick.done aria-label=pick.text padding="6px 0" flex-shrink=0 testId=tid
+        text `${pick.n}` font="-exact-caption1" font-weight=600 width=22 height=22 border-radius=11 text-align="center" line-height="20px" box-sizing="border-box"
+          border=(pick.done ? "1px solid AccentColor" : "1.5px solid -exact-secondary-label") background-color=(pick.done ? "AccentColor" : "transparent")
+          color=(pick.done ? "AccentColorText" : "-exact-secondary-label")
+      button appearance="none" press=open role=(pick.url != "" ? "link" : "button") display="flex" flex-direction="column" flex=1 min-width=0 gap=2
+        align-items="flex-start" justify-content="flex-start" text-align="left" padding="6px 0" testId=`${tid}-open`
+        text pick.text text-align="left" text-decoration=(pick.done ? "line-through" : "none")
+          color=(pick.done ? "-exact-secondary-label" : (pick.url != "" ? "-exact-system-cyan" : "-exact-label"))
+        if pick.sub != ""
+          text pick.sub font="-exact-footnote" color="-exact-secondary-label" text-align="left"
