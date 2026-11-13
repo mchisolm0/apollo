@@ -34,7 +34,7 @@ bun exact.mjs ios --sim <udid>    # or: bun exact.mjs mac --run
 ```
 
 Needs `~/code/exact` set up with Bun 1.4.2, and `~/.swiftly/bin` off PATH (its Swift 6.3.2
-crashes on the Xcode 27.2 SDK). Fixture inputs: `approval`, `hold`, `storm` (2,000 deltas).
+crashes on the Xcode 27.2 SDK). Fixture inputs: `approval`, `hold`, `refuse` (503), `storm` (2,000 deltas).
 
 ## Findings
 

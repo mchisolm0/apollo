@@ -186,16 +186,15 @@ test "a steer Hermes refuses stays in the composer to send again"
   expect state draft == "too late"
   expect text "error" == "The run already finished. Send it as a new message."
 
-test "a message that can't start a run stays in the composer, and no empty thread is left"
+test "a message Hermes refuses stays in the composer, and no empty thread is left"
   type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
   tap "pair"
   clock data
   tap "new"
-  fail fetch "http://127.0.0.1:19111/v1/runs"
-  type "composer" "try this"
+  type "composer" "refuse this"
   tap "send"
   clock data
-  expect state draft == "try this"
+  expect state draft == "refuse this"
   back
   clock data
   expect state inbox.items.length == 7

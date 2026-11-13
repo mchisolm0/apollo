@@ -672,10 +672,12 @@ component Apollo
       case some(c)
         notice = c.error
         if c.id != ""
-          draft = draft.startsWith(sentText) ? draft.slice(sentText.length).trim() : draft
           files = files.filter(f => not sentFiles.includes(f.path))
-          nav = replace(nav, path("session", c.id))
-          chasing = true
+          // Only a compose screen still open moves to its thread; one left meanwhile finds it in the inbox.
+          if top(nav).name == "compose"
+            draft = draft.startsWith(sentText) ? draft.slice(sentText.length).trim() : draft
+            nav = replace(nav, path("session", c.id))
+            chasing = true
       case none
         notice = ""
   action afterSteer
@@ -691,8 +693,9 @@ component Apollo
     match sent
       case some(s)
         notice = s.error
-        if s.error == "" and selected == sentThread
-          draft = draft.startsWith(sentText) ? draft.slice(sentText.length).trim() : draft
+        if s.error == ""
+          if selected == sentThread
+            draft = draft.startsWith(sentText) ? draft.slice(sentText.length).trim() : draft
           files = files.filter(f => not sentFiles.includes(f.path))
       case none
         notice = ""
@@ -802,7 +805,7 @@ component Apollo
                           if it.picks.length > 0
                             column padding-left=34 gap=2
                               for p in it.picks key=p.n
-                                PickRow(pick=p, press=pickRow(it.id, p), open=openPick(it.id, p), off=(pending(responded) or not inbox.live), tid=`row-pick-${it.id}-${p.n}`)
+                                PickRow(pick=p, press=pickRow(it.id, p), open=openPick(it.id, p), off=(pending(filed) or not inbox.live), tid=`row-pick-${it.id}-${p.n}`)
                           for m in it.meta key=m.key
                             text `${m.key} ${m.value}` font="-exact-subheadline" color="-exact-secondary-label" line-clamp=2 padding-left=34
                           if it.summary != ""
@@ -903,7 +906,7 @@ component Apollo
               if card.picks.length > 0
                 column gap=2
                   for p in card.picks key=p.n
-                    PickRow(pick=p, press=toggle(p), open=openPick(card.id, p), off=(not card.open or pending(responded) or not card.live), tid=`pick-${p.n}`)
+                    PickRow(pick=p, press=toggle(p), open=openPick(card.id, p), off=(not card.open or pending(filed) or not card.live), tid=`pick-${p.n}`)
               if card.body != ""
                 if card.plainText
                   text card.body user-select="text" overflow-wrap="anywhere"

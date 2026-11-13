@@ -855,8 +855,9 @@ const sources: Sources = {
       await start(store, storage, id, input, files);
       return { id, error: '' };
     } catch (e) {
-      // The draft stays to send again, so the empty thread it would have started goes.
-      if (made) await api(store, `/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
+      // The draft stays to send again, so a thread Hermes refused to start goes. One whose reply was
+      // lost may be running, so it stays.
+      if (made && (e as { status?: number }).status) await api(store, `/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
       return { id: '', error: message(e) };
     }
   },
