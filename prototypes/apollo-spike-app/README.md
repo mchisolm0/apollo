@@ -4,6 +4,12 @@ Question: should Apollo be rewritten on Expo's Exact? This client pairs with an 
 lists Hermes threads, starts new ones, and follows runs live with Stop and approvals.
 `app.ts` reuses Apollo's transcript projector and run-state code unchanged.
 
+The inbox puts what waits on you first, answerable from the row (a thread's command to approve, a
+card to answer), then one row each for Feedback (player reports) and Routines, then the threads.
+Search and New Thread sit at the bottom. In a thread an approval shows where it was asked and is
+pinned above the composer; More holds the wider tiers. Feedback lists reports without Apollo's
+filters or reply thread yet.
+
 ## On the phone
 
 The iPhone build is signed with the team's wildcard development profile and installed from the
@@ -38,10 +44,10 @@ crashes on the Xcode 27.2 SDK). Fixture inputs: `approval`, `hold`, `storm` (2,0
 - Exact won't import files outside the app folder or through symlinks, so a real port would
   move the relay modules into a shared package.
 - Exact's native list rows (`list appearance="auto"`) blank a long-pressed row until its menu
-  lifts it: UIKit's highlight lands under the route that holds it. A fix in Exact (branch
-  `fix/row-cell-lift-blank`, 5be1a348) keeps UIKit's views on top; build with `EXACT2` pointing
-  at that checkout until it lands. UIKit's swipe actions press a button but skip its
-  `popovertarget`, so Snooze opens its menu with `showPopover`.
+  lifts it ([expo/exact#419](https://github.com/expo/exact/issues/419), with a fix). UIKit's swipe
+  actions press a button but skip its `popovertarget`, so Snooze opens its menu with `showPopover`.
+- Exact's `<audio-waveform>` draws speech a point high and, on Apple, in jumps
+  ([expo/exact#420](https://github.com/expo/exact/issues/420), with what worked for us).
 - Exact's speech recognition takes a `@exact/media-capture` microphone track, not
   `microphone=true` (not built on Apple). The simulator has no on-device English model, so
   dictation answers `language-not-supported` there; it needs a phone.

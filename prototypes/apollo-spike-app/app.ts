@@ -29,6 +29,7 @@ type Row = Thread['rows'][number];
 type Inbox = Result<'inbox'>;
 type Item = Inbox['items'][number];
 type CardView = Result<'card'>;
+type Routine = Result<'routines'>['items'][number];
 type Json = Record<string, unknown>;
 type Credential = { endpoint: string; token: string; label: string; cloud?: { url: string; token: string } };
 
@@ -118,7 +119,9 @@ const threadCache = (id: string) => `app:/cache/thread-${encodeURIComponent(id)}
 const KEEP_THREADS = 30;
 // A thread opens at its end, so its last rows are all a kept copy needs; the live answer brings the rest.
 const KEEP_ROWS = 50;
-type InboxInputs = { sessions: InboxSession[]; cards: Card[]; pendingRunIds: string[] };
+// A thread's pending approval, so its inbox row can answer it.
+type Ask = { runId: string; requestId: string; command: string; reason: string; choices: string[] };
+type InboxInputs = { sessions: InboxSession[]; cards: Card[]; pendingRunIds: string[]; asks?: Record<string, Ask>; routines?: Routine[] };
 
 async function readCache<T>(storage: Storage, path: string): Promise<T | undefined> {
   const bytes = await storage.fs.readFile(path).catch(() => null);
@@ -209,7 +212,7 @@ async function settleThreads(store: Store, settled: Record<string, number | null
 
 const picksOf = (card: Card) => (card.picks ?? []).map((p) => ({ n: p.n, text: p.text, sub: p.sub ?? '', url: p.url ?? '', done: p.done }));
 const button = (a: CardAction) => ({ id: a.id, label: a.label, style: a.style ?? 'default', input: a.input === 'text', url: a.url ?? '' });
-const noExtras = { picks: [], meta: [], summary: '', snooze: false } satisfies Pick<Item, 'picks' | 'meta' | 'summary' | 'snooze'>;
+const noExtras = { picks: [], meta: [], summary: '', snooze: false, need: '', command: '', runId: '', requestId: '', choices: [] } satisfies Pick<Item, 'picks' | 'meta' | 'summary' | 'snooze' | 'need' | 'command' | 'runId' | 'requestId' | 'choices'>;
 
 // The morning card as Apollo's first inbox row: its day, calendar line, up to three picks and its
 // actions, then "Working on these · 1 of 3 done" once answered.
@@ -236,14 +239,14 @@ function cardItem(card: InboxCard, settled: boolean, l: Local, now: number): Ite
     : [card.kind === 'update' ? capitalize(card.source) : '', previewLine(card.body) ?? ''].filter(Boolean).join(' · ');
   const tone = answer ? (card.resolution!.actionId === 'approve' ? 'green' : card.resolution!.actionId === 'reject' ? 'red' : 'muted') : unanswered ? 'amber' : 'muted';
   return {
-    ...noExtras, key: `card-${card.id}`, kind: 'card', id: card.id, title: card.title, subtitle,
+    ...noExtras, key: `card-${card.id}`, kind: 'card', id: card.id, title: card.title, subtitle: unanswered && !settled ? `From ${card.source}` : subtitle, need: unanswered ? 'answer' : '',
     badge: answer || (unanswered ? 'Needs answer' : ''), tone, time: ago(Date.parse(card.updatedAt) / 1000, now), settled,
     swipe: settleAction(card, settledCards(l)) ?? '', count: 0, glyph: card.source.charAt(0).toUpperCase(), link: cardOpenPlan(card).target === 'link' ? card.url ?? '' : '',
     actions: unanswered ? (card.actions ?? []).filter((a) => !a.url).map(button) : [],
   };
 }
 
-function sessionItem(s: InboxSession, snoozed: boolean, now: number): Item {
+function sessionItem(s: InboxSession, snoozed: boolean, now: number, ask?: Ask): Item {
   const badge = s.pendingApproval ? 'Needs approval' : s.running ? 'Working' : s.failed && s.attention ? 'Failed' : s.attention ? 'New result' : '';
   const tone = s.pendingApproval ? 'amber' : s.running || badge === 'New result' ? 'accent' : badge === 'Failed' ? 'red' : 'muted';
   return {
@@ -251,31 +254,51 @@ function sessionItem(s: InboxSession, snoozed: boolean, now: number): Item {
     time: ago(s.activityAt, now), settled: s.settled, swipe: s.settled ? 'reopen' : snoozed ? 'unsnooze' : canSettleSession(s) ? 'settle' : '', count: 0, glyph: '', link: '', actions: [],
     // As in Apollo, work waiting on you can't be snoozed.
     snooze: !s.settled && !snoozed && !s.pendingApproval,
+    ...(s.pendingApproval && ask ? { need: 'approve', subtitle: ask.reason, command: ask.command, runId: ask.runId, requestId: ask.requestId, choices: ask.choices } : {}),
   };
 }
 
+// The Feedback and Routines rows, under what waits on you: each says what needs a look, if anything.
+function placeRows(feedback: Item[], routines: Routine[]): Item[] {
+  const row = { ...noExtras, subtitle: '', time: '', settled: false, swipe: '', count: 0, glyph: '', link: '', actions: [] };
+  const waiting = feedback.filter((f) => f.need).length;
+  const failing = routines.filter((r) => r.status === 'failed');
+  const first = failing[0];
+  return [
+    ...(feedback.length ? [{ ...row, key: 'feedback', kind: 'feedback', id: 'feedback', title: 'Feedback', badge: waiting ? `${waiting} waiting on you` : '', tone: 'amber' }] : []),
+    ...(routines.length ? [{ ...row, key: 'routines', kind: 'routines', id: 'routines', title: 'Routines', tone: 'red',
+      badge: failing.length > 1 ? `${failing.length} failing` : first ? `${first.name} failed${first.streak > 1 ? ` ${first.streak}×` : ''}` : '' }] : []),
+  ];
+}
+
 // The inbox's rows from its inputs, live or kept.
-function inboxOf({ sessions, cards, pendingRunIds }: InboxInputs, l: Local, showSettled: boolean, showSnoozed: boolean, query: string, now: number, live: boolean): Inbox {
+function inboxOf({ sessions, cards: all, pendingRunIds, asks = {}, routines = [] }: InboxInputs, l: Local, showSettled: boolean, showSnoozed: boolean, query: string, now: number, live: boolean): Inbox {
   const snoozed = (id: string) => isSessionSnoozed(l.snoozed, id, now / 1000);
+  // Player reports sit behind the Feedback row, not among the inbox's own cards.
+  const cards = all.filter((c) => c.source !== 'feedback');
   const rows = buildInboxRows({ sessions, cards, isSnoozed: snoozed, settledCards: settledCards(l), pendingRunIds: new Set(pendingRunIds), runStateLive: live, fresh: live, query, collapsed: { snoozed: !showSnoozed, settled: !showSettled }, now });
-  const items = rows.map((row): Item => {
-    if (row.kind === 'session') return sessionItem(row.session, snoozed(row.session.id), now);
+  const listed = rows.map((row): Item => {
+    if (row.kind === 'session') return sessionItem(row.session, snoozed(row.session.id), now, asks[row.session.id]);
     if (row.kind === 'briefing') return briefingItem(row.card, l, now);
     if (row.kind === 'card') return cardItem(row.card, row.settled, l, now);
     const blank = { ...noExtras, id: row.id, subtitle: '', badge: '', tone: 'muted', time: '', settled: false, swipe: '', glyph: '', link: '', actions: [] };
     if (row.kind === 'section') return { ...blank, key: `section-${row.id}`, kind: 'section', title: row.title, count: row.count ?? 0 };
     return { ...blank, key: 'caught-up', kind: 'caughtUp', title: "You're caught up", count: 0 };
   });
+  const reports = all.filter((c) => c.source === 'feedback').sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((c) => cardItem(c, false, l, now));
+  const feedback = [...reports.filter((r) => r.need), ...reports.filter((r) => !r.need)];
+  // What waits on you comes first, then Feedback and Routines, then the rest in Apollo's order.
+  const items = [...listed.filter((it) => it.need), ...(query.trim() ? [] : placeRows(feedback, routines)), ...listed.filter((it) => !it.need)];
   if (query.trim() && !items.length) items.push({ ...noExtras, key: 'no-matches', kind: 'caughtUp', id: 'no-matches', title: 'No matches', subtitle: '', badge: '', tone: 'muted', time: '', settled: false, swipe: '', count: 0, glyph: '', link: '', actions: [] });
   const snoozeOptions = resolveSnoozePresets(new Date(now)).map((p) => ({ id: p.id, label: p.label, when: p.whenLabel, until: p.until }));
   // A kept row can't be swiped: settling or snoozing goes by what the connector says now.
-  return { error: '', live, items: live ? items : items.map((it) => ({ ...it, swipe: '', snooze: false })), snoozeOptions };
+  return { error: '', live, items: live ? items : items.map((it) => ({ ...it, swipe: '', snooze: false })), snoozeOptions, feedback };
 }
 
 async function inbox(showSettled: boolean, showSnoozed: boolean, query: string, now: number, store: Store, storage: Storage): Promise<Inbox> {
   try {
     const l = await state(storage);
-    const [{ sessions, runs }, cloudCredential] = await Promise.all([sessionsAndRuns(store, storage), cloud(store)]);
+    const [{ sessions, runs }, cloudCredential, jobs] = await Promise.all([sessionsAndRuns(store, storage), cloud(store), routines(store, now)]);
     let cards = cardsSeen, cloudError = '';
     if (cloudCredential) {
       try { cards = [...(parseSnapshot(await request(cloudCredential.url, cloudCredential.token, '/v1/cards'))?.cards ?? cards)]; cardsSeen = cards; cardsLive = true; }
@@ -289,16 +312,22 @@ async function inbox(showSettled: boolean, showSnoozed: boolean, query: string, 
     sessionsSeen = derived.map((s) => (dueIds.has(s.id) ? { ...s, settled: true, status: 'settled' as const } : s));
     const pendingRunIds = Object.values(runs).filter((r) => r.status === 'waiting_for_approval').map((r) => r.runId);
     l.snoozed = pruneSnoozedLedger(l.snoozed, now / 1000);
-    const inputs: InboxInputs = { sessions: sessionsSeen, cards, pendingRunIds };
+    const asks: Record<string, Ask> = {};
+    for (const r of Object.values(runs)) {
+      const command = str(r.approval?.command) ?? str(r.approval?.preview);
+      if (r.status !== 'waiting_for_approval' || !r.sessionId || !command) continue;
+      asks[r.sessionId] = { runId: r.runId, requestId: str(r.approval?.request_id) ?? r.approval?.requestId ?? '', command, reason: r.approval?.description ?? '', choices: approvalChoices(r.approval?.choices) };
+    }
+    const inputs: InboxInputs = { sessions: sessionsSeen, cards, pendingRunIds, asks, routines: jobs.items };
     await writeCache(storage, INBOX_CACHE, inputs);
     return { ...inboxOf(inputs, l, showSettled, showSnoozed, query, now, true), error: cloudError };
-  } catch (e) { return { error: e instanceof Unpaired ? '' : message(e), live: false, items: [], snoozeOptions: [] }; }
+  } catch (e) { return { error: e instanceof Unpaired ? '' : message(e), live: false, items: [], snoozeOptions: [], feedback: [] }; }
 }
 
 // The last inbox this phone saw, drawn until the live one lands. Its cards stand in for the card
 // screen until then too, marked not live.
 async function savedInbox(paired: boolean, showSettled: boolean, showSnoozed: boolean, query: string, now: number, storage: Storage): Promise<Inbox> {
-  const none: Inbox = { error: '', live: false, items: [], snoozeOptions: [] };
+  const none: Inbox = { error: '', live: false, items: [], snoozeOptions: [], feedback: [] };
   if (!paired) return none;
   const inputs = await readCache<InboxInputs>(storage, INBOX_CACHE);
   if (!inputs) return none;
@@ -529,9 +558,12 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       const approval = running ? currentApproval(events, current) : undefined;
       const command = str(approval?.command) ?? str(approval?.preview);
       const rows = project({ history: messages, events, runId, runStartedAt: current.createdAt, runEndedAt: current.updatedAt, runStatus: current.status, runOutput: current.output, running });
+      const requestId = str(approval?.request_id) ?? approval?.requestId ?? '';
+      // The request where it happened in the transcript; the pinned copy above the composer answers it.
+      const asked: Row[] = approval && command ? [{ id: `approval-${requestId}`, kind: 'approval', text: command, table: [], status: '', summary: approval.description ?? '', running: false, startedAt: 0, steps: [] }] : [];
       return {
-        ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", canSettle: false, recent, title, rows: withSteers(toRows(rows), sessionId, runId), runId, status: current.status, active: running, ended: !running, error,
-        ...(approval && command ? { approvalId: str(approval.request_id) ?? approval.requestId ?? '', approvalTitle: approval.tool ? `Allow ${approval.tool}?` : 'Allow this command?', approvalCommand: command, approvalReason: approval.description ?? '', approvalChoices: approvalChoices(approval.choices) } : {}),
+        ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", canSettle: false, recent, title, rows: [...withSteers(toRows(rows), sessionId, runId), ...asked], runId, status: current.status, active: running, ended: !running, error,
+        ...(approval && command ? { approvalId: requestId, approvalTitle: approval.tool ? `Allow ${approval.tool}?` : 'Allow this command?', approvalCommand: command, approvalReason: approval.description ?? '', approvalChoices: approvalChoices(approval.choices) } : {}),
       };
     };
     const take = (data: string) => {

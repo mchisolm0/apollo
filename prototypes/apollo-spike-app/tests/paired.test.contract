@@ -28,14 +28,19 @@ test "an approval offers the tiers Hermes allows, and Always asks before it appl
   tap "send"
   clock data
   clock until state thread.approvalCommand == "rm -rf build/" within 5000
+  expect tree has "approval-inline"
   expect tree has "approve-once"
-  expect tree has "approve-session"
   expect tree has "approve-deny"
+  tap "approve-more"
+  clock settle
+  expect tree has "approve-session"
   tap "approve-always"
   clock settle
   tap "always-cancel"
   clock settle
   expect tree has "approval"
+  tap "approve-more"
+  clock settle
   tap "approve-always"
   clock settle
   expect text "always-text" == "Hermes won't ask again before it runs “rm -rf build/”, in any thread."
@@ -56,8 +61,7 @@ test "a smart-denied command offers only once and deny"
   clock until state thread.approvalCommand == "rm -rf build/" within 5000
   expect tree has "approve-once"
   expect tree has "approve-deny"
-  expect tree missing "approve-session"
-  expect tree missing "approve-always"
+  expect tree missing "approve-more"
 
 test "a message typed while a turn runs steers it"
   type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
@@ -157,8 +161,8 @@ test "a run that doesn't answer stays running with Retry, and nothing is sent ov
   fail fetch "http://127.0.0.1:19111/v1/runs/"
   clock +15000
   clock data
-  expect state inbox.items.2 .badge == "Working"
-  expect state inbox.items.2 .swipe == ""
+  expect state inbox.items.4 .badge == "Working"
+  expect state inbox.items.4 .swipe == ""
   tap "hold until I say"
   clock data
   expect state thread.status == "unknown"
@@ -197,8 +201,8 @@ test "Routines lists what failed first, then the rest, with paused ones marked"
   type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
   tap "pair"
   clock data
-  tap "more"
-  tap "open-routines"
+  expect text "badge-routines" == "Lot watcher failed 3×"
+  tap "row-routines"
   clock data
   expect state routineList.items.0 .name == "Lot watcher"
   expect text "routine-status-job-lots" == "Failed 3 times"
@@ -208,3 +212,36 @@ test "Routines lists what failed first, then the rest, with paused ones marked"
   expect state routineList.items.1 .schedule == "Daily at 8:45 AM"
   expect state routineList.items.0 .schedule == "Every 30 minutes"
   expect state routineList.items.3 .schedule == "Mondays at 8:00 AM"
+
+test "an approval a thread waits on is answered from its inbox row"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  tap "new"
+  type "composer" "approval please"
+  tap "send"
+  clock data
+  clock until state thread.approvalCommand == "rm -rf build/" within 5000
+  back
+  clock settle
+  clock data
+  expect state inbox.items.0 .need == "answer"
+  expect state inbox.items.1 .need == "approve"
+  expect state inbox.items.1 .command == "rm -rf build/"
+  expect state inbox.items.2 .kind == "feedback"
+  tap "Allow once"
+  clock data
+  clock until state inbox.items.1 .kind == "feedback" within 5000
+
+test "Feedback opens every player report, waiting ones first"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
+  tap "pair"
+  clock data
+  expect text "badge-feedback" == "2 waiting on you"
+  tap "row-feedback"
+  clock settle
+  expect state inbox.feedback.0 .title == "Bug: Life total resets when the phone rotates"
+  expect state inbox.feedback.2 .title == "Idea: Show poison counters next to life"
+  tap "feedback-feedback-1"
+  clock data
+  expect text "card-title" == "Bug: Life total resets when the phone rotates"

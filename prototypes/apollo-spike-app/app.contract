@@ -13,6 +13,7 @@ routes nav
     compose "/new"
     settings "/settings"
     routines "/routines"
+    feedback "/feedback"
     share "/share"
     card "/c/:id"
 
@@ -58,6 +59,12 @@ shape Item
   meta: Pair[]
   summary: string
   snooze: bool
+  // What a row waiting on you asks: approve (a thread's command) or answer (a card), else empty.
+  need: string
+  command: string
+  runId: string
+  requestId: string
+  choices: string[]
 
 shape SnoozeOption
   id: string
@@ -71,6 +78,8 @@ shape Inbox
   live: bool
   items: Item[]
   snoozeOptions: SnoozeOption[]
+  // Player reports, waiting on a reply first: the Feedback row opens them.
+  feedback: Item[]
 
 shape Metric
   label: string
@@ -225,7 +234,7 @@ shape Time
 
 fn secs(t: number): number = t > 100000000000 ? t / 1000 : t
 fn took(s: number): string = s < 60 ? `${floor(s)}s` : s < 3600 ? `${floor(s / 60)}m ${floor(s - floor(s / 60) * 60)}s` : `${floor(s / 3600)}h ${floor((s - floor(s / 3600) * 3600) / 60)}m`
-fn choiceLabel(c: string): string = c == "once" ? "Allow once" : c == "session" ? "Allow for thread" : c == "always" ? "Always allow" : "Deny"
+fn choiceLabel(c: string): string = c == "once" ? "Allow once" : c == "session" ? "Allow in this thread" : c == "always" ? "Always allow…" : "Deny"
 // A reply quotes the start of a message, each line marked, then leaves room to write.
 fn quoted(t: string): string = `${(t.length > 280 ? `${t.slice(0, 279)}…` : t).split("\n").slice(0, 4).map(l => `> ${l}`).join("\n")}\n\n`
 fn routineColor(s: string): string = s == "failed" ? "-exact-system-red" : s == "paused" ? "-exact-system-orange" : "-exact-secondary-label"
@@ -264,6 +273,8 @@ component Apollo
   state alwaysRun = ""
   state alwaysRequest = ""
   state alwaysCommand = ""
+  // Hermes's tiers for the request More was pressed on.
+  state askChoices: string[] = []
   // What a steer sent, and to which thread: only that leaves the composer once Hermes takes it.
   state steerText = ""
   state steerThread = ""
@@ -676,14 +687,22 @@ component Apollo
     if thread.runId != ""
       send stopped = stopRun(thread.runId)
   // "Always" adds the command to Hermes's allowlist for every thread, so it asks first.
-  action choose(choice: string)
+  // An approval answered from its inbox row or its thread. Always asks first.
+  action answerAsk(runId: string, requestId: string, command: string, choice: string)
     if choice == "always"
-      alwaysRun = thread.runId
-      alwaysRequest = thread.approvalId
-      alwaysCommand = thread.approvalCommand
+      alwaysRun = runId
+      alwaysRequest = requestId
+      alwaysCommand = command
       showModal("always-allow")
     else
-      send answered = answerApproval(thread.runId, thread.approvalId, choice)
+      send answered = answerApproval(runId, requestId, choice)
+  // More holds the wider tiers, this thread and every thread.
+  action moreAsk(runId: string, requestId: string, command: string, choices: string[])
+    alwaysRun = runId
+    alwaysRequest = requestId
+    alwaysCommand = command
+    askChoices = choices
+    showPopover("ask-menu")
   action afterAnswer
     match answered
       case some(a)
@@ -692,7 +711,7 @@ component Apollo
         notice = ""
     refreshAll()
   action allowAlways
-    if alwaysRun == thread.runId and alwaysRequest == thread.approvalId and alwaysCommand == thread.approvalCommand and alwaysCommand != ""
+    if alwaysCommand != "" and ((alwaysRun == thread.runId and alwaysRequest == thread.approvalId and alwaysCommand == thread.approvalCommand) or inbox.items.filter(i => i.runId == alwaysRun and i.requestId == alwaysRequest and i.command == alwaysCommand).length > 0)
       send answered = answerApproval(alwaysRun, alwaysRequest, "always")
     else
       notice = "That request changed. Choose again."
@@ -701,8 +720,6 @@ component Apollo
   action replyAimed
     draft = `${quoted(aimedText)}${draft}`
     focus("composer")
-  action openRoutines
-    nav = push(nav, "/routines")
   action toggleSteps(id: string)
     opened = opened.includes(id) ? opened.filter(x => x != id) : opened.concat([id])
 
@@ -719,13 +736,7 @@ component Apollo
               if account.paired
                 button popovertarget="home-menu" aria-label="More" testId="more"
                   image "symbol:more"
-                button press=openNew aria-label="New Thread" aria-keyshortcuts="Meta+N" testId="new"
-                  image "symbol:compose"
-              if account.paired
-                input type="search" value=searchText input=search placeholder="Search" aria-label="Search threads" testId="search" width="100%"
             column id="home-menu" popover="auto" role="menu" aria-label=account.label
-              button press=openRoutines popovertarget="home-menu" popovertargetaction="hide" testId="open-routines"
-                text "Routines"
               button press=openSettings popovertarget="home-menu" popovertargetaction="hide" testId="settings"
                 text "Settings"
               button press=askUnpair destructive=true popovertarget="home-menu" popovertargetaction="hide" testId="unpair"
@@ -743,6 +754,12 @@ component Apollo
                     else if it.kind == "caughtUp"
                       row justify-content="center" padding="24px 0"
                         text it.title color="-exact-secondary-label" testId="caught-up"
+                    else if it.kind == "feedback" or it.kind == "routines"
+                      link href=(it.kind == "feedback" ? path("feedback") : path("routines")) display="flex" flex-direction="row" align-items="center" gap=8 padding="12px 16px" testId=`row-${it.id}`
+                        text it.title font="-exact-headline" flex=1 min-width=0
+                        if it.badge != ""
+                          text it.badge font="-exact-footnote" color=toneColor(it.tone) flex-shrink=0 testId=`badge-${it.id}`
+                        image "symbol:forward-chevron" font-size=12 color="-exact-tertiary-label"
                     else
                       // Swipe left to settle or reopen, as Apollo's rows do; long press for the same in a menu.
                       scroll swipeContent="content" swipeTrailing="swipe" swipeLeading="snooze" display="flex" padding-right=0 overflow-x="scroll" overflow-y="hidden"
@@ -750,18 +767,22 @@ component Apollo
                         column id="content" width="100%" flex-shrink=0 scroll-snap-align="start" box-sizing="border-box" gap=8 padding="8px 16px"
                           link href=(it.kind == "session" ? path("session", it.id) : path("card", it.id)) contextmenu=aim(it.id, it.kind, it.swipe, it.snooze) contextPopover="row-menu" testId=`row-${it.id}`
                             row gap=10 align-items="flex-start" flex=1 min-width=0
-                              if it.glyph != ""
+                              if it.glyph != "" and it.need == ""
                                 text it.glyph font="-exact-footnote" font-weight=600 color="AccentColor" width=24 height=24 border-radius=12
                                   background-color="-exact-secondary-background" text-align="center" line-height="24px" flex-shrink=0
                               column flex=1 min-width=0 gap=2
                                 row gap=8 align-items="baseline"
+                                  if it.need != ""
+                                    text (it.need == "approve" ? "APPROVE" : "ANSWER") font="-exact-caption1" font-weight=600 color="-exact-system-orange" flex-shrink=0 testId=`need-${it.id}`
                                   text it.title font=(it.settled ? "-exact-body" : "-exact-headline") color=(it.settled ? "-exact-secondary-label" : "-exact-label") line-clamp=(it.settled ? 1 : 2) flex=1 min-width=0
-                                  if it.badge != ""
+                                  if it.badge != "" and it.need == ""
                                     text it.badge font="-exact-footnote" color=toneColor(it.tone) flex-shrink=0
                                   else
                                     text it.time font="-exact-footnote" color="-exact-secondary-label" flex-shrink=0
                                 if it.subtitle != ""
                                   text it.subtitle font="-exact-subheadline" color="-exact-secondary-label" line-clamp=2
+                                if it.command != ""
+                                  text it.command font-family="ui-monospace" font="-exact-footnote" line-clamp=2 testId=`command-${it.id}`
                           if it.picks.length > 0
                             column padding-left=34 gap=2
                               for p in it.picks key=p.n
@@ -770,8 +791,16 @@ component Apollo
                             text `${m.key} ${m.value}` font="-exact-subheadline" color="-exact-secondary-label" line-clamp=2 padding-left=34
                           if it.summary != ""
                             text it.summary font="-exact-subheadline" color="-exact-secondary-label" padding-left=34 testId=`summary-${it.id}`
+                          else if it.need == "approve"
+                            row gap=8 flex-wrap="wrap"
+                              for c in it.choices.filter(c => c == "deny").concat(it.choices.filter(c => c == "once")) key=c
+                                button press=answerAsk(it.runId, it.requestId, it.command, c) buttonStyle=(c == "once" ? "filled" : "bordered") destructive=(c == "deny") disabled=(pending(answered) or not inbox.live) testId=`ask-${it.id}-${c}`
+                                  text choiceLabel(c)
+                              if it.choices.filter(c => c == "session" or c == "always").length > 0
+                                button press=moreAsk(it.runId, it.requestId, it.command, it.choices) buttonStyle="bordered" disabled=(pending(answered) or not inbox.live) testId=`ask-${it.id}-more`
+                                  text "More"
                           else if it.actions.length > 0
-                            row gap=8 padding-left=(it.glyph != "" ? 34 : 0) flex-wrap="wrap"
+                            row gap=8 padding-left=(it.glyph != "" and it.need == "" ? 34 : 0) flex-wrap="wrap"
                               for a in it.actions key=a.id
                                 button press=answerCard(it.id, a) buttonStyle=(a.style == "primary" ? "filled" : "bordered") destructive=(a.style == "destructive") disabled=(pending(responded) or not inbox.live) testId=`act-${it.id}-${a.id}`
                                   text a.label
@@ -782,6 +811,10 @@ component Apollo
                         if it.swipe != ""
                           button id="swipe" press=settleRow(it.id, it.kind, it.swipe) accent-color=(it.swipe == "settle" ? "AccentColor" : "-exact-system-indigo") flex-shrink=0 scroll-snap-align="start" testId=`swipe-${it.id}`
                             text (it.swipe == "settle" ? "Settle" : it.swipe == "unsnooze" ? "Unsnooze" : "Reopen")
+              row gap=8 align-items="center" padding="6px 12px 8px"
+                input type="search" value=searchText input=search placeholder="Search" aria-label="Search threads" testId="search" flex=1 min-width=0
+                button press=openNew aria-label="New Thread" aria-keyshortcuts="Meta+N" testId="new"
+                  image "symbol:compose"
               column id="row-menu" popover="auto" role="menu"
                 if aimedSwipe == "settle" and inbox.live
                   button press=settleAimed popovertarget="row-menu" popovertargetaction="hide" testId="settle"
@@ -959,6 +992,12 @@ component Apollo
                             padding-left=10 border-left="2px solid -exact-separator"
                     if r.kind == "error"
                       text r.text font="-exact-footnote" color="-exact-system-red" user-select="text"
+                    if r.kind == "approval"
+                      column gap=4 padding-left=10 border-left="2px solid -exact-system-orange" testId="approval-inline"
+                        text "Run this command?" font="-exact-footnote" font-weight=600 color="-exact-system-orange"
+                        text r.text font-family="ui-monospace" font="-exact-footnote" user-select="text" line-clamp=8
+                        if r.summary != ""
+                          text r.summary font="-exact-footnote" color="-exact-secondary-label"
                     if r.kind == "activity"
                       column gap=6
                         button appearance="none" press=toggleSteps(r.id) display="flex" flex-direction="row" align-items="center" justify-content="flex-start" text-align="left" gap=8 align-self="stretch" padding="2px 0" testId=`activity-${r.id}`
@@ -978,16 +1017,19 @@ component Apollo
                                   text (s.kind == "tool" ? s.label : s.detail) font="-exact-caption1" color=(s.kind == "tool" ? "-exact-label" : "-exact-secondary-label") line-clamp=3 flex=1 min-width=0 user-select="text"
                                 if s.kind == "tool" and s.detail != ""
                                   text s.detail font="-exact-caption2" font-family="ui-monospace" color="-exact-secondary-label" line-clamp=2 padding-left=16 user-select="text"
+            // Pinned above the composer while the request waits; the transcript keeps where it was asked.
             if thread.approvalCommand != "" and e.name == "session"
-              column margin="0 12px" padding=12 gap=8 border-radius=12 background-color="-exact-secondary-background" testId="approval"
-                text thread.approvalTitle font="-exact-headline"
-                if thread.approvalReason != ""
-                  text thread.approvalReason font="-exact-subheadline" color="-exact-secondary-label"
-                text thread.approvalCommand font-family="ui-monospace" font="-exact-footnote" user-select="text" line-clamp=8
+              column padding="8px 16px" gap=8 border-top="1px solid -exact-separator" testId="approval"
+                row gap=8 align-items="baseline"
+                  text "Run" font="-exact-subheadline" font-weight=600 color="-exact-system-orange" flex-shrink=0
+                  text thread.approvalCommand font-family="ui-monospace" font="-exact-footnote" user-select="text" line-clamp=2 flex=1 min-width=0
                 row gap=8 justify-content="flex-end" flex-wrap="wrap"
-                  for c in thread.approvalChoices.filter(c => c == "deny").concat(thread.approvalChoices.filter(c => c == "session" or c == "always")).concat(thread.approvalChoices.filter(c => c == "once")) key=c
-                    button press=choose(c) buttonStyle=(c == "once" ? "filled" : "bordered") destructive=(c == "deny") disabled=pending(answered) testId=`approve-${c}`
+                  for c in thread.approvalChoices.filter(c => c == "deny").concat(thread.approvalChoices.filter(c => c == "once")) key=c
+                    button press=answerAsk(thread.runId, thread.approvalId, thread.approvalCommand, c) buttonStyle=(c == "once" ? "filled" : "bordered") destructive=(c == "deny") disabled=pending(answered) testId=`approve-${c}`
                       text choiceLabel(c)
+                  if thread.approvalChoices.filter(c => c == "session" or c == "always").length > 0
+                    button press=moreAsk(thread.runId, thread.approvalId, thread.approvalCommand, thread.approvalChoices) buttonStyle="bordered" disabled=pending(answered) testId="approve-more"
+                      text "More"
             if shownError != ""
               row gap=8 align-items="center" padding="4px 16px"
                 text shownError font="-exact-footnote" color="-exact-system-red" flex=1 min-width=0 testId="error"
@@ -1102,6 +1144,21 @@ component Apollo
                 if routineList.live and routineList.items.length == 0
                   row justify-content="center" padding="24px 0"
                     text "No routines yet" color="-exact-secondary-label" testId="routines-empty"
+        // A first cut of Apollo's Feedback screen: every report, waiting on you first. Filters and the
+        // reply thread come later; a report opens as its card, which answers it.
+        if e.name == "feedback"
+          column navigationKey=`${e.id}` navigationScroll="feedback" position="absolute" inset=0 display="flex" flex-direction="column"
+            header display="flex" align-items="center" padding="8px 16px"
+              text "Feedback" role="heading" aria-level=2
+            list id="feedback" appearance="auto" listStyle="plain" flex=1 min-height=0 testId="feedback"
+              section
+                for f in inbox.feedback key=f.key
+                  link href=path("card", f.id) display="flex" flex-direction="column" gap=2 padding="8px 16px" testId=`feedback-${f.id}`
+                    row gap=8 align-items="baseline"
+                      text f.title font=(f.need != "" ? "-exact-headline" : "-exact-body") flex=1 min-width=0 line-clamp=2
+                      text (f.need != "" ? "Waiting" : f.time) font="-exact-footnote" color=(f.need != "" ? "-exact-system-orange" : "-exact-secondary-label") flex-shrink=0
+                    if f.subtitle != ""
+                      text f.subtitle font="-exact-subheadline" color="-exact-secondary-label" line-clamp=2
         if e.name == "settings"
           column navigationKey=`${e.id}` navigationScroll="settings" position="absolute" inset=0 display="flex" flex-direction="column"
             header display="flex" align-items="center" padding="8px 16px"
@@ -1136,6 +1193,10 @@ component Apollo
               section
                 button press=askUnpair destructive=true testId="settings-unpair"
                   text "Unpair this phone"
+      column id="ask-menu" popover="auto" role="menu" aria-label="Allow"
+        for c in askChoices.filter(c => c == "session" or c == "always") key=c
+          button press=answerAsk(alwaysRun, alwaysRequest, alwaysCommand, c) destructive=(c == "always") popovertarget="ask-menu" popovertargetaction="hide" testId=`approve-${c}`
+            text choiceLabel(c)
       dialog id="delete-thread" role="alertdialog" aria-label="Delete thread?"
         text "This removes it from Hermes for every device."
         button press=deleteAimed destructive=true commandfor="delete-thread" command="close" testId="delete-confirm"

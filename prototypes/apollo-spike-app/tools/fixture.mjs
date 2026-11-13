@@ -226,10 +226,14 @@ const seedCards = () => new Map([
   ["approval-1", { id: "approval-1", rev: 3, source: "fleet", key: "deploy-1", kind: "approval", title: "Deploy the landing page?", state: "open", push: "none", createdAt: iso(600), updatedAt: iso(600),
     body: "The fleet routine wants to publish the new landing page copy.", progress: { label: "Deploy", step: 2, of: 3 },
     actions: [{ id: "approve", label: "Approve", style: "primary" }, { id: "reject", label: "Reject", style: "destructive" }, { id: "edit", label: "Edit", input: "text", prefill: "" }] }],
+  // Scryve player reports: two wait on a reply (posted as approvals), one is an open idea.
+  ...[["feedback-1", "Bug: Life total resets when the phone rotates", 1800, "approval"], ["feedback-2", "Bug: Commander damage can't go below zero", 5400, "approval"], ["feedback-3", "Idea: Show poison counters next to life", 9000, "update"]]
+    .map(([id, title, age, kind], i) => [id, { id, rev: 4 + i, source: "feedback", key: id, kind, title, state: "open", push: "none", createdAt: iso(age), updatedAt: iso(age),
+      body: "From a player in Scryve.", actions: kind === "approval" ? [{ id: "reply", label: "Reply", style: "primary", input: "text", prefill: "" }] : [] }]),
 ]);
 function seed() {
   sessions = seedSessions(); messages = seedMessages(); runs = new Map(); idempotency = new Map();
-  cards = seedCards(); events = []; rev = 3; seq = 0;
+  cards = seedCards(); events = []; rev = 6; seq = 0;
   for (const response of [...subscribers.values()].flatMap((set) => [...set])) response.end();
   subscribers.clear();
 }
