@@ -7,17 +7,15 @@ description: Use AFTER changing Apollo on Exact (prototypes/apollo-spike-app, or
 
 Three tiers, cheapest first. Stop at the tier that proves the change; say which tiers you ran.
 
-Setup, once per shell (bun from mise, not swiftly's toolchain; the Exact checkout the app builds with):
+Setup, once per shell (bun from mise, not swiftly's toolchain):
 
 ```sh
 cd prototypes/apollo-spike-app
 export PATH=$HOME/.local/share/mise/installs/bun/1.4.2/bin:$(echo $PATH | tr ':' '\n' | grep -v swiftly | paste -sd: -)
-export EXACT2=/tmp/exact-flash
 ```
 
-`EXACT2` is the Exact checkout the app builds against: a worktree of `~/code/exact` on the branch
-carrying the fixes the README lists (`fix/waveform-loudness` today). `/tmp` empties on reboot; then
-`git -C ~/code/exact worktree prune && git -C ~/code/exact worktree add /tmp/exact-flash fix/waveform-loudness`.
+The app builds against Exact's main at `~/code/exact`. `EXACT2=<checkout>` builds against another
+one, such as a branch carrying a fix reported upstream.
 
 ## 1. Contract tests (every change)
 

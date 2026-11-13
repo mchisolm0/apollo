@@ -278,6 +278,8 @@ component Apollo
   // What a steer sent, and to which thread: only that leaves the composer once Hermes takes it.
   state steerText = ""
   state steerThread = ""
+  // What the last send took, cleared from the composer once Hermes has it.
+  state sentText = ""
   state chasing = false
   state wasHidden = false
   derive selected = match stack(nav).filter(e => e.name == "session").at(-1) { case some(e) => e.params.id, case none => "" }
@@ -317,6 +319,8 @@ component Apollo
   mutation filed as shape Ack then afterWrite
   mutation responded as shape Ack then afterWrite
   derive onHome = top(nav).name == "home"
+  // The request More was opened on is still the one a live thread or the live inbox shows.
+  derive askCurrent = alwaysCommand != "" and ((threadLive and alwaysRun == thread.runId and alwaysRequest == thread.approvalId and alwaysCommand == thread.approvalCommand) or (liveInbox.live and liveInbox.items.filter(i => i.runId == alwaysRun and i.requestId == alwaysRequest and i.command == alwaysCommand).length > 0))
   derive inbox = liveInbox.live ? liveInbox : savedInbox
   derive threadLive = liveThread.id == selected
   derive thread = threadLive ? liveThread : savedThread
@@ -489,8 +493,10 @@ component Apollo
     let a = match filed { case some(f) => f.error, case none => "" }
     let b = match responded { case some(r) => r.error, case none => "" }
     notice = a != "" ? a : b
-    replying = ""
-    reply = ""
+    // A reply that failed stays open to send again.
+    if b == ""
+      replying = ""
+      reply = ""
     refreshAll()
 
   action answerCard(id: string, action: CardButton)
@@ -536,12 +542,11 @@ component Apollo
       steerThread = selected
       send steered = steerRun(thread.runId, selected, draft.trim())
     else if canSend
+      sentText = draft
       if top(nav).name == "compose"
         send created = createThread(draft.trim(), composeModel, files)
       else
         send sent = startRun(selected, draft.trim(), files)
-      draft = ""
-      files = []
   // Model: a new thread keeps it for its first run; an open thread asks Hermes to switch.
   action pickModel(key: string)
     if top(nav).name == "compose"
@@ -662,6 +667,8 @@ component Apollo
       case some(c)
         notice = c.error
         if c.id != ""
+          draft = draft.startsWith(sentText) ? draft.slice(sentText.length).trim() : draft
+          files = []
           nav = replace(nav, path("session", c.id))
           chasing = true
       case none
@@ -679,6 +686,9 @@ component Apollo
     match sent
       case some(s)
         notice = s.error
+        if s.error == ""
+          draft = draft.startsWith(sentText) ? draft.slice(sentText.length).trim() : draft
+          files = []
       case none
         notice = ""
     refreshAll()
@@ -686,16 +696,18 @@ component Apollo
   action stop
     if thread.runId != ""
       send stopped = stopRun(thread.runId)
-  // "Always" adds the command to Hermes's allowlist for every thread, so it asks first.
-  // An approval answered from its inbox row or its thread. Always asks first.
-  action answerAsk(runId: string, requestId: string, command: string, choice: string)
-    if choice == "always"
-      alwaysRun = runId
-      alwaysRequest = requestId
-      alwaysCommand = command
+  // Once or deny, from an approval's inbox row or its thread.
+  action answerAsk(runId: string, requestId: string, choice: string)
+    send answered = answerApproval(runId, requestId, choice)
+  // A tier from More, sent only while its request is still the one shown. "Always" adds the
+  // command to Hermes's allowlist for every thread, so it asks first.
+  action answerTier(choice: string)
+    if not askCurrent
+      notice = "That request changed. Choose again."
+    else if choice == "always"
       showModal("always-allow")
     else
-      send answered = answerApproval(runId, requestId, choice)
+      send answered = answerApproval(alwaysRun, alwaysRequest, choice)
   // More holds the wider tiers, this thread and every thread.
   action moreAsk(runId: string, requestId: string, command: string, choices: string[])
     alwaysRun = runId
@@ -710,7 +722,7 @@ component Apollo
         notice = ""
     refreshAll()
   action allowAlways
-    if alwaysCommand != "" and ((alwaysRun == thread.runId and alwaysRequest == thread.approvalId and alwaysCommand == thread.approvalCommand) or inbox.items.filter(i => i.runId == alwaysRun and i.requestId == alwaysRequest and i.command == alwaysCommand).length > 0)
+    if askCurrent
       send answered = answerApproval(alwaysRun, alwaysRequest, "always")
     else
       notice = "That request changed. Choose again."
@@ -793,7 +805,7 @@ component Apollo
                           else if it.need == "approve"
                             row gap=8 flex-wrap="wrap"
                               for c in it.choices.filter(c => c == "deny").concat(it.choices.filter(c => c == "once")) key=c
-                                button press=answerAsk(it.runId, it.requestId, it.command, c) buttonStyle=(c == "once" ? "filled" : "bordered") destructive=(c == "deny") disabled=(pending(answered) or not inbox.live) testId=`ask-${it.id}-${c}`
+                                button press=answerAsk(it.runId, it.requestId, c) buttonStyle=(c == "once" ? "filled" : "bordered") destructive=(c == "deny") disabled=(pending(answered) or not inbox.live) testId=`ask-${it.id}-${c}`
                                   text choiceLabel(c)
                               if it.choices.filter(c => c == "session" or c == "always").length > 0
                                 button press=moreAsk(it.runId, it.requestId, it.command, it.choices) popovertarget="row-ask-menu" buttonStyle="bordered" disabled=(pending(answered) or not inbox.live) testId=`ask-${it.id}-more`
@@ -816,7 +828,7 @@ component Apollo
                   image "symbol:compose"
               column id="row-ask-menu" popover="auto" role="menu" aria-label="Allow"
                 for c in askChoices.filter(c => c == "session" or c == "always") key=c
-                  button press=answerAsk(alwaysRun, alwaysRequest, alwaysCommand, c) destructive=(c == "always") popovertarget="row-ask-menu" popovertargetaction="hide" testId=`ask-${c}`
+                  button press=answerTier(c) destructive=(c == "always") popovertarget="row-ask-menu" popovertargetaction="hide" disabled=pending(answered) testId=`ask-${c}`
                     text choiceLabel(c)
               column id="row-menu" popover="auto" role="menu"
                 if aimedSwipe == "settle" and inbox.live
@@ -936,7 +948,7 @@ component Apollo
                   image "symbol:more"
             column id="thread-ask-menu" popover="auto" role="menu" aria-label="Allow"
               for c in askChoices.filter(c => c == "session" or c == "always") key=c
-                button press=answerAsk(alwaysRun, alwaysRequest, alwaysCommand, c) destructive=(c == "always") popovertarget="thread-ask-menu" popovertargetaction="hide" testId=`approve-${c}`
+                button press=answerTier(c) destructive=(c == "always") popovertarget="thread-ask-menu" popovertargetaction="hide" disabled=pending(answered) testId=`approve-${c}`
                   text choiceLabel(c)
             column id="message-menu" popover="auto" role="menu"
               button press=replyAimed popovertarget="message-menu" popovertargetaction="hide" testId="reply-quote"
@@ -1032,7 +1044,7 @@ component Apollo
                   text thread.approvalCommand font-family="ui-monospace" font="-exact-footnote" user-select="text" line-clamp=2 flex=1 min-width=0
                 row gap=8 justify-content="flex-end" flex-wrap="wrap"
                   for c in thread.approvalChoices.filter(c => c == "deny").concat(thread.approvalChoices.filter(c => c == "once")) key=c
-                    button press=answerAsk(thread.runId, thread.approvalId, thread.approvalCommand, c) buttonStyle=(c == "once" ? "filled" : "bordered") destructive=(c == "deny") disabled=pending(answered) testId=`approve-${c}`
+                    button press=answerAsk(thread.runId, thread.approvalId, c) buttonStyle=(c == "once" ? "filled" : "bordered") destructive=(c == "deny") disabled=pending(answered) testId=`approve-${c}`
                       text choiceLabel(c)
                   if thread.approvalChoices.filter(c => c == "session" or c == "always").length > 0
                     button press=moreAsk(thread.runId, thread.approvalId, thread.approvalCommand, thread.approvalChoices) popovertarget="thread-ask-menu" buttonStyle="bordered" disabled=pending(answered) testId="approve-more"

@@ -176,6 +176,8 @@ let sessionsSeen: InboxSession[] = [];
 let cardsSeen: Card[] = [];
 // False while cardsSeen holds the cache's cards, before the cloud answered this launch.
 let cardsLive = false;
+// Cards reopened this launch: opening one again leaves it open, as Apollo's detail screen does.
+const reopened = new Set<string>();
 
 async function sessionsAndRuns(store: Store, storage: Storage) {
   const l = await state(storage);
@@ -194,11 +196,11 @@ async function sessionsAndRuns(store: Store, storage: Storage) {
       // What an ended run never delivered outlives the run's place in the ledger.
       const lost = str(run.pendingSteer);
       if (lost && !isRunActive(run.status)) undelivered.set(sessionId, lost);
-      if (!isRunActive(run.status)) delete l.runs[sessionId];
+      if (!isRunActive(run.status) && l.runs[sessionId] === runId) delete l.runs[sessionId];
     } catch (e) {
       // Only a run Hermes no longer knows leaves the ledger; one that didn't answer is asked again,
       // and counts as running meanwhile so its thread can't be settled.
-      if ((e as { status?: number }).status === 404) delete l.runs[sessionId];
+      if ((e as { status?: number }).status === 404) { if (l.runs[sessionId] === runId) delete l.runs[sessionId]; }
       else runs[runId] = { runId, status: 'running', sessionId };
     }
   }));
@@ -254,7 +256,7 @@ function sessionItem(s: InboxSession, snoozed: boolean, now: number, ask?: Ask):
     time: ago(s.activityAt, now), settled: s.settled, swipe: s.settled ? 'reopen' : snoozed ? 'unsnooze' : canSettleSession(s) ? 'settle' : '', count: 0, glyph: '', link: '', actions: [],
     // As in Apollo, work waiting on you can't be snoozed.
     snooze: !s.settled && !snoozed && !s.pendingApproval,
-    ...(s.pendingApproval && ask ? { need: 'approve', subtitle: ask.reason, command: ask.command, runId: ask.runId, requestId: ask.requestId, choices: ask.choices } : {}),
+    ...(s.pendingApproval && ask?.requestId ? { need: 'approve', subtitle: ask.reason, command: ask.command, runId: ask.runId, requestId: ask.requestId, choices: ask.choices } : {}),
   };
 }
 
@@ -347,7 +349,7 @@ async function cardView(id: string, storage: Storage): Promise<CardView> {
   if (!card) return { ...emptyCard, error: 'This card is no longer in the inbox.' };
   const l = await state(storage);
   // Opening an update settles it, as Apollo does on first sight.
-  if (cardsLive && cardOpenPlan(card).settle && settleAction(card, settledCards(l)) === 'settle') {
+  if (cardsLive && !reopened.has(card.id) && cardOpenPlan(card).settle && settleAction(card, settledCards(l)) === 'settle') {
     l.cards = Object.fromEntries(updateSettledCards(settledCards(l), cardsSeen, card.id, true));
     await save(storage);
   }
@@ -525,7 +527,7 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
         return thread;
       }
       // A thread read with nothing running is read, as Apollo marks it.
-      if (runId) delete l.runs[sessionId];
+      if (runId && l.runs[sessionId] === runId) delete l.runs[sessionId];
       l.read[sessionId] = Math.floor(now / 1000);
       let rows = toRows(project({ history: messages, events: [], running: false }));
       // A steer the ended run neither saved nor named as undelivered never reached it either. History
@@ -868,7 +870,7 @@ const sources: Sources = {
       return failed((e as { code?: string }).code === 'run_not_accepting_steer' ? new Error('The run already finished. Send it as a new message.') : e);
     }
   },
-  // Asked only while the Routines screen is open.
+  // The Routines screen's list, asked only while it's open (the inbox reads its own row).
   routines: async ([open, , now], store) => (open ? routines(store, now) : { error: '', live: false, items: [] }),
   stopRun: async ([runId], store) => { try { await api(store, `/v1/runs/${encodeURIComponent(runId)}/stop`, { method: 'POST' }); return ok; } catch (e) { return failed(e); } },
   answerApproval: async ([runId, requestId, choice], store) => {
@@ -889,6 +891,7 @@ const sources: Sources = {
   },
   // Cards settle on this phone only: the Worker lets only producers close them.
   settleCard: async ([cardId, settle], _store, storage) => {
+    if (settle) reopened.delete(cardId); else reopened.add(cardId);
     const l = await state(storage);
     l.cards = Object.fromEntries(updateSettledCards(settledCards(l), cardsSeen, cardId, settle));
     await save(storage);

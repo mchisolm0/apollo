@@ -7,8 +7,8 @@ lists Hermes threads, starts new ones, and follows runs live with Stop and appro
 The inbox puts what waits on you first, answerable from the row (a thread's command to approve, a
 card to answer), then one row each for Feedback (player reports) and Routines, then the threads.
 Search and New Thread sit at the bottom. In a thread an approval shows where it was asked and is
-pinned above the composer; More holds the wider tiers. Feedback lists reports without Apollo's
-filters or reply thread yet.
+pinned above the composer; More holds the wider tiers. As in Apollo, only runs this phone started
+can ask from the inbox. Feedback lists reports without Apollo's filters or reply thread yet.
 
 ## On the phone
 
