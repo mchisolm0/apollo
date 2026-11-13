@@ -702,7 +702,6 @@ component Apollo
     alwaysRequest = requestId
     alwaysCommand = command
     askChoices = choices
-    showPopover("ask-menu")
   action afterAnswer
     match answered
       case some(a)
@@ -797,7 +796,7 @@ component Apollo
                                 button press=answerAsk(it.runId, it.requestId, it.command, c) buttonStyle=(c == "once" ? "filled" : "bordered") destructive=(c == "deny") disabled=(pending(answered) or not inbox.live) testId=`ask-${it.id}-${c}`
                                   text choiceLabel(c)
                               if it.choices.filter(c => c == "session" or c == "always").length > 0
-                                button press=moreAsk(it.runId, it.requestId, it.command, it.choices) buttonStyle="bordered" disabled=(pending(answered) or not inbox.live) testId=`ask-${it.id}-more`
+                                button press=moreAsk(it.runId, it.requestId, it.command, it.choices) popovertarget="row-ask-menu" buttonStyle="bordered" disabled=(pending(answered) or not inbox.live) testId=`ask-${it.id}-more`
                                   text "More"
                           else if it.actions.length > 0
                             row gap=8 padding-left=(it.glyph != "" and it.need == "" ? 34 : 0) flex-wrap="wrap"
@@ -815,6 +814,10 @@ component Apollo
                 input type="search" value=searchText input=search placeholder="Search" aria-label="Search threads" testId="search" flex=1 min-width=0
                 button press=openNew aria-label="New Thread" aria-keyshortcuts="Meta+N" testId="new"
                   image "symbol:compose"
+              column id="row-ask-menu" popover="auto" role="menu" aria-label="Allow"
+                for c in askChoices.filter(c => c == "session" or c == "always") key=c
+                  button press=answerAsk(alwaysRun, alwaysRequest, alwaysCommand, c) destructive=(c == "always") popovertarget="row-ask-menu" popovertargetaction="hide" testId=`ask-${c}`
+                    text choiceLabel(c)
               column id="row-menu" popover="auto" role="menu"
                 if aimedSwipe == "settle" and inbox.live
                   button press=settleAimed popovertarget="row-menu" popovertargetaction="hide" testId="settle"
@@ -931,6 +934,10 @@ component Apollo
               if e.name == "session"
                 button popovertarget="thread-menu" aria-label="Thread actions" testId="thread-more"
                   image "symbol:more"
+            column id="thread-ask-menu" popover="auto" role="menu" aria-label="Allow"
+              for c in askChoices.filter(c => c == "session" or c == "always") key=c
+                button press=answerAsk(alwaysRun, alwaysRequest, alwaysCommand, c) destructive=(c == "always") popovertarget="thread-ask-menu" popovertargetaction="hide" testId=`approve-${c}`
+                  text choiceLabel(c)
             column id="message-menu" popover="auto" role="menu"
               button press=replyAimed popovertarget="message-menu" popovertargetaction="hide" testId="reply-quote"
                 text "Reply"
@@ -1028,7 +1035,7 @@ component Apollo
                     button press=answerAsk(thread.runId, thread.approvalId, thread.approvalCommand, c) buttonStyle=(c == "once" ? "filled" : "bordered") destructive=(c == "deny") disabled=pending(answered) testId=`approve-${c}`
                       text choiceLabel(c)
                   if thread.approvalChoices.filter(c => c == "session" or c == "always").length > 0
-                    button press=moreAsk(thread.runId, thread.approvalId, thread.approvalCommand, thread.approvalChoices) buttonStyle="bordered" disabled=pending(answered) testId="approve-more"
+                    button press=moreAsk(thread.runId, thread.approvalId, thread.approvalCommand, thread.approvalChoices) popovertarget="thread-ask-menu" buttonStyle="bordered" disabled=pending(answered) testId="approve-more"
                       text "More"
             if shownError != ""
               row gap=8 align-items="center" padding="4px 16px"
@@ -1193,10 +1200,6 @@ component Apollo
               section
                 button press=askUnpair destructive=true testId="settings-unpair"
                   text "Unpair this phone"
-      column id="ask-menu" popover="auto" role="menu" aria-label="Allow"
-        for c in askChoices.filter(c => c == "session" or c == "always") key=c
-          button press=answerAsk(alwaysRun, alwaysRequest, alwaysCommand, c) destructive=(c == "always") popovertarget="ask-menu" popovertargetaction="hide" testId=`approve-${c}`
-            text choiceLabel(c)
       dialog id="delete-thread" role="alertdialog" aria-label="Delete thread?"
         text "This removes it from Hermes for every device."
         button press=deleteAimed destructive=true commandfor="delete-thread" command="close" testId="delete-confirm"

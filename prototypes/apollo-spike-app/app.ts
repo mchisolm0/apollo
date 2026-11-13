@@ -285,7 +285,7 @@ function inboxOf({ sessions, cards: all, pendingRunIds, asks = {}, routines = []
     if (row.kind === 'section') return { ...blank, key: `section-${row.id}`, kind: 'section', title: row.title, count: row.count ?? 0 };
     return { ...blank, key: 'caught-up', kind: 'caughtUp', title: "You're caught up", count: 0 };
   });
-  const reports = all.filter((c) => c.source === 'feedback').sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((c) => cardItem(c, false, l, now));
+  const reports = all.filter((c) => c.source === 'feedback').sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((c) => ({ ...cardItem(c, false, l, now), subtitle: previewLine(c.body) ?? '' }));
   const feedback = [...reports.filter((r) => r.need), ...reports.filter((r) => !r.need)];
   // What waits on you comes first, then Feedback and Routines, then the rest in Apollo's order.
   const items = [...listed.filter((it) => it.need), ...(query.trim() ? [] : placeRows(feedback, routines)), ...listed.filter((it) => !it.need)];
