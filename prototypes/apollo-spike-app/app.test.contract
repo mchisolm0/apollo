@@ -1,0 +1,23 @@
+// Every test launches unpaired with empty storage; the paired flows are tests/paired.test.contract (tools/test-paired.sh).
+
+test "an unpaired phone asks for a pairing link before anything else"
+  expect tree has "pair-link"
+  expect tree missing "inbox"
+  expect disabled "pair"
+
+test "a link that is not a pairing link is refused and kept for fixing"
+  type "pair-link" "https://example.com/pair"
+  expect enabled "pair"
+  tap "pair"
+  clock data
+  expect text "pair-error" == "That is not an Apollo pairing link."
+  expect state link == "https://example.com/pair"
+  expect tree has "pair-link"
+
+test "a connector that can't be reached leaves the phone unpaired"
+  fail fetch "http://127.0.0.1:19111"
+  type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=abc"
+  tap "pair"
+  clock data
+  expect tree has "pair-error"
+  expect tree has "pair-link"

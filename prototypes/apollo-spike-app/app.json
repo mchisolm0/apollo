@@ -1,0 +1,76 @@
+{
+  "$schema": "../../../exact/scripts/app.schema.json",
+  "name": "Apollo Exact",
+  "short_name": "Apollo X",
+  "id": "com.matthewchisolm.apollo.exactspike",
+  "start_url": "/",
+  "display": "standalone",
+  "shortcuts": [
+    {
+      "name": "New thread",
+      "url": "/new",
+      "apple": {
+        "symbol": "square.and.pencil"
+      }
+    }
+  ],
+  "app": {
+    "id": "com.matthewchisolm.apollo.exactspike",
+    "name": "Apollo X"
+  },
+  "host": {
+    "web": {},
+    "ios": {
+      "minimumOS": "17.0",
+      "deviceFamily": [
+        "iphone",
+        "ipad"
+      ]
+    },
+    "macos": {
+      "minimumOS": "14.0",
+      "window": {
+        "width": 900,
+        "height": 700
+      }
+    }
+  },
+  "deploy": {
+    "store": {
+      "web": "0",
+      "ios": "0",
+      "macos": "0"
+    }
+  },
+  "icons": [
+    {
+      "src": "assets/icon-1024.png",
+      "sizes": "1024x1024",
+      "type": "image/png"
+    }
+  ],
+  "share_target": {
+    "action": "/share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url",
+      "files": [
+        {
+          "name": "files",
+          "accept": [
+            "image/*",
+            "video/*",
+            "text/*",
+            "application/pdf",
+            "application/json",
+            "application/zip",
+            "application/octet-stream"
+          ]
+        }
+      ]
+    }
+  }
+}

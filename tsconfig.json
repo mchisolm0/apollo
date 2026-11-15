@@ -25,6 +25,7 @@
     "${configDir}/node_modules",
     "${configDir}/android",
     "${configDir}/ios",
-    "${configDir}/cloud"
+    "${configDir}/cloud",
+    "${configDir}/prototypes"
   ]
 }

@@ -1,0 +1,24 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "apollo-spike-app",
+      "dependencies": {
+        "@exact/media-capture": "file:/Users/mcc/code/exact/packages/media-capture",
+        "@exact/quick-actions": "file:/Users/mcc/code/exact/packages/quick-actions",
+        "@exact/recording": "file:/Users/mcc/code/exact/packages/recording",
+        "@exact/speech-recognition": "file:/Users/mcc/code/exact/packages/speech-recognition",
+      },
+    },
+  },
+  "packages": {
+    "@exact/media-capture": ["@exact/media-capture@file:../../../../../../code/exact/packages/media-capture", {}],
+
+    "@exact/quick-actions": ["@exact/quick-actions@file:../../../../../../code/exact/packages/quick-actions", {}],
+
+    "@exact/recording": ["@exact/recording@file:../../../../../../code/exact/packages/recording", { "peerDependencies": { "@exact/media-capture": "1.0.0" }, "optionalPeers": ["@exact/media-capture"] }],
+
+    "@exact/speech-recognition": ["@exact/speech-recognition@file:../../../../../../code/exact/packages/speech-recognition", { "peerDependencies": { "@exact/media-capture": "1.0.0" }, "optionalPeers": ["@exact/media-capture"] }],
+  }
+}

@@ -4,7 +4,7 @@ const expoConfig = require('eslint-config-expo/flat');
 module.exports = defineConfig([
   ...expoConfig,
   {
-    ignores: ['.expo/*', 'dist/*'],
+    ignores: ['.expo/*', 'dist/*', 'prototypes/**'],
   },
   {
     // TypeScript already checks namespace members. The import plugin misses SDK 58
