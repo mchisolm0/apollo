@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StateStore, createConnectorServer } from "./index.mjs";
@@ -96,6 +96,11 @@ async function startHermesStub() {
 
 function send(res, status, value) { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(value)); }
 async function req(base, path, init = {}) { const response = await fetch(`${base}${path}`, init); return { response, body: await response.json().catch(() => null) }; }
+async function pairedHeaders(f) {
+  const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
+  const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
+  return { authorization: `Bearer ${exchange.body.access_token}` };
+}
 function admin(init = {}) { return { ...init, headers: { "x-apollo-admin-secret": "admin-secret", "content-type": "application/json", ...(init.headers ?? {}) } }; }
 
 test("descriptor is public and includes live Hermes capabilities", async (t) => {
@@ -196,10 +201,38 @@ for (const path of ["/api/model/options", "/api/jobs"]) test(`${path} is device-
   for (const method of ["POST", "PATCH", "DELETE"]) {
     assert.equal((await req(f.base, path, { method, headers })).response.status, 404);
   }
-  for (const [method, below] of [["GET", "/x"], ["POST", "/x/run"], ["POST", "/x/pause"]]) {
-    assert.equal((await req(f.base, `${path}${below}`, { method, headers })).response.status, 404);
+  assert.equal(f.hermes.seen.length, count);
+});
+
+test("phones can pause, resume, run and delete a routine, and nothing else on a job", async (t) => {
+  const f = await fixture(); t.after(async () => { await f.connector.close(); await f.hermes.close(); });
+  assert.equal((await req(f.base, "/api/jobs/job-1/pause", { method: "POST" })).response.status, 401);
+  const headers = await pairedHeaders(f);
+  for (const [method, path] of [["POST", "/api/jobs/job-1/pause"], ["POST", "/api/jobs/job-1/resume"], ["POST", "/api/jobs/job-1/run"], ["DELETE", "/api/jobs/job-1"]]) {
+    assert.equal((await req(f.base, path, { method, headers })).response.status, 200);
+    assert.deepEqual([f.hermes.seen.at(-1).method, f.hermes.seen.at(-1).url, f.hermes.seen.at(-1).authorization], [method, path, "Bearer hermes-secret"]);
+  }
+  const count = f.hermes.seen.length;
+  for (const [method, path] of [["GET", "/api/jobs/job-1"], ["PATCH", "/api/jobs/job-1"], ["GET", "/api/jobs/job-1/run"], ["POST", "/api/jobs/job-1/edit"], ["POST", "/api/jobs"]]) {
+    assert.equal((await req(f.base, path, { method, headers })).response.status, 404);
   }
   assert.equal(f.hermes.seen.length, count);
+});
+
+test("phones read the approval timeout and the always-allow list from Hermes's config", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "apollo-hermes-"));
+  const hermesConfigPath = join(directory, "config.yaml");
+  const f = await fixture({ hermesConfigPath }); t.after(async () => { await f.connector.close(); await f.hermes.close(); });
+  assert.equal((await req(f.base, "/v1/apollo/approvals")).response.status, 401);
+  const headers = await pairedHeaders(f);
+  // No config yet: Hermes's own defaults.
+  assert.deepEqual((await req(f.base, "/v1/apollo/approvals", { headers })).body, { timeout_seconds: 300, command_allowlist: [] });
+  // As PyYAML saves it: list items level with their key, quoted only when they must be.
+  await writeFile(hermesConfigPath, "model:\n  default: x\napprovals:\n  mode: manual\n  timeout: 60  # seconds\ncommand_allowlist:\n- recursive delete\n- 'script execution via -e/-c flag'\n- \"it's \\\"quoted\\\"\"\ntimeout: 5\n");
+  assert.deepEqual((await req(f.base, "/v1/apollo/approvals", { headers })).body, { timeout_seconds: 60, command_allowlist: ["recursive delete", "script execution via -e/-c flag", 'it\'s "quoted"'] });
+  await writeFile(hermesConfigPath, "command_allowlist: []\n");
+  assert.deepEqual((await req(f.base, "/v1/apollo/approvals", { headers })).body, { timeout_seconds: 300, command_allowlist: [] });
+  assert.equal(f.hermes.seen.length, 0);
 });
 
 
