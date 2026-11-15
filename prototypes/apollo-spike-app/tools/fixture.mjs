@@ -10,7 +10,7 @@
 // pairing with it puts Hermes and the cloud back to their seed first, so each contract test starts
 // from the same data.
 import { createServer, request as httpRequest } from "node:http";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createConnectorServer } from "../../../connector/index.mjs";
@@ -22,6 +22,10 @@ const HERMES_PORT = 19112;
 const CLOUD_PORT = 19113;
 const ROOT = "/tmp/apollo-exact-spike";
 const ADMIN_SECRET = "apollo-exact-spike-admin";
+// Hermes's config.yaml as the connector reads it: how long an approval waits before Hermes denies
+// it, and what "Always allow" saved.
+const APPROVAL_TIMEOUT = 300;
+const HERMES_CONFIG = `approvals:\n  mode: manual\n  timeout: ${APPROVAL_TIMEOUT}\ncommand_allowlist:\n- recursive delete\n- 'script execution via -e/-c flag'\n`;
 
 const ANSWER = "## Result\n\nDone. The fixture streamed this **markdown** answer word by word, with a [link](https://example.com) and a list:\n\n- first item\n- second item with `inline code`\n\n```typescript\nconst count = 42;\nconsole.log(count);\n```\n\n| Column | Value |\n| --- | --- |\n| speed | fast |\n| words | many |\n\nThat is the end of the answer.";
 
@@ -29,7 +33,7 @@ const now = () => Date.now() / 1000;
 // A cron job's own run, and the Bot Chat its output went to. Hermes previews both with the
 // first user message, which cron wrote for the agent.
 const BOT_CHAT_INPUT = '[Cronjob "Lot watcher" output — scheduled job, not the user. Review it, act on anything that needs action, and summarize for the chat.]\n\nNo lot met the bar. Best seen: 2 Galaxy A03s at $24.65 each.';
-let sessions, messages, runs, idempotency, cards, events, rev, seq;
+let sessions, messages, runs, idempotency, cards, events, rev, seq, jobs;
 const seedSessions = () => new Map([
   ["spike-session", { id: "spike-session", title: "Spike thread", source: "fixture", message_count: 2, last_active: now() }],
   ["cron-run", { id: "cron-run", title: "Lot watcher · Nov 12 12:05", source: "cron", message_count: 2, last_active: now() - 120, ended_at: now() - 120, preview: "[IMPORTANT: You are running as a scheduled cron job. DELIVER..." }],
@@ -51,7 +55,7 @@ const subscribers = new Map();
 // Hermes's cron jobs as `GET /api/jobs` lists them: one fine, one failing, one paused.
 const hour = 3600;
 const isoAt = (seconds) => new Date(seconds * 1000).toISOString();
-const jobs = () => [
+const seedJobs = () => [
   { id: "job-morning", name: "morning-card", enabled: true, state: "scheduled", schedule: { kind: "cron", expr: "45 8 * * *" }, schedule_display: "45 8 * * *", last_status: "ok", last_run_at: isoAt(now() - 2 * hour), next_run_at: isoAt(now() + 22 * hour), last_error: null, failure_streak: 0, deliver: "apollo", no_agent: true },
   { id: "job-triage", name: "pr-triage", enabled: true, state: "scheduled", schedule: { kind: "cron", expr: "35 8 * * 1-5" }, schedule_display: "35 8 * * 1-5", last_status: "ok", last_run_at: isoAt(now() - 2.2 * hour), next_run_at: isoAt(now() + 21.8 * hour), last_error: null, failure_streak: 0, deliver: "discord" },
   { id: "job-lots", name: "Lot watcher", enabled: true, state: "scheduled", schedule: { kind: "interval", minutes: 30 }, schedule_display: "every 30m", last_status: "error", last_run_at: isoAt(now() - 0.3 * hour), next_run_at: isoAt(now() + 0.2 * hour), last_error: "eBay search timed out after 60s", failure_streak: 3, deliver: "bot-chat" },
@@ -107,6 +111,21 @@ function answer(run) {
   stream(run, ANSWER, 35);
 }
 
+// As Hermes: a request nobody answers within the timeout fails closed with no approval event; the
+// run goes back to running and the turn ends as usual. "approval expires" stands in for one asked
+// a timeout ago: it is stamped that far back, so it times out a second later.
+function ask(run, approval) {
+  run.status = "waiting_for_approval";
+  run.approval = approval;
+  const late = /expires/i.test(run.input);
+  emit(run, "approval.request", { ...approval, ...(late ? { timestamp: now() - APPROVAL_TIMEOUT + 1 } : {}) });
+  setTimeout(() => {
+    if (run.approval?.request_id !== approval.request_id) return;
+    run.approval = undefined; run.status = "running";
+    stream(run, "Nobody answered in time, so I left the build folder alone.", 35);
+  }, late ? 1000 : APPROVAL_TIMEOUT * 1000);
+}
+
 function schedule(run) {
   setTimeout(() => { if (run.status === "started") { run.status = "running"; emit(run, "run.started"); emit(run, "reasoning.available", { text: "Checking the fixture before answering." }); } }, 25);
   setTimeout(() => { if (run.status === "running") emit(run, "tool.started", { tool: "terminal", tool_call_id: `call-${run.id}`, preview: "ls -la" }); }, 300);
@@ -114,11 +133,9 @@ function schedule(run) {
   setTimeout(() => {
     if (run.status !== "running") return;
     if (/approval/i.test(run.input)) {
-      run.status = "waiting_for_approval";
       // "once only" is Hermes's smart deny: neither the thread nor the permanent tier is offered.
       const choices = /once only/i.test(run.input) ? ["once", "deny"] : ["once", "session", "always", "deny"];
-      run.approval = { request_id: `approval-${run.id}`, tool: "terminal", command: "rm -rf build/", description: "Clean the build folder", choices };
-      emit(run, "approval.request", run.approval);
+      ask(run, { request_id: `approval-${run.id}`, tool: "terminal", command: "rm -rf build/", description: "Clean the build folder", choices });
     } else if (!/hold/i.test(run.input)) answer(run);
   }, 900);
 }
@@ -128,7 +145,15 @@ const hermes = createServer(async (req, res) => {
   if (url.pathname === "/__spike/pair" && req.method === "POST") return json(res, 200, { link: await pairingLink() });
   if (url.pathname === "/v1/capabilities") return json(res, 200, { object: "hermes.api_server.capabilities", platform: "fixture", model: "fixture", features: ["runs", "sessions"] });
   if (url.pathname === "/v1/health") return json(res, 200, { status: "ok" });
-  if (url.pathname === "/api/jobs" && req.method === "GET") return json(res, 200, { jobs: jobs() });
+  if (url.pathname === "/api/jobs" && req.method === "GET") return json(res, 200, { jobs });
+  // As Hermes: pause and resume flip the job, run makes it due on the scheduler's next tick.
+  const jobMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)(?:\/(pause|resume|run))?$/u);
+  const job = jobMatch && jobs.find((j) => j.id === jobMatch[1]);
+  if (jobMatch && !job) return json(res, 404, { error: `Job not found: ${jobMatch[1]}` });
+  if (jobMatch && req.method === "DELETE" && !jobMatch[2]) { jobs = jobs.filter((j) => j !== job); return json(res, 200, { ok: true }); }
+  if (jobMatch?.[2] === "pause" && req.method === "POST") { Object.assign(job, { enabled: false, state: "paused", paused_at: isoAt(now()), next_run_at: null }); return json(res, 200, { job }); }
+  if (jobMatch?.[2] === "resume" && req.method === "POST") { Object.assign(job, { enabled: true, state: "scheduled", paused_at: null, next_run_at: isoAt(now() + hour) }); return json(res, 200, { job }); }
+  if (jobMatch?.[2] === "run" && req.method === "POST") { Object.assign(job, { next_run_at: isoAt(now()) }); return json(res, 200, { job }); }
   if (url.pathname === "/api/sessions" && req.method === "GET") return json(res, 200, { data: [...sessions.values()] });
   if (url.pathname === "/api/sessions" && req.method === "POST") {
     const input = await body(req); const id = input.id ?? randomUUID();
@@ -227,14 +252,21 @@ const seedCards = () => new Map([
   ["approval-1", { id: "approval-1", rev: 3, source: "fleet", key: "deploy-1", kind: "approval", title: "Deploy the landing page?", state: "open", push: "none", createdAt: iso(600), updatedAt: iso(600),
     body: "The fleet routine wants to publish the new landing page copy.", progress: { label: "Deploy", step: 2, of: 3 },
     actions: [{ id: "approve", label: "Approve", style: "primary" }, { id: "reject", label: "Reject", style: "destructive" }, { id: "edit", label: "Edit", input: "text", prefill: "" }] }],
-  // Scryve player reports: two wait on a reply (posted as approvals), one is an open idea.
-  ...[["feedback-1", "Bug: Life total resets when the phone rotates", 1800, "approval"], ["feedback-2", "Bug: Commander damage can't go below zero", 5400, "approval"], ["feedback-3", "Idea: Show poison counters next to life", 9000, "update"]]
-    .map(([id, title, age, kind], i) => [id, { id, rev: 4 + i, source: "feedback", key: id, kind, title, state: "open", push: "none", createdAt: iso(age), updatedAt: iso(age),
-      body: "From a player in Scryve.", actions: kind === "approval" ? [{ id: "reply", label: "Reply", style: "primary", input: "text", prefill: "" }] : [] }]),
+  // A draft the agent wrote for you to send, as Grok Bot's: Send opens it to edit, Discard drops it.
+  ["draft-1", { id: "draft-1", rev: 8, source: "jobs", key: "acme-reply", kind: "approval", title: "Draft: reply to the Acme recruiter", state: "open", push: "none", createdAt: iso(300), updatedAt: iso(300),
+    body: "Dana asked when you can talk this week.",
+    actions: [{ id: "send", label: "Send", style: "primary", input: "text", prefill: "Hi Dana, Thursday after 2pm works. Talk then?" }, { id: "discard", label: "Discard", style: "destructive" }] }],
+  // Scryve player reports as the feedback producer posts them: the conversation as plain text,
+  // an approval while the player spoke last, and a Reply that stays. One is marked fixed.
+  ...[["feedback-1", "Bug: Life total resets when the phone rotates", 1800, "approval", {}], ["feedback-2", "Bug: Commander damage can't go below zero", 5400, "approval", {}],
+    ["feedback-3", "Idea: Show poison counters next to life", 9000, "update", {}], ["feedback-4", "Bug: Dice roll repeats", 20000, "update", { fixed: "a1b2c3d · 4.12" }]]
+    .map(([id, title, age, kind, meta], i) => [id, { id, rev: 4 + i, source: "feedback", key: id, kind, title, state: "open", push: "none", createdAt: iso(age), updatedAt: iso(age), plainText: true, meta,
+      body: kind === "approval" ? "Player: It happens every time.\n\nYou: Which phone?\n\nPlayer: A Pixel 6a." : "Player: It would help in long games.",
+      actions: [{ id: "reply", label: "Reply", style: "primary", input: "text", repeat: true }] }]),
 ]);
 function seed() {
   sessions = seedSessions(); messages = seedMessages(); runs = new Map(); idempotency = new Map();
-  cards = seedCards(); events = []; rev = 6; seq = 0;
+  cards = seedCards(); events = []; rev = 9; seq = 0; jobs = seedJobs();
   for (const response of [...subscribers.values()].flatMap((set) => [...set])) response.end();
   subscribers.clear();
 }
@@ -261,7 +293,11 @@ const cloud = createServer(async (req, res) => {
     if (card.state !== "open") return json(res, 409, { error: { code: "card_closed", message: "Card is closed", card } });
     const event = { seq: ++seq, cardId: card.id, source: card.source, key: card.key, at: iso(), by: "exact-fixture" };
     if (typeof input.pick === "number") { card.picks = card.picks.map((p) => (p.n === input.pick ? { ...p, done: input.done } : p)); events.push({ ...event, type: "pick", pick: input.pick, done: input.done }); }
-    else {
+    else if (card.actions?.some((a) => a.id === input.actionId && a.repeat)) {
+      // As the Worker: a repeat action only records its event. The producer writes a reply into the body later.
+      events.push({ ...event, type: "action", actionId: input.actionId, ...(input.text ? { text: input.text } : {}) });
+      return json(res, 200, card);
+    } else {
       events.push({ ...event, type: "action", actionId: input.actionId, ...(input.text ? { text: input.text } : {}) });
       card.resolution ??= { actionId: input.actionId, by: "exact-fixture", at: iso() };
       if (input.text) card.body = `${card.body ?? ""}\n\nYou: ${input.text}`;
@@ -275,9 +311,10 @@ const cloud = createServer(async (req, res) => {
 
 await rm(ROOT, { recursive: true, force: true });
 await mkdir(ROOT, { recursive: true, mode: 0o700 });
+await writeFile(join(ROOT, "hermes-config.yaml"), HERMES_CONFIG);
 await new Promise((resolve, reject) => hermes.listen(HERMES_PORT, HOST, (error) => error ? reject(error) : resolve()));
 await new Promise((resolve, reject) => cloud.listen(CLOUD_PORT, HOST, (error) => error ? reject(error) : resolve()));
-const connector = createConnectorServer({ host: HOST, port: CONNECTOR_PORT, hermesUrl: `http://${HOST}:${HERMES_PORT}`, hermesApiKey: "fixture-hermes", adminSecret: ADMIN_SECRET, statePath: join(ROOT, "connector-state.json"), label: "Exact spike fixture", cloud: { url: `http://${HOST}:${CLOUD_PORT}`, token: "fixture-connector" }, cloudPollInterval: 1000, generateThreadTitle: async (input) => `Spike: ${input.slice(0, 36)}` });
+const connector = createConnectorServer({ host: HOST, port: CONNECTOR_PORT, hermesUrl: `http://${HOST}:${HERMES_PORT}`, hermesApiKey: "fixture-hermes", adminSecret: ADMIN_SECRET, statePath: join(ROOT, "connector-state.json"), hermesConfigPath: join(ROOT, "hermes-config.yaml"), label: "Exact spike fixture", cloud: { url: `http://${HOST}:${CLOUD_PORT}`, token: "fixture-connector" }, cloudPollInterval: 1000, generateThreadTitle: async (input) => `Spike: ${input.slice(0, 36)}` });
 await connector.start();
 const inner = `http://${HOST}:${CONNECTOR_PORT}`;
 const base = `http://${HOST}:${FRONT_PORT}`;
@@ -307,5 +344,5 @@ console.log(`Connector: ${base}  Fake Hermes: http://${HOST}:${HERMES_PORT}`);
 console.log(`Pairing link (15 min, once): ${await pairingLink()}`);
 console.log(`Another: curl -s -X POST http://${HOST}:${HERMES_PORT}/__spike/pair`);
 console.log(`Reusable test link (resets the seed): apollo://pair?host=${encodeURIComponent(base)}#token=fixture`);
-console.log(`Inputs: "approval" asks to run a command ("approval once only": no thread or always tier), "hold" runs until stopped or steered (a steer saying "too late" is refused, "never mind" comes back undelivered), "storm" floods 2,000 deltas.`);
+console.log(`Inputs: "approval" asks to run a command ("approval once only": no thread or always tier, "approval expires": it times out a second later), "hold" runs until stopped or steered (a steer saying "too late" is refused, "never mind" comes back undelivered), "storm" floods 2,000 deltas.`);
 process.on("SIGINT", async () => { await connector.close(); await new Promise((resolve) => hermes.close(resolve)); process.exit(0); });

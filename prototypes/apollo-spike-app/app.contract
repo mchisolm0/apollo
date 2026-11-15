@@ -28,6 +28,8 @@ shape CardButton
   style: string
   input: bool
   url: string
+  // What a reply starts with: a draft to edit before Send.
+  prefill: string
 
 shape Pick
   n: number
@@ -78,8 +80,16 @@ shape Inbox
   live: bool
   items: Item[]
   snoozeOptions: SnoozeOption[]
-  // Player reports, waiting on a reply first: the Feedback row opens them.
-  feedback: Item[]
+
+shape FeedbackFilter
+  id: string
+  label: string
+  count: number
+
+// Player reports for one filter, newest first, as Apollo's Feedback screen lists them.
+shape Feedback
+  filters: FeedbackFilter[]
+  items: Item[]
 
 shape Metric
   label: string
@@ -107,6 +117,8 @@ shape CardView
   actions: CardButton[]
   progress: string
   progressValue: number
+  // Replies sent from here that the producer hasn't written into the body yet.
+  replies: string[]
   error: string
   live: bool
 
@@ -192,6 +204,8 @@ shape Thread
   approvalReason: string
   // Hermes's tiers for this request, of once, session, always and deny.
   approvalChoices: string[]
+  // When Hermes denies the request unanswered, in Unix ms; 0 when unknown.
+  approvalDeadline: number
   settled: bool
   canSettle: bool
   autoSettle: bool
@@ -215,6 +229,13 @@ shape Routines
   live: bool
   items: Routine[]
 
+// From Hermes's config.yaml: how long an approval waits, and what "Always allow" saved.
+shape Approvals
+  timeout: number
+  allowlist: string[]
+  live: bool
+  error: string
+
 shape Created
   id: string
   error: string
@@ -237,6 +258,7 @@ fn took(s: number): string = s < 60 ? `${floor(s)}s` : s < 3600 ? `${floor(s / 6
 fn choiceLabel(c: string): string = c == "once" ? "Allow once" : c == "session" ? "Allow in this thread" : c == "always" ? "Always allow…" : "Deny"
 // A reply quotes the start of a message, each line marked, then leaves room to write.
 fn quoted(t: string): string = `${(t.length > 280 ? `${t.slice(0, 279)}…` : t).split("\n").slice(0, 4).map(l => `> ${l}`).join("\n")}\n\n`
+fn mmss(s: number): string = `${floor(s / 60)}:${s % 60 < 10 ? "0" : ""}${s % 60}`
 fn routineColor(s: string): string = s == "failed" ? "-exact-system-red" : s == "paused" ? "-exact-system-orange" : "-exact-secondary-label"
 fn toneColor(t: string): string = t == "amber" ? "-exact-system-orange" : t == "accent" ? "AccentColor" : t == "green" ? "-exact-system-green" : t == "red" ? "-exact-system-red" : "-exact-secondary-label"
 
@@ -284,6 +306,11 @@ component Apollo
   state sentFiles: string[] = []
   state chasing = false
   state wasHidden = false
+  state feedbackFilter = "waiting"
+  // The routine its menu was opened on.
+  state aimedRoutine = ""
+  state aimedRoutineName = ""
+  state aimedRoutinePaused = false
   derive selected = match stack(nav).filter(e => e.name == "session").at(-1) { case some(e) => e.params.id, case none => "" }
   derive selectedCard = match stack(nav).filter(e => e.name == "card").at(-1) { case some(e) => e.params.id, case none => "" }
   derive now = time.epochAtZero + tick
@@ -299,6 +326,8 @@ component Apollo
   // Asked again once the inbox is live, since a kept card stands in until then.
   resource card = card(selectedCard, revision) with liveInbox.live as shape CardView transient
   resource routineList = routines(top(nav).name == "routines", revision) with now as shape Routines transient
+  resource feedbackList = feedback(top(nav).name == "feedback", feedbackFilter, inbox.live, revision) with now as shape Feedback transient
+  resource approvalSettings = approvals(top(nav).name == "settings", accountRevision) as shape Approvals transient
   resource options = agentOptions(account.paired, accountRevision) as shape Options
   resource voice = speechRecognitionAvailability(langs=["en-US"], processLocally=true) as shape SpeechRecognitionAvailability else empty()
   resource heard = speechRecognitionState(recognition=recognitionId, interval=100) as shape SpeechRecognitionState else empty()
@@ -321,6 +350,8 @@ component Apollo
   mutation filed as shape Ack then afterWrite
   mutation responded as shape Ack then afterRespond
   derive onHome = top(nav).name == "home"
+  // The pinned request's time ran out: Hermes denies it, so it can no longer be answered.
+  derive approvalExpired = thread.approvalDeadline > 0 and clock >= thread.approvalDeadline
   // The request More was opened on is still the one a live thread or the live inbox shows.
   derive askCurrent = alwaysCommand != "" and ((threadLive and alwaysRun == thread.runId and alwaysRequest == thread.approvalId and alwaysCommand == thread.approvalCommand) or (liveInbox.live and liveInbox.items.filter(i => i.runId == alwaysRun and i.requestId == alwaysRequest and i.command == alwaysCommand).length > 0))
   derive inbox = liveInbox.live ? liveInbox : savedInbox
@@ -349,7 +380,7 @@ component Apollo
   derive shareText = [searchParam(top(nav), "title"), searchParam(top(nav), "text"), searchParam(top(nav), "url")].filter(t => t != "").join(" · ")
   derive shareIncoming = sharedFiles(top(nav), "files")
   derive shareThreads = inbox.items.filter(i => i.kind == "session" and not i.settled).slice(0, 8)
-  derive shownError = notice != "" ? notice : dictationError != "" ? dictationError : onHome ? liveInbox.error : top(nav).name == "card" ? card.error : top(nav).name == "routines" ? routineList.error : liveThread.error
+  derive shownError = notice != "" ? notice : dictationError != "" ? dictationError : onHome ? liveInbox.error : top(nav).name == "card" ? card.error : top(nav).name == "routines" ? routineList.error : top(nav).name == "settings" ? approvalSettings.error : liveThread.error
 
   // A finished run hands back to durable history, as Apollo reloads messages after a terminal event.
   task settle when thread.ended and thread.runId != ""
@@ -506,14 +537,14 @@ component Apollo
     if action.input
       nav = go(nav, path("card", id))
       replying = action.id
-      reply = ""
+      reply = action.prefill
     else if action.url != ""
       openURL(action.url)
     else
       send responded = respondCard(id, action.id, "")
   action startReply(action: CardButton)
     replying = action.id
-    reply = ""
+    reply = action.prefill
   action cardAction(action: CardButton)
     if action.input
       startReply(action)
@@ -739,6 +770,19 @@ component Apollo
   action replyAimed
     draft = `${quoted(aimedText)}${draft}`
     focus("composer")
+  action pickFeedback(id: string)
+    feedbackFilter = id
+  action aimRoutine(id: string, name: string, paused: bool)
+    aimedRoutine = id
+    aimedRoutineName = name
+    aimedRoutinePaused = paused
+  action routineAct(act: string)
+    if act == "delete"
+      showModal("delete-routine")
+    else
+      send filed = routineAction(aimedRoutine, act)
+  action deleteRoutine
+    send filed = routineAction(aimedRoutine, "delete")
   action toggleSteps(id: string)
     opened = opened.includes(id) ? opened.filter(x => x != id) : opened.concat([id])
 
@@ -909,9 +953,11 @@ component Apollo
                     PickRow(pick=p, press=toggle(p), open=openPick(card.id, p), off=(not card.open or pending(filed) or not card.live), tid=`pick-${p.n}`)
               if card.body != ""
                 if card.plainText
-                  text card.body user-select="text" overflow-wrap="anywhere"
+                  text card.body white-space="pre-wrap" user-select="text" overflow-wrap="anywhere" testId="card-body"
                 else
                   text card.body markup="markdown" user-select="text" overflow-wrap="anywhere" testId="card-body"
+              if card.replies.length > 0
+                text card.replies.map(r => `You: ${r}`).join("\n\n") white-space="pre-wrap" color="-exact-secondary-label" user-select="text" overflow-wrap="anywhere" testId="card-replies"
             if shownError != ""
               text shownError font="-exact-footnote" color="-exact-system-red" padding="4px 16px" testId="error"
             if replying != ""
@@ -1020,8 +1066,8 @@ component Apollo
                     if r.kind == "error"
                       text r.text font="-exact-footnote" color="-exact-system-red" user-select="text"
                     if r.kind == "approval"
-                      column gap=4 padding-left=10 border-left="2px solid -exact-system-orange" testId="approval-inline"
-                        text "Run this command?" font="-exact-footnote" font-weight=600 color="-exact-system-orange"
+                      column gap=4 padding-left=10 border-left=(r.status == "expired" ? "2px solid -exact-separator" : "2px solid -exact-system-orange") testId=(r.status == "expired" ? "approval-expired" : "approval-inline")
+                        text (r.status == "expired" ? "Expired, so Hermes denied it" : "Run this command?") font="-exact-footnote" font-weight=600 color=(r.status == "expired" ? "-exact-secondary-label" : "-exact-system-orange")
                         text r.text font-family="ui-monospace" font="-exact-footnote" user-select="text" line-clamp=8
                         if r.summary != ""
                           text r.summary font="-exact-footnote" color="-exact-secondary-label"
@@ -1050,12 +1096,15 @@ component Apollo
                 row gap=8 align-items="baseline"
                   text "Run" font="-exact-subheadline" font-weight=600 color="-exact-system-orange" flex-shrink=0
                   text thread.approvalCommand font-family="ui-monospace" font="-exact-footnote" user-select="text" line-clamp=2 flex=1 min-width=0
+                  if thread.approvalDeadline > 0 and clock > 0
+                    text (approvalExpired ? "Expired" : mmss(floor((thread.approvalDeadline - clock) / 1000))) font="-exact-footnote" font-variant-numeric="tabular-nums"
+                      color=(approvalExpired ? "-exact-system-red" : "-exact-secondary-label") flex-shrink=0 testId="approval-expiry"
                 row gap=8 justify-content="flex-end" flex-wrap="wrap"
                   for c in thread.approvalChoices.filter(c => c == "deny").concat(thread.approvalChoices.filter(c => c == "once")) key=c
-                    button press=answerAsk(thread.runId, thread.approvalId, c) buttonStyle=(c == "once" ? "filled" : "bordered") destructive=(c == "deny") disabled=(pending(answered) or not threadLive) testId=`approve-${c}`
+                    button press=answerAsk(thread.runId, thread.approvalId, c) buttonStyle=(c == "once" ? "filled" : "bordered") destructive=(c == "deny") disabled=(pending(answered) or not threadLive or approvalExpired) testId=`approve-${c}`
                       text choiceLabel(c)
                   if thread.approvalChoices.filter(c => c == "session" or c == "always").length > 0
-                    button press=moreAsk(thread.runId, thread.approvalId, thread.approvalCommand, thread.approvalChoices) popovertarget="thread-ask-menu" buttonStyle="bordered" disabled=(pending(answered) or not threadLive) testId="approve-more"
+                    button press=moreAsk(thread.runId, thread.approvalId, thread.approvalCommand, thread.approvalChoices) popovertarget="thread-ask-menu" buttonStyle="bordered" disabled=(pending(answered) or not threadLive or approvalExpired) testId="approve-more"
                       text "More"
             if shownError != ""
               row gap=8 align-items="center" padding="4px 16px"
@@ -1160,26 +1209,44 @@ component Apollo
             list id="routines" appearance="auto" listStyle="plain" flex=1 min-height=0 testId="routines"
               section
                 for j in routineList.items key=j.id
-                  column gap=2 padding="8px 16px" testId=`routine-${j.id}`
-                    row gap=8 align-items="baseline"
-                      text j.name font="-exact-headline" color=(j.status == "paused" ? "-exact-secondary-label" : "-exact-label") flex=1 min-width=0
-                      text (j.status == "failed" ? (j.streak > 1 ? `Failed ${j.streak} times` : "Failed") : j.status == "paused" ? "Paused" : j.next != "" ? `Next ${j.next}` : "")
-                        font="-exact-footnote" color=routineColor(j.status) flex-shrink=0 testId=`routine-status-${j.id}`
-                    text (j.last != "" ? `${j.schedule} · ran ${j.last}` : j.schedule) font="-exact-subheadline" color="-exact-secondary-label"
-                    if j.error != ""
-                      text j.error font="-exact-footnote" color="-exact-system-red" line-clamp=2 user-select="text" testId=`routine-error-${j.id}`
+                  row gap=8 align-items="center" padding="8px 4px 8px 16px" testId=`routine-${j.id}`
+                    column gap=2 flex=1 min-width=0
+                      row gap=8 align-items="baseline"
+                        text j.name font="-exact-headline" color=(j.status == "paused" ? "-exact-secondary-label" : "-exact-label") flex=1 min-width=0
+                        text (j.status == "failed" ? (j.streak > 1 ? `Failed ${j.streak} times` : "Failed") : j.status == "paused" ? "Paused" : j.next != "" ? `Next ${j.next}` : "")
+                          font="-exact-footnote" color=routineColor(j.status) flex-shrink=0 testId=`routine-status-${j.id}`
+                      text (j.last != "" ? `${j.schedule} · ran ${j.last}` : j.schedule) font="-exact-subheadline" color="-exact-secondary-label"
+                      if j.error != ""
+                        text j.error font="-exact-footnote" color="-exact-system-red" line-clamp=2 user-select="text" testId=`routine-error-${j.id}`
+                    button press=aimRoutine(j.id, j.name, j.status == "paused") popovertarget="routine-menu" appearance="none" padding=8 aria-label=`${j.name} actions`
+                      disabled=(not routineList.live or pending(filed)) flex-shrink=0 testId=`routine-more-${j.id}`
+                      image "symbol:more" color="-exact-secondary-label"
                 if routineList.live and routineList.items.length == 0
                   row justify-content="center" padding="24px 0"
                     text "No routines yet" color="-exact-secondary-label" testId="routines-empty"
-        // A first cut of Apollo's Feedback screen: every report, waiting on you first. Filters and the
-        // reply thread come later; a report opens as its card, which answers it.
+            column id="routine-menu" popover="auto" role="menu" aria-label=aimedRoutineName
+              button press=routineAct("run") popovertarget="routine-menu" popovertargetaction="hide" testId="routine-run"
+                text "Run now"
+              button press=routineAct(aimedRoutinePaused ? "resume" : "pause") popovertarget="routine-menu" popovertargetaction="hide" testId=(aimedRoutinePaused ? "routine-resume" : "routine-pause")
+                text (aimedRoutinePaused ? "Resume" : "Pause")
+              button press=routineAct("delete") destructive=true popovertarget="routine-menu" popovertargetaction="hide" testId="routine-delete"
+                text "Delete"
+        // Apollo's Feedback screen: reports by who's waiting, bug, idea or fixed. A report opens as
+        // its card, whose body is the conversation and whose Reply stays.
         if e.name == "feedback"
           column navigationKey=`${e.id}` navigationScroll="feedback" position="absolute" inset=0 display="flex" flex-direction="column"
             header display="flex" align-items="center" padding="8px 16px"
               text "Feedback" role="heading" aria-level=2
+            row role="tablist" gap=18 padding="0 16px 8px" overflow-x="auto" scrollbar-width="none" border-bottom="1px solid -exact-separator"
+              for f in feedbackList.filters key=f.id
+                button appearance="none" press=pickFeedback(f.id) role="tab" aria-selected=(feedbackFilter == f.id) flex-shrink=0 padding="6px 0" testId=`filter-${f.id}`
+                  text `${f.label} ${f.count}` font=(feedbackFilter == f.id ? "-exact-headline" : "-exact-body") color=(feedbackFilter == f.id ? "-exact-label" : "-exact-secondary-label")
             list id="feedback" appearance="auto" listStyle="plain" flex=1 min-height=0 testId="feedback"
               section
-                for f in inbox.feedback key=f.key
+                if feedbackList.items.length == 0 and feedbackList.filters.length > 0
+                  row justify-content="center" padding="24px 0"
+                    text (feedbackFilter == "waiting" ? "Nobody is waiting on a reply." : "No feedback here yet.") color="-exact-secondary-label" testId="feedback-empty"
+                for f in feedbackList.items key=f.key
                   link href=path("card", f.id) display="flex" flex-direction="column" gap=2 padding="8px 16px" testId=`feedback-${f.id}`
                     row gap=8 align-items="baseline"
                       text f.title font=(f.need != "" ? "-exact-headline" : "-exact-body") flex=1 min-width=0 line-clamp=2
@@ -1217,6 +1284,22 @@ component Apollo
                         text t.label
                         text `${t.tools} ${t.tools == 1 ? "tool" : "tools"}` font="-exact-footnote" color="-exact-secondary-label"
                       text (t.enabled ? "On" : "Off") color="-exact-secondary-label"
+              if approvalSettings.live
+                section
+                  header
+                    text "Approvals"
+                  row justify-content="space-between" gap=12
+                    text "Unanswered, denied after"
+                    text mmss(approvalSettings.timeout) color="-exact-secondary-label" font-variant-numeric="tabular-nums" testId="approval-timeout"
+                section
+                  header
+                    text "Always allowed"
+                  for a in approvalSettings.allowlist key=a
+                    text a overflow-wrap="anywhere" user-select="text" testId=`allowed-${a}`
+                  if approvalSettings.allowlist.length == 0
+                    text "None" color="-exact-secondary-label" testId="allowed-none"
+                  footer
+                    text "Hermes reads this list from config.yaml at startup."
               section
                 button press=askUnpair destructive=true testId="settings-unpair"
                   text "Unpair this phone"
@@ -1231,6 +1314,12 @@ component Apollo
         button press=allowAlways commandfor="always-allow" command="close" testId="always-confirm"
           text "Always allow"
         button commandfor="always-allow" command="close" testId="always-cancel"
+          text "Cancel"
+      dialog id="delete-routine" role="alertdialog" aria-label=`Delete ${aimedRoutineName}?`
+        text "Hermes stops running it and forgets its schedule."
+        button press=deleteRoutine destructive=true commandfor="delete-routine" command="close" testId="routine-delete-confirm"
+          text "Delete"
+        button commandfor="delete-routine" command="close" testId="routine-delete-cancel"
           text "Cancel"
       dialog id="unpair" role="alertdialog" aria-label="Unpair this phone?"
         text "You'll need a new pairing link to connect again."

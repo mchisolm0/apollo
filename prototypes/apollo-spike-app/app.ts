@@ -6,7 +6,8 @@ import type { Answer, Result, Sources, Storage, Store } from './app.contract.d.t
 import type { Card, CardAction, CardResponse } from './apollo/cloud/src/contract.ts';
 import { parseCard, parseSnapshot } from './apollo/src/features/cloud/cards.ts';
 import { previewLine } from './apollo/src/features/cloud/card-text.ts';
-import { buildInboxRows, cardOpenPlan, hermesApprovalTarget, isCardSettled, settleAction, updateSettledCards, type InboxCard, type SettledCards } from './apollo/src/features/cloud/inbox-rows.ts';
+import { buildInboxRows, cardOpenPlan, hermesApprovalTarget, isCardSettled, settleAction, unabsorbedReplies, updateSettledCards, withPendingResponses, type DeliveredReply, type InboxCard, type SettledCards } from './apollo/src/features/cloud/inbox-rows.ts';
+import { FEEDBACK_FILTERS, feedbackRows, type FeedbackFilter } from './apollo/src/features/cloud/feedback-rows.ts';
 import { liveActivityLabel, oneLine, readableOutput, settledActivityLabel, toolVerb } from './apollo/src/features/relay/activity.ts';
 import { autoSettleSessionsDue, canSettleSession, deriveSessionInbox, isSessionSnoozed, pruneSnoozedLedger, snoozeSession, unsnoozeSession, type InboxSession } from './apollo/src/features/relay/session-inbox.ts';
 import { resolveSnoozePresets } from './apollo/src/features/relay/snooze-presets.ts';
@@ -213,7 +214,7 @@ async function settleThreads(store: Store, settled: Record<string, number | null
 }
 
 const picksOf = (card: Card) => (card.picks ?? []).map((p) => ({ n: p.n, text: p.text, sub: p.sub ?? '', url: p.url ?? '', done: p.done }));
-const button = (a: CardAction) => ({ id: a.id, label: a.label, style: a.style ?? 'default', input: a.input === 'text', url: a.url ?? '' });
+const button = (a: CardAction) => ({ id: a.id, label: a.label, style: a.style ?? 'default', input: a.input === 'text', url: a.url ?? '', prefill: a.prefill ?? '' });
 const noExtras = { picks: [], meta: [], summary: '', snooze: false, need: '', command: '', runId: '', requestId: '', choices: [] } satisfies Pick<Item, 'picks' | 'meta' | 'summary' | 'snooze' | 'need' | 'command' | 'runId' | 'requestId' | 'choices'>;
 
 // The morning card as Apollo's first inbox row: its day, calendar line, up to three picks and its
@@ -261,13 +262,13 @@ function sessionItem(s: InboxSession, snoozed: boolean, now: number, ask?: Ask):
 }
 
 // The Feedback and Routines rows, under what waits on you: each says what needs a look, if anything.
-function placeRows(feedback: Item[], routines: Routine[]): Item[] {
+function placeRows(cards: readonly Card[], routines: Routine[]): Item[] {
   const row = { ...noExtras, subtitle: '', time: '', settled: false, swipe: '', count: 0, glyph: '', link: '', actions: [] };
-  const waiting = feedback.filter((f) => f.need).length;
+  const waiting = feedbackRows(cards, 'waiting').length;
   const failing = routines.filter((r) => r.status === 'failed');
   const first = failing[0];
   return [
-    ...(feedback.length ? [{ ...row, key: 'feedback', kind: 'feedback', id: 'feedback', title: 'Feedback', badge: waiting ? `${waiting} waiting on you` : '', tone: 'amber' }] : []),
+    ...(feedbackRows(cards, 'all').length ? [{ ...row, key: 'feedback', kind: 'feedback', id: 'feedback', title: 'Feedback', badge: waiting ? `${waiting} waiting on you` : '', tone: 'amber' }] : []),
     ...(routines.length ? [{ ...row, key: 'routines', kind: 'routines', id: 'routines', title: 'Routines', tone: 'red',
       badge: failing.length > 1 ? `${failing.length} failing` : first ? `${first.name} failed${first.streak > 1 ? ` ${first.streak}×` : ''}` : '' }] : []),
   ];
@@ -287,14 +288,12 @@ function inboxOf({ sessions, cards: all, pendingRunIds, asks = {}, routines = []
     if (row.kind === 'section') return { ...blank, key: `section-${row.id}`, kind: 'section', title: row.title, count: row.count ?? 0 };
     return { ...blank, key: 'caught-up', kind: 'caughtUp', title: "You're caught up", count: 0 };
   });
-  const reports = all.filter((c) => c.source === 'feedback').sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((c) => ({ ...cardItem(c, false, l, now), subtitle: previewLine(c.body) ?? '' }));
-  const feedback = [...reports.filter((r) => r.need), ...reports.filter((r) => !r.need)];
   // What waits on you comes first, then Feedback and Routines, then the rest in Apollo's order.
-  const items = [...listed.filter((it) => it.need), ...(query.trim() ? [] : placeRows(feedback, routines)), ...listed.filter((it) => !it.need)];
+  const items = [...listed.filter((it) => it.need), ...(query.trim() ? [] : placeRows(all, routines)), ...listed.filter((it) => !it.need)];
   if (query.trim() && !items.length) items.push({ ...noExtras, key: 'no-matches', kind: 'caughtUp', id: 'no-matches', title: 'No matches', subtitle: '', badge: '', tone: 'muted', time: '', settled: false, swipe: '', count: 0, glyph: '', link: '', actions: [] });
   const snoozeOptions = resolveSnoozePresets(new Date(now)).map((p) => ({ id: p.id, label: p.label, when: p.whenLabel, until: p.until }));
   // A kept row can't be swiped: settling or snoozing goes by what the connector says now.
-  return { error: '', live, items: live ? items : items.map((it) => ({ ...it, swipe: '', snooze: false })), snoozeOptions, feedback };
+  return { error: '', live, items: live ? items : items.map((it) => ({ ...it, swipe: '', snooze: false })), snoozeOptions };
 }
 
 async function inbox(showSettled: boolean, showSnoozed: boolean, query: string, now: number, store: Store, storage: Storage): Promise<Inbox> {
@@ -303,7 +302,7 @@ async function inbox(showSettled: boolean, showSnoozed: boolean, query: string, 
     const [{ sessions, runs }, cloudCredential, jobs] = await Promise.all([sessionsAndRuns(store, storage), cloud(store), routines(store, now)]);
     let cards = cardsSeen, cloudError = '';
     if (cloudCredential) {
-      try { cards = [...(parseSnapshot(await request(cloudCredential.url, cloudCredential.token, '/v1/cards'))?.cards ?? cards)]; cardsSeen = cards; cardsLive = true; }
+      try { cards = [...(parseSnapshot(await request(cloudCredential.url, cloudCredential.token, '/v1/cards'))?.cards ?? cards)]; cardsSeen = cards; cardsLive = true; delivered = unabsorbedReplies(cards, delivered); }
       catch (e) { cloudError = `Cards: ${message(e)}`; }
     }
     const derived = deriveSessionInbox('hermes', { sessions, runs, events: [] }, {}, l.read);
@@ -323,13 +322,13 @@ async function inbox(showSettled: boolean, showSnoozed: boolean, query: string, 
     const inputs: InboxInputs = { sessions: sessionsSeen, cards, pendingRunIds, asks, routines: jobs.items };
     await writeCache(storage, INBOX_CACHE, inputs);
     return { ...inboxOf(inputs, l, showSettled, showSnoozed, query, now, true), error: cloudError };
-  } catch (e) { return { error: e instanceof Unpaired ? '' : message(e), live: false, items: [], snoozeOptions: [], feedback: [] }; }
+  } catch (e) { return { error: e instanceof Unpaired ? '' : message(e), live: false, items: [], snoozeOptions: [] }; }
 }
 
 // The last inbox this phone saw, drawn until the live one lands. Its cards stand in for the card
 // screen until then too, marked not live.
 async function savedInbox(paired: boolean, showSettled: boolean, showSnoozed: boolean, query: string, now: number, storage: Storage): Promise<Inbox> {
-  const none: Inbox = { error: '', live: false, items: [], snoozeOptions: [], feedback: [] };
+  const none: Inbox = { error: '', live: false, items: [], snoozeOptions: [] };
   if (!paired) return none;
   const inputs = await readCache<InboxInputs>(storage, INBOX_CACHE);
   if (!inputs) return none;
@@ -337,11 +336,26 @@ async function savedInbox(paired: boolean, showSettled: boolean, showSnoozed: bo
   return inboxOf(inputs, await state(storage), showSettled, showSnoozed, query, now, false);
 }
 
+// ---- Feedback: player reports by Apollo's filters, from the cards the inbox last read ----
+
+async function feedbackList(filter: string, now: number, storage: Storage) {
+  const l = await state(storage);
+  const ids = Object.keys(FEEDBACK_FILTERS) as FeedbackFilter[];
+  const chosen = ids.find((id) => id === filter) ?? 'waiting';
+  return {
+    filters: ids.map((id) => ({ id, label: FEEDBACK_FILTERS[id], count: feedbackRows(cardsSeen, id).length })),
+    items: feedbackRows(cardsSeen, chosen).map((c) => ({ ...cardItem(c, false, l, now), subtitle: previewLine(c.body) ?? '' })),
+  };
+}
+
 // ---- Cards ----
+
+// Text replies the cloud took, shown under the card until its producer writes them into the body.
+let delivered: readonly DeliveredReply[] = [];
 
 const emptyCard: CardView = {
   found: false, id: '', kind: '', source: '', title: '', body: '', plainText: false, outcome: '', url: '', threadId: '', open: false, settled: false,
-  swipe: '', meta: [], metrics: [], picks: [], actions: [], progress: '', progressValue: 0, error: '', live: false,
+  swipe: '', meta: [], metrics: [], picks: [], actions: [], progress: '', progressValue: 0, replies: [], error: '', live: false,
 };
 
 async function cardView(id: string, storage: Storage): Promise<CardView> {
@@ -354,6 +368,7 @@ async function cardView(id: string, storage: Storage): Promise<CardView> {
     await save(storage);
   }
   const settled = isCardSettled(card, settledCards(l));
+  const replies = withPendingResponses([card], [], delivered)[0]?.replies ?? [];
   const answered = card.resolution ? card.actions?.find((a) => a.id === card.resolution!.actionId)?.label ?? card.resolution.actionId : '';
   const unanswered = card.state === 'open' && !card.resolution;
   return {
@@ -366,7 +381,7 @@ async function cardView(id: string, storage: Storage): Promise<CardView> {
     picks: picksOf(card),
     actions: unanswered || card.actions?.some((a) => a.repeat) ? (card.actions ?? []).filter((a) => unanswered || a.repeat).map(button) : [],
     progress: card.progress ? `${card.progress.label} · ${card.progress.step} of ${card.progress.of}` : '', progressValue: card.progress ? card.progress.step / Math.max(1, card.progress.of) : 0,
-    error: '', live: cardsLive,
+    replies: [...replies], error: '', live: cardsLive,
   };
 }
 
@@ -374,7 +389,10 @@ async function respond(store: Store, cardId: string, response: CardResponse) {
   const c = await cloud(store);
   if (!c) throw new Error('Cards are not set up on this connector.');
   try {
-    const body = await request(c.url, c.token, `/v1/cards/${encodeURIComponent(cardId)}/respond`, { method: 'POST', body: response, headers: { 'Idempotency-Key': crypto.randomUUID() } });
+    const key = crypto.randomUUID();
+    const before = cardsSeen.find((x) => x.id === cardId)?.body;
+    const body = await request(c.url, c.token, `/v1/cards/${encodeURIComponent(cardId)}/respond`, { method: 'POST', body: response, headers: { 'Idempotency-Key': key } });
+    if (response.text) delivered = [...delivered, { key, cardId, text: response.text, body: before }];
     const card = parseCard(body);
     if (card) cardsSeen = cardsSeen.map((x) => (x.id === card.id ? card : x));
   } catch (e) {
@@ -452,7 +470,7 @@ function toRows(rows: readonly TranscriptRow[]): Row[] {
 
 const emptyThread: Thread = {
   id: '', live: false, title: '', rows: [], runId: '', status: '', active: false, ended: false, error: '',
-  approvalId: '', approvalTitle: '', approvalCommand: '', approvalReason: '', approvalChoices: [], settled: false, canSettle: false, autoSettle: true, activityAt: 0, recent: [], model: '',
+  approvalId: '', approvalTitle: '', approvalCommand: '', approvalReason: '', approvalChoices: [], approvalDeadline: 0, settled: false, canSettle: false, autoSettle: true, activityAt: 0, recent: [], model: '',
 };
 
 // The tiers Hermes offers for this request, in its order; a request without them gets its two always-safe ones.
@@ -461,6 +479,28 @@ const approvalChoices = (choices: unknown) => {
   const offered = Array.isArray(choices) ? CHOICES.filter((c) => choices.includes(c)) : [];
   return offered.length ? offered : ['once', 'deny'];
 };
+
+// How long Hermes waits on an approval before it denies it (`approvals.timeout`), from the
+// connector once a launch; 0 when the connector can't say.
+let approvalTimeout: number | undefined;
+async function approvalTimeoutSeconds(store: Store): Promise<number> {
+  if (approvalTimeout !== undefined) return approvalTimeout;
+  try { return (approvalTimeout = num((await api(store, '/v1/apollo/approvals')).timeout_seconds) ?? 0); }
+  catch (e) { if ((e as { status?: number }).status === 404) approvalTimeout = 0; return 0; }
+}
+// Requests this phone answered, so one that closed without an answer from here can be told apart.
+const answeredHere = new Set<string>();
+// Requests Hermes closed unanswered once their time ran out, kept for the thread until the next send.
+const expiredAsks = new Map<string, Row[]>();
+const ENDS_ASK = new Set(['approval.responded', 'run.completed', 'run.failed', 'run.cancelled', 'run.interrupted']);
+const requestIdOf = (a: Record<string, unknown> | undefined) => str(a?.request_id) ?? str(a?.requestId) ?? '';
+// An expired request shows after the turn's activity, where Hermes asked it, ahead of the answer.
+function withExpired(rows: Row[], sessionId: string): Row[] {
+  const asks = expiredAsks.get(sessionId) ?? [];
+  if (!asks.length) return rows;
+  const at = rows.map((r) => r.kind).lastIndexOf('activity') + 1 || rows.length;
+  return [...rows.slice(0, at), ...asks, ...rows.slice(at)];
+}
 
 // Steers this phone sent into a running turn, drawn under it until Hermes's history has them, and
 // what Hermes said it never delivered (`pending_steer` on a terminal event), until the next send.
@@ -543,13 +583,14 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
         steers.delete(runId);
         steeredRun.delete(sessionId);
       }
-      const thread: Thread = { ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", recent, title, rows: withSteers(rows, sessionId, '') };
-      // The kept copy leaves out the undelivered note, which lasts only until the next send.
-      await keepThread(storage, l, { ...thread, recent: [], rows: thread.rows.filter((r) => !r.id.startsWith('undelivered-')).slice(-KEEP_ROWS) });
+      const thread: Thread = { ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", recent, title, rows: withSteers(withExpired(rows, sessionId), sessionId, '') };
+      // The kept copy leaves out the undelivered and expired notes, which last only until the next send.
+      await keepThread(storage, l, { ...thread, recent: [], rows: thread.rows.filter((r) => !r.id.startsWith('undelivered-') && !r.id.startsWith('expired-')).slice(-KEEP_ROWS) });
       await save(storage);
       return thread;
     }
     await save(storage);
+    const timeout = await approvalTimeoutSeconds(store);
     const { endpoint, token } = await credential(store);
     const events: HermesRunEvent[] = [];
     const seen = new Set<string>();
@@ -560,12 +601,24 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       const approval = running ? currentApproval(events, current) : undefined;
       const command = str(approval?.command) ?? str(approval?.preview);
       const rows = project({ history: messages, events, runId, runStartedAt: current.createdAt, runEndedAt: current.updatedAt, runStatus: current.status, runOutput: current.output, running });
-      const requestId = str(approval?.request_id) ?? approval?.requestId ?? '';
+      const requestId = requestIdOf(approval);
       // The request where it happened in the transcript; the pinned copy above the composer answers it.
       const asked: Row[] = approval && command ? [{ id: `approval-${requestId}`, kind: 'approval', text: command, table: [], status: '', summary: approval.description ?? '', running: false, startedAt: 0, steps: [] }] : [];
+      // Hermes denies a request after `timeout` seconds from when it asked. One that closed that late
+      // without an answer from here expired; one closed sooner was answered elsewhere.
+      const askedAt = events.find((e) => e.event === 'approval.request' && requestIdOf(e) === requestId)?.timestamp;
+      const expired = timeout ? events.flatMap((e, i): Row[] => {
+        const id = requestIdOf(e), at = e.timestamp;
+        if (e.event !== 'approval.request' || at === undefined || id === requestId || answeredHere.has(id)) return [];
+        const closed = events.slice(i + 1).find((x) => ENDS_ASK.has(x.event))?.timestamp;
+        const shown = str(e.command) ?? str(e.preview) ?? '';
+        return closed !== undefined && closed >= at + timeout - 1 && shown ? [{ ...plain, id: `expired-${id}`, kind: 'approval', text: shown, status: 'expired', summary: str(e.description) ?? '' }] : [];
+      }) : [];
+      if (expired.length) expiredAsks.set(sessionId, expired);
       return {
-        ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", canSettle: false, recent, title, rows: [...withSteers(toRows(rows), sessionId, runId), ...asked], runId, status: current.status, active: running, ended: !running, error,
-        ...(approval && command ? { approvalId: requestId, approvalTitle: approval.tool ? `Allow ${approval.tool}?` : 'Allow this command?', approvalCommand: command, approvalReason: approval.description ?? '', approvalChoices: approvalChoices(approval.choices) } : {}),
+        ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", canSettle: false, recent, title, rows: [...withSteers(withExpired(toRows(rows), sessionId), sessionId, runId), ...asked], runId, status: current.status, active: running, ended: !running, error,
+        ...(approval && command ? { approvalId: requestId, approvalTitle: approval.tool ? `Allow ${approval.tool}?` : 'Allow this command?', approvalCommand: command, approvalReason: approval.description ?? '', approvalChoices: approvalChoices(approval.choices),
+          approvalDeadline: timeout && askedAt !== undefined ? (askedAt + timeout) * 1000 : 0 } : {}),
       };
     };
     const take = (data: string) => {
@@ -699,13 +752,14 @@ async function start(store: Store, storage: Storage, sessionId: string, text: st
   l.runs[sessionId] = String(run.run_id);
   // A new message starts over: what the last run left undelivered was said, and its steers are done.
   undelivered.delete(sessionId);
+  expiredAsks.delete(sessionId);
   const last = steeredRun.get(sessionId);
   if (last) steers.delete(last);
   steeredRun.delete(sessionId);
   await save(storage);
 }
 
-// ---- Routines: Hermes's cron jobs, read-only ----
+// ---- Routines: Hermes's cron jobs ----
 
 type Routines = Result<'routines'>;
 const WEEKDAYS = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
@@ -732,7 +786,8 @@ function scheduleLabel(display: string): string {
 
 const until = (seconds: number, now: number) => {
   const s = seconds - now / 1000;
-  if (s < 0) return 'due';
+  // A job made due by Run now waits for Hermes's next scheduler tick, so just past due reads soon.
+  if (s < -60) return 'due';
   if (s < 60) return 'soon';
   if (s < 3600) return `in ${Math.floor(s / 60)}m`;
   if (s < 86400) return `in ${Math.floor(s / 3600)}h`;
@@ -791,6 +846,7 @@ const sources: Sources = {
       const saved: Credential = { endpoint, token: String(body.access_token), label: str(descriptor.label) ?? 'Hermes', ...(str(grant?.url) && str(grant?.token) ? { cloud: { url: String(grant!.url).replace(/\/$/, ''), token: String(grant!.token) } } : {}) };
       await store.set(SECRET, JSON.stringify(saved));
       cloudAsked = false;
+      approvalTimeout = undefined;
       return ok;
     } catch (e) { return failed(e); }
   },
@@ -800,8 +856,8 @@ const sources: Sources = {
     await Promise.all([INBOX_CACHE, ...l.cached.map(threadCache)].map((path) => storage.fs.rm(path).catch(() => {})));
     local = fresh();
     await save(storage);
-    sessionsSeen = []; cardsSeen = []; cardsLive = false;
-    steers.clear(); undelivered.clear(); rowsSeen.clear(); steeredRun.clear();
+    sessionsSeen = []; cardsSeen = []; cardsLive = false; delivered = []; approvalTimeout = undefined;
+    steers.clear(); undelivered.clear(); rowsSeen.clear(); steeredRun.clear(); expiredAsks.clear(); answeredHere.clear();
     return ok;
   },
   inbox: ([, , showSettled, showSnoozed, query, now], store, storage) => { setClock(now); return inbox(showSettled, showSnoozed, query, now, store, storage); },
@@ -884,9 +940,34 @@ const sources: Sources = {
   },
   // The Routines screen's list, asked only while it's open (the inbox reads its own row).
   routines: async ([open, , now], store) => (open ? routines(store, now) : { error: '', live: false, items: [] }),
+  // Pause, resume, run now or delete one routine on Hermes.
+  routineAction: async ([id, act], store) => {
+    try {
+      const job = `/api/jobs/${encodeURIComponent(id)}`;
+      await api(store, act === 'delete' ? job : `${job}/${act}`, { method: act === 'delete' ? 'DELETE' : 'POST' });
+      return ok;
+    } catch (e) { return failed((e as { code?: string }).code === 'not_found' ? new Error('This connector cannot change routines yet.') : e); }
+  },
+  feedback: ([open, filter, , , now], _store, storage) => (open ? feedbackList(filter, now, storage) : Promise.resolve({ filters: [], items: [] })),
+  // Read only while Settings is open: Hermes's approval timeout and its always-allow list.
+  approvals: async ([open], store) => {
+    if (!open) return { timeout: 0, allowlist: [], live: false, error: '' };
+    try {
+      const body = await api(store, '/v1/apollo/approvals');
+      const list = Array.isArray(body.command_allowlist) ? body.command_allowlist.filter((x): x is string => typeof x === 'string') : [];
+      return { timeout: num(body.timeout_seconds) ?? 0, allowlist: list, live: true, error: '' };
+    } catch (e) {
+      const status = (e as { status?: number }).status;
+      return { timeout: 0, allowlist: [], live: false, error: e instanceof Unpaired || status === 404 ? '' : message(e) };
+    }
+  },
   stopRun: async ([runId], store) => { try { await api(store, `/v1/runs/${encodeURIComponent(runId)}/stop`, { method: 'POST' }); return ok; } catch (e) { return failed(e); } },
   answerApproval: async ([runId, requestId, choice], store) => {
-    try { await api(store, `/v1/runs/${encodeURIComponent(runId)}/approval`, { method: 'POST', body: { choice, ...(requestId ? { request_id: requestId } : {}) } }); return ok; }
+    try {
+      await api(store, `/v1/runs/${encodeURIComponent(runId)}/approval`, { method: 'POST', body: { choice, ...(requestId ? { request_id: requestId } : {}) } });
+      answeredHere.add(requestId);
+      return ok;
+    }
     catch (e) { return failed(e); }
   },
   // Settle or reopen a thread on the connector, shared with every paired phone.
