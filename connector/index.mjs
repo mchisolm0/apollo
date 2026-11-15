@@ -3,6 +3,7 @@ import { generateThreadTitle } from './thread-title.mjs';
 import { createExpoPushSender, createRunNotificationMonitor, parseNotificationRegistration } from './notifications.mjs';
 import { createApprovalBridge, createCloudClient, loadCloudConfig } from './cloud.mjs';
 import { createPreviewFiller } from './session-preview.mjs';
+import { readApprovalConfig } from './hermes-config.mjs';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { execFile } from "node:child_process";
@@ -23,6 +24,7 @@ const EXCHANGE_PATH = "/v1/pair/exchange";
 const PROXY_ROUTES = new Set([
   "GET /v1/health", "GET /v1/models", "GET /v1/capabilities", "GET /v1/skills", "GET /v1/toolsets",
   "GET /api/model/options", "GET /api/jobs",
+  "POST /api/jobs/:id/pause", "POST /api/jobs/:id/resume", "POST /api/jobs/:id/run", "DELETE /api/jobs/:id",
   "POST /v1/chat/completions", "POST /v1/responses", "GET /v1/responses/:id", "DELETE /v1/responses/:id",
   "POST /v1/runs", "GET /v1/runs/:id", "GET /v1/runs/:id/events", "POST /v1/runs/:id/approval",
   "POST /v1/runs/:id/steer", "POST /v1/runs/:id/stop",
@@ -120,6 +122,8 @@ function validProxyRoute(method, pathname) {
     new RegExp(`^DELETE /v1/responses/${id}$`, "u").test(exact) && method === "DELETE" ||
     new RegExp(`^GET /v1/runs/${id}(?:/events)?$`, "u").test(exact) && method === "GET" ||
     new RegExp(`^POST /v1/runs/${id}/(?:approval|steer|stop)$`, "u").test(exact) && method === "POST" ||
+    new RegExp(`^POST /api/jobs/${id}/(?:pause|resume|run)$`, "u").test(exact) ||
+    new RegExp(`^DELETE /api/jobs/${id}$`, "u").test(exact) ||
     new RegExp(`^(?:GET|PATCH|DELETE) /api/sessions/${id}$`, "u").test(exact) && ["GET", "PATCH", "DELETE"].includes(method) ||
     new RegExp(`^GET /api/sessions/${id}/messages$`, "u").test(exact) && method === "GET" ||
     new RegExp(`^POST /api/sessions/${id}/(?:fork|chat|chat/stream|model)$`, "u").test(exact) && method === "POST"
@@ -442,6 +446,14 @@ export function createConnectorServer(options = {}) {
     finally { titleBusy = false; }
   }
 
+  // What Hermes's config.yaml says about approvals: how long one waits before Hermes denies it, and
+  // the patterns "Always allow" saved. Read-only: Hermes loads the list only at startup.
+  async function approvals(req, res) {
+    if (!await authenticateDevice(req)) return error(res, 401, "device authentication required", "unauthorized");
+    if (req.method !== "GET") return error(res, 405, "method not allowed");
+    return json(res, 200, await readApprovalConfig(options.hermesConfigPath));
+  }
+
   async function inbox(req, res) {
     if (!await authenticateDevice(req)) return error(res, 401, "device authentication required", "unauthorized");
     if (req.method === "GET") {
@@ -592,6 +604,7 @@ export function createConnectorServer(options = {}) {
       const attachmentRoute = url.pathname.match(/^\/v1\/apollo\/attachments(?:\/([a-f0-9-]{36}))?$/);
       if (attachmentRoute) return await attachmentRequest(req, res, url, attachmentRoute[1]);
       if (url.pathname === "/v1/inbox") return await inbox(req, res);
+      if (url.pathname === "/v1/apollo/approvals") return await approvals(req, res);
       return proxy(req, res, url);
     } catch (cause) {
       if (!res.headersSent) error(res, cause.status ?? 500, cause.message ?? "internal connector error", "internal_error");
