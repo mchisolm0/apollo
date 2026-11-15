@@ -37,7 +37,7 @@ Paired tests run on iOS because a thread streams its run (`exactStream`), which 
 allows before the data function's first await.
 
 Add a paired test for each new flow. The fixture's inputs: a message containing `approval` asks to
-run a command with every tier, `approval once only` offers only once and deny, `hold` runs until
+run a command with every tier, `approval once only` offers only once and deny, `approval expires` is denied by Hermes unanswered a second later (Hermes's timeout is 300 s, so a countdown test moves the clock with `epoch now` and `clock +310000`), `hold` runs until
 stopped or steered (Hermes refuses a steer saying `too late`, hands back `never mind` undelivered, saves a steer at once in a `hold quick` run and after 5 s in a `hold slow` one), `storm` floods 2,000 deltas. Wait on a run with
 `clock until state thread.status == "completed" within 5000`, never real sleeps. Give every new
 control a `testId`.

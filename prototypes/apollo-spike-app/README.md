@@ -8,7 +8,13 @@ The inbox puts what waits on you first, answerable from the row (a thread's comm
 card to answer), then one row each for Feedback (player reports) and Routines, then the threads.
 Search and New Thread sit at the bottom. In a thread an approval shows where it was asked and is
 pinned above the composer; More holds the wider tiers. As in Apollo, only runs this phone started
-can ask from the inbox. Feedback lists reports without Apollo's filters or reply thread yet.
+can ask from the inbox. A pinned approval counts down to Hermes's timeout (`approvals.timeout`, read
+from the connector) and reads Expired once it passes; one Hermes denied unanswered stays in the
+thread as expired. Feedback has Apollo's filters, and a report's card shows its conversation with
+replies sent from here until the producer writes them in. Routines can be paused, resumed, run now
+or deleted. A card action with `prefill` opens its reply with that draft to edit, so an agent's
+email or Slack draft is a card with Send (`input: 'text'`, `prefill`) and Discard. Settings shows the
+approval timeout and Hermes's always-allow list, read-only.
 
 ## On the phone
 
@@ -34,7 +40,8 @@ bun exact.mjs ios --sim <udid>    # or: bun exact.mjs mac --run
 ```
 
 Needs `~/code/exact` set up with Bun 1.4.2, and `~/.swiftly/bin` off PATH (its Swift 6.3.2
-crashes on the Xcode 27.2 SDK). Fixture inputs: `approval`, `hold`, `refuse` (422), `storm` (2,000 deltas).
+crashes on the Xcode 27.2 SDK). Fixture inputs: `approval` (`approval expires`: Hermes denies it a
+second later), `hold`, `refuse` (422), `storm` (2,000 deltas).
 
 ## Findings
 
