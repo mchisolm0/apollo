@@ -111,8 +111,9 @@ function answer(run) {
   stream(run, ANSWER, 35);
 }
 
-// Hermes denies a request nobody answers within the timeout. "approval expires" stands in for one
-// asked a timeout ago: it is stamped that far back, so Hermes denies it a second later.
+// As Hermes: a request nobody answers within the timeout fails closed with no approval event; the
+// run goes back to running and the turn ends as usual. "approval expires" stands in for one asked
+// a timeout ago: it is stamped that far back, so it times out a second later.
 function ask(run, approval) {
   run.status = "waiting_for_approval";
   run.approval = approval;
@@ -121,7 +122,6 @@ function ask(run, approval) {
   setTimeout(() => {
     if (run.approval?.request_id !== approval.request_id) return;
     run.approval = undefined; run.status = "running";
-    emit(run, "approval.responded", { choice: "deny" });
     stream(run, "Nobody answered in time, so I left the build folder alone.", 35);
   }, late ? 1000 : APPROVAL_TIMEOUT * 1000);
 }
@@ -344,5 +344,5 @@ console.log(`Connector: ${base}  Fake Hermes: http://${HOST}:${HERMES_PORT}`);
 console.log(`Pairing link (15 min, once): ${await pairingLink()}`);
 console.log(`Another: curl -s -X POST http://${HOST}:${HERMES_PORT}/__spike/pair`);
 console.log(`Reusable test link (resets the seed): apollo://pair?host=${encodeURIComponent(base)}#token=fixture`);
-console.log(`Inputs: "approval" asks to run a command ("approval once only": no thread or always tier, "approval expires": Hermes denies it a second later), "hold" runs until stopped or steered (a steer saying "too late" is refused, "never mind" comes back undelivered), "storm" floods 2,000 deltas.`);
+console.log(`Inputs: "approval" asks to run a command ("approval once only": no thread or always tier, "approval expires": it times out a second later), "hold" runs until stopped or steered (a steer saying "too late" is refused, "never mind" comes back undelivered), "storm" floods 2,000 deltas.`);
 process.on("SIGINT", async () => { await connector.close(); await new Promise((resolve) => hermes.close(resolve)); process.exit(0); });
