@@ -321,3 +321,15 @@ test('attachment uploads send raw bytes with the name in the query and surface c
     { status: 413, message: 'Choose a file no larger than 25 MB.' },
   );
 });
+
+test('away mode reads and sets through the connector, and an older connector hides it', async () => {
+  const seen: { url?: string; init?: RequestInit }[] = [];
+  assert.deepEqual(plain(await clientWith({ on: false, denied: 0, reported: true }, seen).awayMode(false)), { on: false, denied: 0, reported: true });
+  assert.equal(seen[0]?.url, 'https://agent.example.ts.net/v1/apollo/away');
+  assert.equal(seen[0]?.init?.method, 'PUT');
+  assert.equal(seen[0]?.init?.body, '{"on":false}');
+  const older = new HermesClient({ endpoint: 'https://agent.example.ts.net', token: 'token', fetchImpl: (async () =>
+    new Response(JSON.stringify({ error: { code: 'not_found' } }), { status: 404 })) as typeof fetch });
+  assert.equal(await older.awayMode(), undefined);
+  await assert.rejects(clientWith({ on: 'yes', denied: 0 }).awayMode(), /invalid/);
+});

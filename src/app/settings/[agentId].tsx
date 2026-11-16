@@ -1,12 +1,13 @@
 import { useThemedStyles, type RelayPalette } from '@/features/relay/relay-ui';
 import * as Device from 'expo-device';
 import { Redirect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useEffect, useState } from 'react';
 import { Alert, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AgentSettingsScreen } from '@/features/relay';
 import type { RelayAgent } from '@/features/relay';
-import { useApollo } from '@/lib';
+import { useApollo, type AwayMode } from '@/lib';
 import { useCloud, type CloudStatus } from '@/features/cloud/cloud-context';
 
 const cloudLabels = { off: 'Not set up', connecting: 'Connecting', live: 'Connected', offline: 'Offline', revoked: 'Access revoked' } as const satisfies Record<CloudStatus, string>;
@@ -15,8 +16,28 @@ export default function SettingsRoute() {
   const styles = useThemedStyles(createStyles);
   const { agentId } = useLocalSearchParams<{ agentId: string }>();
   const router = useRouter();
-  const { agents, runtime, refreshAgent, removeAgent, renameAgent } = useApollo();
+  const { agents, runtime, refreshAgent, removeAgent, renameAgent, awayMode } = useApollo();
   const cloud = useCloud();
+  const [away, setAway] = useState<AwayMode>();
+  const [awayBusy, setAwayBusy] = useState(false);
+  const connected = runtime[agentId]?.status === 'connected';
+  useEffect(() => {
+    if (!connected) return;
+    let current = true;
+    // Older connectors and offline agents leave the row hidden.
+    void awayMode(agentId).then((value) => { if (current) setAway(value); }).catch(() => {});
+    return () => { current = false; };
+  }, [agentId, awayMode, connected]);
+  const changeAway = (on: boolean) => {
+    setAwayBusy(true);
+    void awayMode(agentId, on)
+      .then((value) => {
+        setAway(value);
+        if (!on && value && value.denied > 0) Alert.alert('Not in the inbox yet', `${value.denied} denied while away. Retry from here.`);
+      })
+      .catch((error: unknown) => Alert.alert('Could not change away mode', error instanceof Error ? error.message : 'Try again.'))
+      .finally(() => setAwayBusy(false));
+  };
   const agent = agents.find((candidate) => candidate.id === agentId);
   if (!agent) return <Redirect href="/" />;
   const connectCloud = () => void cloud.connect(agent.id).catch((error: unknown) => Alert.alert('Could not set up the cloud inbox', error instanceof Error ? error.message : 'Try again.'));
@@ -70,6 +91,7 @@ export default function SettingsRoute() {
         onNotifications={() => router.push({ pathname: "/notifications/[agentId]", params: { agentId } })}
         onToolsets={() => router.push({ pathname: '/toolsets/[agentId]', params: { agentId } })}
         cloudInbox={cloudInbox}
+        away={away ? { on: away.on, denied: away.denied, busy: awayBusy, onChange: changeAway } : undefined}
       />
     </SafeAreaView>
   );

@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { ConnectionMark, connectionLabels, RelayButton, RelayInput, useColors, useRelayStyles, useThemedStyles, type RelayPalette } from './relay-ui';
-import { SettingRow, SettingSection, SettingsHeader } from './settings-ui';
+import { SettingRow, SettingSection, SettingsHeader, useSettingStyles } from './settings-ui';
 import type { RelayAgent } from './types';
 
 export type AgentSettingsScreenProps = {
@@ -20,12 +20,15 @@ export type AgentSettingsScreenProps = {
   platform?: string;
   /** Cloud inbox status for this phone; `onPress` sets it up or reconnects. */
   cloudInbox?: { value: string; action?: string; onPress?: () => void };
+  /** The connector's away mode; `denied` counts denials not yet posted to the inbox. Absent on older connectors. */
+  away?: { on: boolean; denied: number; busy: boolean; onChange: (on: boolean) => void };
 };
 
 /** One agent's connection and pairing details, opened from the agent picker. App-wide preferences live in AppSettingsScreen. */
-export function AgentSettingsScreen({ agent, deviceName, pairedAt, onBack, onTestConnection, connectionError, onRename, onForgetAgent, onNotifications, onToolsets, defaultModel, platform, cloudInbox }: AgentSettingsScreenProps) {
+export function AgentSettingsScreen({ agent, deviceName, pairedAt, onBack, onTestConnection, connectionError, onRename, onForgetAgent, onNotifications, onToolsets, defaultModel, platform, cloudInbox, away }: AgentSettingsScreenProps) {
   const styles = useThemedStyles(createStyles);
   const uiStyles = useRelayStyles();
+  const settingStyles = useSettingStyles();
   const colors = useColors();
   const agentPlatform = platform ?? agent.platform;
   const [name, setName] = useState(agent.name);
@@ -89,6 +92,15 @@ export function AgentSettingsScreen({ agent, deviceName, pairedAt, onBack, onTes
           {tested && !testing ? <Text accessibilityLiveRegion="polite" accessibilityRole={testFailed ? 'alert' : undefined} style={[styles.result, { color: testFailed ? colors.red : colors.secondary }]}>{testError ?? (testFailed ? connectionError ?? connectionLabels[agent.connection] : 'Connected')}</Text> : null}
         </View> : null}
 
+        {away ? <SettingSection label="Approvals">
+          <View style={settingStyles.row}>
+            <Text style={[settingStyles.rowLabel, styles.switchLabel]}>Away mode</Text>
+            <Switch trackColor={{ true: colors.cyan, false: colors.lineStrong }} thumbColor={colors.primary} accessibilityLabel="Away mode" value={away.on} disabled={away.busy} onValueChange={away.onChange} />
+          </View>
+          {!away.on && away.denied > 0 ? <SettingRow label="Not in inbox" value={`${away.denied} denied`} action="Retry" onPress={() => away.onChange(false)} /> : null}
+          <Text style={styles.help}>Denies every approval. Turning it off lists them in the inbox.</Text>
+        </SettingSection> : null}
+
         <SettingSection label="This device">
           <SettingRow label="Name" value={deviceName} />
           <SettingRow label="Notifications" value="Configure" onPress={onNotifications} />
@@ -114,6 +126,8 @@ const createStyles = (colors: RelayPalette) => StyleSheet.create({
   primaryAction: { paddingTop: 8, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 12 },
   result: { fontSize: 13, flexShrink: 1 },
   testConnection: { minHeight: 44, justifyContent: 'center' }, testConnectionText: { fontSize: 15 },
+  switchLabel: { flex: 1 },
+  help: { color: colors.secondary, fontSize: 13, lineHeight: 18 },
   dangerSection: { paddingTop: 28, gap: 10 },
   dangerHelp: { color: colors.muted, fontSize: 12, lineHeight: 17, paddingTop: 2, maxWidth: 330 },
 });

@@ -62,3 +62,7 @@ When configured:
 - Completion and failure pushes still go directly through Expo.
 
 Without the config, nothing changes.
+
+# Away mode
+
+Paired devices read `GET /v1/apollo/away` and set `PUT /v1/apollo/away` with `{ "on": true }`. Both return `{ on, since?, denied }`, where `denied` counts denials not yet posted to the inbox, and a `PUT` adds `reported`. While it is on, the connector denies every approval on the runs it watches (runs started through it) instead of posting a card or a push, and saves each one to the state file. Turning it off posts one `hermes` update card titled "Denied N approvals while away", with a pick per denial that opens its thread. If that post fails, the denials are kept and posted the next time it is turned off; without cloud config they are dropped, since each denial still shows in its thread.

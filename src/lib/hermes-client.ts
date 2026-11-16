@@ -243,6 +243,20 @@ const NO_RESPONSE = 'The agent did not respond. Check that the connector is runn
 
 export type AttachmentUpload =(url: string, headers: Record<string, string>) => Promise<{ status: number; body: string }>;
 
+/** Connector away mode: while on, the connector denies every approval, and lists them in the inbox once turned off. */
+export interface AwayMode {
+  on: boolean;
+  /** Denials not yet posted to the inbox. */
+  denied: number;
+  /** Set on a change: whether turning it off posted the summary card. */
+  reported?: boolean;
+}
+
+export function parseAwayMode(value: unknown): AwayMode {
+  if (!isJsonObject(value) || typeof value.on !== 'boolean' || typeof value.denied !== 'number') throw new Error('Away mode response was invalid');
+  return { on: value.on, denied: value.denied, ...(typeof value.reported === 'boolean' ? { reported: value.reported } : {}) };
+}
+
 export class HermesClient {
   private readonly baseUrl: string;
   private readonly token: string;
@@ -341,6 +355,18 @@ export class HermesClient {
       }
     }
     return { settled: result, config: parsedConfig };
+  }
+
+  /** Reads away mode, or sets it when `on` is given. Undefined when the connector predates it. */
+  async awayMode(on?: boolean): Promise<AwayMode | undefined> {
+    try {
+      return parseAwayMode(await this.request('/v1/apollo/away', on === undefined ? {} : {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ on }),
+      }));
+    } catch (error) {
+      if (error instanceof HermesRequestError && error.status === 404) return undefined;
+      throw error;
+    }
   }
 
   async sessionMessages(sessionId: string): Promise<readonly HermesMessage[]> {

@@ -26,10 +26,10 @@ function screenFixture(path: string, exportName: string, imports: Record<string,
         },
         useRef: () => ({ current: null }), useEffect() {}, useCallback: (fn: unknown) => fn,
       };
-      if (id === 'react-native') return { StyleSheet: { create: (value: unknown) => value }, Platform: { OS: 'ios' }, View: 'View', Text: 'Text', ScrollView: 'ScrollView', Pressable: 'Pressable', KeyboardAvoidingView: 'KeyboardAvoidingView' };
+      if (id === 'react-native') return { StyleSheet: { create: (value: unknown) => value }, Platform: { OS: 'ios' }, View: 'View', Text: 'Text', ScrollView: 'ScrollView', Pressable: 'Pressable', Switch: 'Switch', KeyboardAvoidingView: 'KeyboardAvoidingView' };
       if (id === 'react-native-safe-area-context') return { SafeAreaView: 'SafeAreaView' };
       if (id.endsWith('relay-ui')) return { RelayHeader: 'RelayHeader', RelayButton: 'RelayButton', RelayInput: 'RelayInput', useThemedStyles: () => ({}), useRelayStyles: () => ({}), useColors: () => ({}), ConnectionMark: 'ConnectionMark', connectionLabels: { connected: 'Connected', offline: 'Offline' } };
-      if (id === './settings-ui') return { SettingsHeader: 'SettingsHeader', SettingSection: 'SettingSection', SettingRow: 'SettingRow' };
+      if (id === './settings-ui') return { SettingsHeader: 'SettingsHeader', SettingSection: 'SettingSection', SettingRow: 'SettingRow', useSettingStyles: () => ({}) };
       throw new Error(`Unexpected import: ${id}`);
     },
   });
