@@ -23,7 +23,7 @@ import { errorMessage } from './protocol';
 import { AgentCatalog } from './catalog';
 import { eventTransportIdentity, isRunActive, statusAfterEvent } from './run-state';
 import { PairingClient, parsePairingLink } from './pairing';
-import { HermesClient, HermesRequestError, parseSelectedModel, sessionModelChoice, type AttachmentUpload, type RunEventSubscription } from './hermes-client';
+import { HermesClient, HermesRequestError, parseSelectedModel, sessionModelChoice, type AttachmentUpload, type AwayMode, type RunEventSubscription } from './hermes-client';
 import type {
   AgentRecord,
   InboxConfig,
@@ -83,6 +83,8 @@ export interface ApolloContextValue {
   renameAgent(agentId: string, label: string): Promise<void>;
   hasSession(agentId: string, sessionId: string): boolean;
   notificationClient(agentId: string): Promise<NotificationRegistrationClient>;
+  /** Reads this agent's away mode, or sets it when `on` is given. Undefined when its connector predates it. */
+  awayMode(agentId: string, on?: boolean): Promise<AwayMode | undefined>;
   /** Asks this agent's connector for a cloud inbox token. Undefined when the connector has no cloud configured. */
   cloudGrant(agentId: string): Promise<{ url: string; token: string } | undefined>;
 }
@@ -586,6 +588,12 @@ export function ApolloProvider({
     return client.toolsets();
   }, []);
 
+  const awayMode = useCallback(async (agentId: string, on?: boolean) => {
+    const client = clients.current.get(agentId);
+    if (!client) throw new Error('Reconnect to change away mode.');
+    return client.awayMode(on);
+  }, []);
+
   const sessionDetail = useCallback(async (agentId: string, sessionId: string, signal?: AbortSignal) => {
     const client = clients.current.get(agentId);
     if (!client) throw new Error('Reconnect to load the thread model.');
@@ -878,9 +886,10 @@ export function ApolloProvider({
     removeAgent,
     renameAgent,
     notificationClient,
+    awayMode,
     cloudGrant,
     hasSession,
-  }), [cloudGrant, toolsets, sessionDetail, resolveThreadModel, setSessionModel, saveModelSelection, steerRun, notificationClient, hasSession, saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, deleteSession, setPinned, forkSession, regenerateTitle, models, error, loading, messages, pair, refreshAgent, refreshSessions, removeAgent, renameAgent, retryAgent, runtime, sessionMessages, skills, startRun, stopRun]);
+  }), [awayMode, cloudGrant, toolsets, sessionDetail, resolveThreadModel, setSessionModel, saveModelSelection, steerRun, notificationClient, hasSession, saveInbox, agents, attachmentSource, uploadAttachment, approveRun, createSession, deleteSession, setPinned, forkSession, regenerateTitle, models, error, loading, messages, pair, refreshAgent, refreshSessions, removeAgent, renameAgent, retryAgent, runtime, sessionMessages, skills, startRun, stopRun]);
 
   return <ApolloContext.Provider value={value}>{children}</ApolloContext.Provider>;
 }

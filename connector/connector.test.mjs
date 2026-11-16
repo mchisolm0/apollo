@@ -536,6 +536,51 @@ test("an approval answered in the app thread resolves its cloud card", async (t)
   assert.equal(f.hermes.seen.some((request) => request.url === "/v1/runs/run_test/approval"), false);
 });
 
+test("away mode denies approvals without a card, and turning it off posts one summary card", async (t) => {
+  const f = await cloudFixture(); t.after(f.close);
+  const away = (on) => req(f.base, "/v1/apollo/away", { method: "PUT", headers: f.headers, body: JSON.stringify({ on }) });
+  assert.equal((await away(true)).body.on, true);
+  f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "waiting_for_approval", session_id: "session_test", approval: { request_id: "req_1", tool: "terminal", command: "git push --force" } });
+  await req(f.base, "/v1/runs", { method: "POST", headers: f.headers, body: JSON.stringify({ input: "ship", session_id: "session_test" }) });
+  await waitFor(() => f.hermes.seen.some((request) => request.url === "/v1/runs/run_test/approval"));
+  assert.deepEqual(JSON.parse(f.hermes.seen.find((request) => request.url === "/v1/runs/run_test/approval").body), { choice: "deny", request_id: "req_1" });
+  f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "running", session_id: "session_test" });
+  await waitFor(async () => (await req(f.base, "/v1/apollo/away", { headers: f.headers })).body.denied === 1);
+  assert.equal(f.cloud.seen.some((request) => request.url === "/v1/cards"), false);
+
+  f.cloud.fail = true;
+  assert.deepEqual((await away(false)).body, { on: false, since: (await f.connector.store.read()).away.since, denied: 1, reported: false });
+  f.cloud.fail = false;
+  const off = await away(false);
+  assert.equal(off.body.reported, true);
+  assert.equal(off.body.denied, 0);
+  const { agent_id: agentId } = await f.connector.store.read();
+  const card = f.cloud.seen.findLast((request) => request.url === "/v1/cards").body;
+  assert.deepEqual(card, {
+    source: "hermes", key: card.key, kind: "update", title: "Denied 1 approval while away",
+    picks: [{ n: 0, text: "git push --force", sub: "terminal", url: `apollo://session/session_test?agentId=${agentId}&runId=run_test`, done: false }],
+  });
+  assert.match(card.key, /^away-\d+$/u);
+});
+
+test("away mode needs a paired phone, takes only { on }, and works without cloud or push", async (t) => {
+  const f = await fixture({ cloud: null, notificationPollInterval: 5 }); t.after(async () => { await f.connector.close(); await f.hermes.close(); });
+  const headers = { ...await pairedHeaders(f), "content-type": "application/json" };
+  assert.equal((await req(f.base, "/v1/apollo/away")).response.status, 401);
+  for (const body of ["{}", '{"on":"yes"}', '{"on":true,"extra":1}']) {
+    assert.equal((await req(f.base, "/v1/apollo/away", { method: "PUT", headers, body })).response.status, 400);
+  }
+  // With no cloud and no push registration, away mode alone is enough to watch a run.
+  await req(f.base, "/v1/apollo/away", { method: "PUT", headers, body: '{"on":true}' });
+  f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "waiting_for_approval", session_id: "session_test", approval: { request_id: "req_1", command: "rm -rf build" } });
+  await req(f.base, "/v1/runs", { method: "POST", headers, body: JSON.stringify({ input: "clean", session_id: "session_test" }) });
+  await waitFor(() => f.hermes.seen.some((request) => request.url === "/v1/runs/run_test/approval"));
+  // Without a cloud inbox there is nowhere to list them, so nothing is left waiting to be reported.
+  const off = await req(f.base, "/v1/apollo/away", { method: "PUT", headers, body: '{"on":false}' });
+  assert.equal(off.body.reported, false);
+  assert.equal(off.body.denied, 0);
+});
+
 test("cloud config is a 0600 file that env overrides, and needs HTTPS", async () => {
   const path = join(await mkdtemp(join(tmpdir(), "apollo-cloud-")), "cloud.json");
   assert.equal(await loadCloudConfig({ path, env: {} }), null);

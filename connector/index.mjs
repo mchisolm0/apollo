@@ -2,6 +2,7 @@ import { saveAttachment, readAttachment } from './attachments.mjs';
 import { generateThreadTitle } from './thread-title.mjs';
 import { createExpoPushSender, createRunNotificationMonitor, parseNotificationRegistration } from './notifications.mjs';
 import { createApprovalBridge, createCloudClient, loadCloudConfig } from './cloud.mjs';
+import { createAwayMode } from './away.mjs';
 import { createPreviewFiller } from './session-preview.mjs';
 import { readApprovalConfig } from './hermes-config.mjs';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
@@ -210,6 +211,7 @@ export function createConnectorServer(options = {}) {
   // Set in start(): options.cloud ({ url, token } or null), else APOLLO_CLOUD_* env or the cloud file.
   let cloud = null;
   let approvalBridge = null;
+  let awayMode = null;
   let revocationTimer = null;
 
   // Cloud mint and revoke for one device run one at a time, in call order.
@@ -454,6 +456,19 @@ export function createConnectorServer(options = {}) {
     return json(res, 200, await readApprovalConfig(options.hermesConfigPath));
   }
 
+  // Away mode (away.mjs). GET reads it; PUT { on } sets it, and turning it off reports what was denied.
+  async function away(req, res) {
+    if (!await authenticateDevice(req)) return error(res, 401, "device authentication required", "unauthorized");
+    if (req.method === "GET") return json(res, 200, await awayMode.read());
+    if (req.method !== "PUT") return error(res, 405, "method not allowed");
+    const body = parseJson(await readBody(req, 1024));
+    if (typeof body?.on !== "boolean" || Object.keys(body).length !== 1) return error(res, 400, "body must be { on: boolean }");
+    const result = await awayMode.set(body.on);
+    // Turning it on matters to runs the monitor skipped because nothing else was watching.
+    if (body.on) await notificationMonitor?.registrationsChanged();
+    return json(res, 200, result);
+  }
+
   async function inbox(req, res) {
     if (!await authenticateDevice(req)) return error(res, 401, "device authentication required", "unauthorized");
     if (req.method === "GET") {
@@ -605,6 +620,7 @@ export function createConnectorServer(options = {}) {
       if (attachmentRoute) return await attachmentRequest(req, res, url, attachmentRoute[1]);
       if (url.pathname === "/v1/inbox") return await inbox(req, res);
       if (url.pathname === "/v1/apollo/approvals") return await approvals(req, res);
+      if (url.pathname === "/v1/apollo/away") return await away(req, res);
       return proxy(req, res, url);
     } catch (cause) {
       if (!res.headersSent) error(res, cause.status ?? 500, cause.message ?? "internal connector error", "internal_error");
@@ -619,7 +635,8 @@ export function createConnectorServer(options = {}) {
       const cloudConfig = options.cloud !== undefined ? options.cloud : await loadCloudConfig({ path: options.cloudConfigPath ?? defaultCloudPath(options.statePath) });
       cloud = cloudConfig ? createCloudClient({ ...cloudConfig, fetchImpl: options.fetchImpl ?? fetch }) : null;
       approvalBridge = cloud ? createApprovalBridge({ store, client: cloud, agentId: state.agent_id, answer: answerApproval, pollInterval: options.cloudPollInterval, fallbackAfter: options.cloudFallbackAfter }) : null;
-      notificationMonitor = createRunNotificationMonitor({ store, agentId: state.agent_id, fetchRun, sendPush, approvals: approvalBridge, pollInterval: options.notificationPollInterval });
+      awayMode = createAwayMode({ store, agentId: state.agent_id, answer: answerApproval, cloud: () => cloud });
+      notificationMonitor = createRunNotificationMonitor({ store, agentId: state.agent_id, fetchRun, sendPush, approvals: approvalBridge, away: awayMode, pollInterval: options.notificationPollInterval });
       await notificationMonitor.registrationsChanged();
       approvalBridge?.start();
       if (cloud) {

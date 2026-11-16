@@ -72,13 +72,16 @@ const CHOICE = { approve: "once", reject: "deny" };
 // Hermes ids are `run_<hex>` and `<hex>`; the separator can't appear in either part.
 const ID = "[A-Za-z0-9._~-]{1,256}";
 const APPROVAL_KEY = new RegExp(`^(${ID}):(${ID})$`, "u");
-const VALID_ID = new RegExp(`^${ID}$`, "u");
+export const VALID_ID = new RegExp(`^${ID}$`, "u");
 // Hermes approvals time out within minutes; this only bounds cards whose resolve kept failing.
 const ENTRY_TTL_MS = 24 * 60 * 60 * 1000;
 
+/** Opens a run's thread in Apollo. */
+export const sessionLink = (agentId, sessionId, runId) => `apollo://session/${encodeURIComponent(sessionId)}?agentId=${encodeURIComponent(agentId)}&runId=${encodeURIComponent(runId)}`;
+
 function approvalCard({ agentId, runId, sessionId, approval }) {
   const text = (value) => typeof value === "string" && value.trim() ? value.trim() : null;
-  const link = sessionId ? `apollo://session/${encodeURIComponent(sessionId)}?agentId=${encodeURIComponent(agentId)}&runId=${encodeURIComponent(runId)}` : undefined;
+  const link = sessionId ? sessionLink(agentId, sessionId, runId) : undefined;
   return {
     source: "hermes",
     key: `${runId}:${approval.request_id}`,

@@ -88,15 +88,14 @@ function wants(registration, kind) {
  * Polls runs started through the connector and pushes approval, completion and failure
  * notifications. With a cloud `approvals` bridge, approvals become cloud inbox cards
  * instead of direct pushes, and runs are watched even without a registered device.
+ * With `away` on (away.mjs), approvals are denied before either sees them.
  */
-export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPush, approvals = null, pollInterval = 2_000 }) {
+export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPush, approvals = null, away = null, pollInterval = 2_000 }) {
   const active = new Map();
   let closed = false;
 
-  async function registeredDevices() {
-    const state = await store.read();
-    return state.devices.filter((device) => !device.revoked_at && device.notifications);
-  }
+  /** Whether anything wants run statuses: the bridge, away mode, or a phone registered for push. */
+  const watching = (state) => Boolean(approvals || away?.enabled() || state.devices.some((device) => !device.revoked_at && device.notifications));
 
   async function deliver(runId, status, event) {
     const prepared = await store.update((state) => {
@@ -168,8 +167,8 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
     let deliveryAttempts = 0;
     try {
       while (!closed && active.has(runId)) {
-        if (!approvals && !(await registeredDevices()).length) return;
         const state = await store.read();
+        if (!watching(state)) return;
         const tracked = state.notification_runs?.[runId];
         if (!tracked) return;
         let status = tracked.status && TERMINAL.has(tracked.status) ? { ...tracked, run_id: runId } : null;
@@ -182,6 +181,12 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
             delay = Math.min(delay * 2, 30_000);
             continue;
           }
+        }
+        if (away?.enabled() && status.status === "waiting_for_approval") {
+          // Denied: the next status shows the run moving on. A transient failure retries the denial.
+          let denied = true;
+          try { denied = await away.deny(runId, { ...status, session_id: status.session_id ?? tracked.session_id }); } catch { /* retried below */ }
+          if (denied) { await wait(delay); continue; }
         }
         let event = eventFromStatus(status);
         if (approvals) {
@@ -208,7 +213,7 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
   }
 
   async function start(runId) {
-    if (closed || (!sendPush && !approvals) || active.has(runId) || (!approvals && !(await registeredDevices()).length)) return;
+    if (closed || (!sendPush && !approvals && !away) || active.has(runId) || !watching(await store.read())) return;
     if (closed || active.has(runId)) return;
     active.set(runId, null);
     const operation = watch(runId).catch(() => {
@@ -222,7 +227,7 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
     async trackRun(run) {
       if (!run || typeof run.run_id !== "string" || !ID.test(run.run_id)) return;
       const tracked = await store.update((state) => {
-        if (!approvals && !state.devices.some((device) => !device.revoked_at && device.notifications)) return false;
+        if (!watching(state)) return false;
         state.notification_runs = Object.assign(Object.create(null), state.notification_runs ?? {});
         state.notification_runs[run.run_id] ??= {
           run_id: run.run_id,
