@@ -43,14 +43,16 @@ export function createAwayMode({ store, agentId, answer, cloud }) {
   async function report() {
     const away = (await store.read()).away;
     if (away?.on || !away?.denied?.length) return false;
+    // A copy: a denial recorded while the card posts stays for the next report.
+    const denied = [...away.denied];
     const client = cloud();
     if (client) {
-      try { await client.upsertCard(summaryCard(agentId, away.since, away.denied)); }
+      try { await client.upsertCard(summaryCard(agentId, away.since, denied)); }
       catch { return false; }
     }
     await store.update((state) => {
       if (!state.away || state.away.on) return;
-      const reported = new Set(away.denied.map((entry) => entry.key));
+      const reported = new Set(denied.map((entry) => entry.key));
       state.away.denied = state.away.denied.filter((entry) => !reported.has(entry.key));
     });
     return Boolean(client);

@@ -7,6 +7,7 @@ import { StateStore, createConnectorServer } from "./index.mjs";
 import { createRunNotificationMonitor } from "./notifications.mjs";
 import { createPreviewFiller, previewText } from "./session-preview.mjs";
 import { loadCloudConfig, saveCloudConfig } from "./cloud.mjs";
+import { createAwayMode } from "./away.mjs";
 
 test("terminal notification retries stop and stale push results preserve a newer token", async () => {
   for (const scenario of ["unroutable", "replaced-token", "push-failure"]) {
@@ -561,6 +562,27 @@ test("away mode denies approvals without a card, and turning it off posts one su
     picks: [{ n: 0, text: "git push --force", sub: "terminal", url: `apollo://session/session_test?agentId=${agentId}&runId=run_test`, done: false }],
   });
   assert.match(card.key, /^away-\d+$/u);
+});
+
+test("a denial that lands while the away summary posts is kept for the next one", async () => {
+  const store = new StateStore(join(await mkdtemp(join(tmpdir(), "apollo-away-")), "state.json"), "Test");
+  await store.load();
+  let finishAnswer, finishPost;
+  const answers = [true, new Promise((resolve) => { finishAnswer = resolve; })];
+  const posted = [];
+  const client = { upsertCard: (card) => { posted.push(card); return new Promise((resolve) => { finishPost = resolve; }); } };
+  const away = createAwayMode({ store, agentId: "agent", answer: () => answers.shift(), cloud: () => client });
+  const waiting = (request_id) => ({ status: "waiting_for_approval", session_id: "s", approval: { request_id, command: request_id } });
+  await away.set(true);
+  await away.deny("run_a", waiting("a"));
+  const late = away.deny("run_b", waiting("b"));
+  const off = away.set(false);
+  while (!finishPost) await new Promise((resolve) => setImmediate(resolve));
+  finishAnswer(true);
+  await late;
+  finishPost({ id: "card" });
+  assert.deepEqual(await off, { on: false, since: (await store.read()).away.since, denied: 1, reported: true });
+  assert.deepEqual(posted[0].picks.map((pick) => pick.text), ["a"]);
 });
 
 test("away mode needs a paired phone, takes only { on }, and works without cloud or push", async (t) => {
