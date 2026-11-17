@@ -239,7 +239,8 @@ export const CardRow = memo(function CardRow({ card, settled, swipe, onPress, on
   // A keepOpen card stays open once answered, so its answer stands in for the buttons.
   const answer = card.pendingAction ?? (card.state === 'open' ? card.resolution?.actionId : undefined);
   const actions = approval && !answer ? cardActions(card).filter((action) => !action.url) : [];
-  const status = answer ? actionLabel(card, answer) : cardAge(card);
+  // An answer the producer hasn't written in yet (see `answerText`) is still on its way.
+  const status = answer ? card.replies?.length ? 'Sending' : actionLabel(card, answer) : cardAge(card);
   const statusColor = answer === 'approve' ? colors.green : answer === 'reject' ? colors.red : approval ? colors.amber : colors.muted;
   // Actions are siblings of the row button, not children, so VoiceOver can reach them on their own.
   const run = (action: SwipeAction) => (action === 'settle' ? onSettle : onReopen)?.(card);
@@ -249,7 +250,7 @@ export const CardRow = memo(function CardRow({ card, settled, swipe, onPress, on
       <Pressable
         {...swipeAccessibility(available, run)}
         accessibilityRole="button"
-        accessibilityLabel={`${source}: ${card.title}${answer ? `, ${actionLabel(card, answer).toLocaleLowerCase()}${card.pendingAction ? ', sending' : ''}` : approval ? ', needs you' : ''}${settled ? ', settled' : ''}`}
+        accessibilityLabel={`${source}: ${card.title}${answer ? `, ${actionLabel(card, answer).toLocaleLowerCase()}${card.pendingAction || card.replies?.length ? ', sending' : ''}` : approval ? ', needs you' : ''}${settled ? ', settled' : ''}`}
         onPress={() => onPress(card)}
         style={({ pressed }) => [styles.row, pressed && styles.pressed]}
       >

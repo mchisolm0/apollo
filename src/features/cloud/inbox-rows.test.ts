@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test, { afterEach, beforeEach, mock } from 'node:test';
 
 import type { Card } from '../../../cloud/src/contract.ts';
-import { buildInboxRows, cardOpenPlan, hermesApprovalTarget, settleAction, settleOnFirstSight, unabsorbedReplies, updateSettledCards, withPendingResponses, type InboxRowSession } from './inbox-rows.ts';
+import { answerText, buildInboxRows, deliveredReply, cardOpenPlan, hermesApprovalTarget, settleAction, settleOnFirstSight, unabsorbedReplies, updateSettledCards, withPendingResponses, type InboxRowSession } from './inbox-rows.ts';
 
 function card(id: string, kind: Card['kind'], patch: Partial<Card> = {}): Card {
   return { id, rev: 1, source: 'preview', key: id, kind, title: id, push: 'alert', state: 'open', createdAt: '2026-10-09T08:00:00Z', updatedAt: '2026-10-09T08:00:00Z', ...patch };
@@ -123,6 +123,26 @@ test('a reply shows on its card until the producer writes it into the body', () 
   // Once absorbed it's gone for good, even after it scrolls out of the producer's window.
   assert.deepEqual(unabsorbedReplies([absorbedCard], delivered), []);
   assert.equal(unabsorbedReplies([feedback], delivered), delivered);
+});
+
+test('an answer to a keepOpen approval shows as yours until its producer moves the card on', () => {
+  const question = card('q', 'approval', { source: 'fleet', keepOpen: true, body: 'Thread · mini', actions: [{ id: 'o0', label: 'Blue' }, { id: 'reply', label: 'Reply', input: 'text' }, { id: 'open', label: 'Open in T3', url: 'https://app.t3.codes' }] });
+  const [queued] = withPendingResponses([question], [{ key: 'k', cardId: 'q', response: { actionId: 'o0' } }]);
+  assert.equal(queued.pendingAction, 'o0');
+  assert.deepEqual(queued.replies, ['Blue']);
+  assert.equal(answerText(question, { actionId: 'reply', text: 'try twice' }), 'try twice');
+  // Without keepOpen a button only says how the card was answered.
+  assert.equal(answerText({ ...question, keepOpen: undefined }, { actionId: 'o0' }), undefined);
+  // Delivered, it stays until the producer rewrites the body, whatever the new body says.
+  const delivered = [deliveredReply(question, 'k', { actionId: 'o0' })!];
+  assert.equal(delivered[0].answer, true);
+  const answered = { ...question, resolution: { actionId: 'o0', by: 'phone', at: at(12) } };
+  assert.deepEqual(withPendingResponses([answered], [], delivered)[0].replies, ['Blue']);
+  assert.equal(withPendingResponses([{ ...answered, body: 'Thread · mini\n\nNot sent: already answered in T3.' }], [], delivered)[0].replies, undefined);
+  // A repeat reply on a keepOpen card still waits for its own text.
+  const chat = { ...question, actions: [{ id: 'reply', label: 'Reply', input: 'text' as const, repeat: true }] };
+  const replies = [deliveredReply(chat, 'a', { actionId: 'reply', text: 'one' })!, deliveredReply(chat, 'b', { actionId: 'reply', text: 'two' })!];
+  assert.deepEqual(withPendingResponses([{ ...chat, body: `${chat.body}\n\nYou: one` }], [], replies)[0].replies, ['two']);
 });
 
 test('opening an update settles it and a link-only update opens its link; approvals and morning cards stay', () => {

@@ -14,7 +14,7 @@ import { applyCard, applyStreamMessage, mergeSnapshot, parseCards, parseStreamMe
 import { CloudRequestError, createCloudClient, pushRegistrationKey, type CloudCredential } from './cloud-client';
 import { CARD_CACHE_KEY, SETTLED_KEY, cloudCredentialStore, loadCloudCredential, saveCloudCredential } from './cloud-credentials';
 import { ensureCloudChannels, respondQueue } from './cloud-runtime';
-import { NO_SETTLED, parseSettledCards, updateSettledCards, unabsorbedReplies, withPendingResponses, type DeliveredReply, type InboxCard, type SettledCards } from './inbox-rows';
+import { deliveredReply, NO_SETTLED, parseSettledCards, updateSettledCards, unabsorbedReplies, withPendingResponses, type DeliveredReply, type InboxCard, type SettledCards } from './inbox-rows';
 
 /** off: no credential. live: stream open. offline: retrying. revoked: the token was rejected. */
 export type CloudStatus = 'off' | 'connecting' | 'live' | 'offline' | 'revoked';
@@ -98,8 +98,8 @@ export function CloudProvider({ children }: PropsWithChildren) {
   const [delivered, setDelivered] = useState<readonly DeliveredReply[]>([]);
   useEffect(() => respondQueue.onCard((card, item) => {
     setCards((current) => applyCard(current, card));
-    const text = item?.response.text;
-    if (item && text) setDelivered((current) => [...current, { key: item.key, cardId: card.id, text, body: card.body }]);
+    const reply = item && deliveredReply(card, item.key, item.response);
+    if (reply) setDelivered((current) => [...current, reply]);
   }), [setCards]);
 
   // New credentials (Reconnect, re-pair) resume a queue paused on 401/403.

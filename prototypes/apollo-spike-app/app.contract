@@ -306,6 +306,11 @@ component Apollo
   state sentText = ""
   state sentThread = ""
   state sentFiles: string[] = []
+  // The card an answer is on its way to, and what it says, shown as yours while it is sent and
+  // through the refresh after it (revision answeredRevision), when app.ts takes over.
+  state answering = ""
+  state answeringText = ""
+  state answeredRevision = 0
   state chasing = false
   state wasHidden = false
   state feedbackFilter = "waiting"
@@ -535,10 +540,15 @@ component Apollo
     refreshAll()
   // A card answer; a reply that failed stays open to send again.
   action afterRespond
-    notice = match responded { case some(r) => r.error, case none => "" }
-    if notice == ""
+    let error = match responded { case some(r) => r.error, case none => "" }
+    notice = error
+    if error == ""
       replying = ""
       reply = ""
+      answeredRevision = revision + 1
+    else
+      answering = ""
+      answeringText = ""
     refreshAll()
 
   action answerCard(id: string, action: CardButton)
@@ -549,6 +559,8 @@ component Apollo
     else if action.url != ""
       openURL(action.url)
     else
+      answering = id
+      answeringText = action.label
       send responded = respondCard(id, action.id, "")
   action startReply(action: CardButton)
     replying = action.id
@@ -562,6 +574,8 @@ component Apollo
     reply = v
   action sendReply
     if reply.trim() != ""
+      answering = card.id
+      answeringText = reply.trim()
       send responded = respondCard(card.id, replying, reply.trim())
   action cancelReply
     replying = ""
@@ -846,7 +860,9 @@ component Apollo
                                   if it.need != ""
                                     text (it.need == "approve" ? "APPROVE" : "ANSWER") font="-exact-caption1" font-weight=600 color="-exact-system-orange" flex-shrink=0 testId=`need-${it.id}`
                                   text it.title font=(it.settled ? "-exact-body" : "-exact-headline") color=(it.settled ? "-exact-secondary-label" : "-exact-label") line-clamp=(it.settled ? 1 : 2) flex=1 min-width=0
-                                  if it.badge != "" and it.need == ""
+                                  if answering == it.id and (pending(responded) or (revision == answeredRevision and pending(liveInbox)))
+                                    text "Sending" font="-exact-footnote" color="-exact-secondary-label" flex-shrink=0 testId=`sending-${it.id}`
+                                  else if it.badge != "" and it.need == ""
                                     text it.badge font="-exact-footnote" color=toneColor(it.tone) flex-shrink=0
                                   else
                                     text it.time font="-exact-footnote" color="-exact-secondary-label" flex-shrink=0
@@ -966,6 +982,8 @@ component Apollo
                   text card.body markup="markdown" user-select="text" overflow-wrap="anywhere" testId="card-body"
               if card.replies.length > 0
                 text card.replies.map(r => `You: ${r}`).join("\n\n") white-space="pre-wrap" color="-exact-secondary-label" user-select="text" overflow-wrap="anywhere" testId="card-replies"
+              if answering == card.id and (pending(responded) or (revision == answeredRevision and pending(card)))
+                text `You: ${answeringText}` white-space="pre-wrap" color="-exact-secondary-label" user-select="text" overflow-wrap="anywhere" testId="card-sending"
             if shownError != ""
               text shownError font="-exact-footnote" color="-exact-system-red" padding="4px 16px" testId="error"
             if replying != ""
