@@ -24,3 +24,17 @@ test('interruption clears a pending decision and ends the active run', () => {
   assert.equal(statusAfterEvent(run, event).status, 'interrupted');
   assert.equal(currentApproval([event], run), undefined);
 });
+
+test('two requests at once: the older one shows once the newer is answered, until its time runs out', () => {
+  const run = { runId: 'run-1', status: 'running' } as const;
+  const older = { event: 'approval.request', request_id: 'a', command: 'ls', timestamp: 100 };
+  const newer = { event: 'approval.request', request_id: 'b', command: 'pwd', timestamp: 101 };
+  assert.equal(currentApproval([older, newer], run)?.command, 'ls');
+  assert.equal(currentApproval([older, newer, { event: 'approval.responded', request_id: 'a' }], run)?.command, 'pwd');
+  const answeredNewer = [older, newer, { event: 'approval.responded', request_id: 'b' }];
+  assert.equal(currentApproval(answeredNewer, run)?.command, 'ls');
+  assert.equal(currentApproval(answeredNewer, run, { timeoutSeconds: 300, now: 399 })?.command, 'ls');
+  assert.equal(currentApproval(answeredNewer, run, { timeoutSeconds: 300, now: 400 }), undefined);
+  // An answer without a request id settles the oldest, as Hermes does.
+  assert.equal(currentApproval([older, newer, { event: 'approval.responded' }], run)?.command, 'pwd');
+});

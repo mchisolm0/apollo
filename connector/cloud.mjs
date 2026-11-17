@@ -173,10 +173,9 @@ export function createApprovalBridge({ store, client, agentId, answer, pollInter
     });
   }
 
-  async function post(runId, key, status) {
-    const approval = status.approval;
+  async function post(runId, key, sessionId, approval) {
     try {
-      const card = await client.upsertCard(approvalCard({ agentId, runId, sessionId: status.session_id, approval }));
+      const card = await client.upsertCard(approvalCard({ agentId, runId, sessionId, approval }));
       if (typeof card?.id !== "string") throw new Error("cloud card response was invalid");
       failingSince.delete(key);
       // If the run moved on mid-post, the entry is gone or marked; either way the loop resolves this card.
@@ -197,28 +196,36 @@ export function createApprovalBridge({ store, client, agentId, answer, pollInter
       ensurePolling();
     },
     /**
-     * Called with each polled run status. Posts a card for a new approval and marks
-     * cards whose approval moved on for resolution. Resolves `{ fallback }`, true while
-     * the cloud has refused the current card for `fallbackAfter`, so the caller should
-     * push the approval directly.
+     * Called with each polled run status and the requests the run waits on (run-approvals.mjs),
+     * which default to the one on the status. Posts a card for each new request. `settled` says
+     * which of the run's other cards to resolve: those whose request id it holds, none when null,
+     * and when undefined every card whose request isn't waiting. Resolves `{ fallback }`, true
+     * while the cloud has refused a card for `fallbackAfter` or a request has no usable id, so
+     * the caller should push the approvals directly.
      */
-    async runStatus(runId, status) {
-      const approval = status.status === "waiting_for_approval" ? status.approval : null;
+    async runStatus(runId, status, asks = status.status === "waiting_for_approval" && status.approval ? [status.approval] : [], settled = undefined) {
       // Without a usable request id a card could only answer blindly, so that approval is pushed directly.
-      const blind = Boolean(approval) && !(typeof approval.request_id === "string" && VALID_ID.test(approval.request_id));
-      const key = approval && !blind ? `${runId}:${approval.request_id}` : null;
+      const usable = asks.filter((approval) => typeof approval?.request_id === "string" && VALID_ID.test(approval.request_id));
+      const blind = usable.length < asks.length;
+      const byKey = new Map(usable.map((approval) => [`${runId}:${approval.request_id}`, approval]));
       try {
-        const needsPost = await store.update((state) => {
+        const posts = await store.update((state) => {
           state.cloud_approvals ??= {};
           for (const [other, entry] of Object.entries(state.cloud_approvals)) {
-            if (entry.run_id === runId && other !== key) entry.resolve = true;
+            if (entry.run_id !== runId || byKey.has(other)) continue;
+            if (settled === undefined || settled?.has(entry.request_id)) entry.resolve = true;
           }
-          if (!key) return false;
-          state.cloud_approvals[key] ??= { run_id: runId, request_id: approval.request_id, card_id: null, created_at: new Date().toISOString() };
-          return !state.cloud_approvals[key].card_id;
+          const missing = [];
+          for (const [key, approval] of byKey) {
+            state.cloud_approvals[key] ??= { run_id: runId, request_id: approval.request_id, card_id: null, created_at: new Date().toISOString() };
+            if (!state.cloud_approvals[key].card_id) missing.push(key);
+          }
+          return missing;
         });
         ensurePolling();
-        return { fallback: needsPost ? await post(runId, key, status) : blind };
+        let fallback = blind;
+        for (const key of posts) if (await post(runId, key, status.session_id, byKey.get(key))) fallback = true;
+        return { fallback };
       } catch {
         return { fallback: blind };
       }

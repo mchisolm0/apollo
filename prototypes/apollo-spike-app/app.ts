@@ -490,6 +490,8 @@ async function approvalTimeoutSeconds(store: Store): Promise<number> {
 }
 // Requests this phone answered, so one that closed without an answer from here can be told apart.
 const answeredHere = new Set<string>();
+// Requests Hermes said are gone when this phone answered them (answered elsewhere or timed out).
+const goneAsks = new Set<string>();
 // Requests Hermes closed unanswered once their time ran out, kept for the thread until the next send.
 const expiredAsks = new Map<string, Row[]>();
 const ENDS_ASK = new Set(['approval.responded', 'run.completed', 'run.failed', 'run.cancelled', 'run.interrupted']);
@@ -640,7 +642,9 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
     const snapshot = (): Thread => {
       const current = run!;
       const running = isRunActive(current.status) && !closed;
-      const approval = running ? currentApproval(events, current) : undefined;
+      // Hermes can wait on several requests at once; the oldest still open shows first.
+      const asks = events.filter((e) => !(e.event === 'approval.request' && goneAsks.has(requestIdOf(e))));
+      const approval = running ? currentApproval(asks, current, timeout ? { timeoutSeconds: timeout, now: now / 1000 } : undefined) : undefined;
       const command = str(approval?.command) ?? str(approval?.preview);
       const rows = project({ history: messages, events, runId, runStartedAt: current.createdAt, runEndedAt: current.updatedAt, runStatus: current.status, runOutput: current.output, running });
       const requestId = requestIdOf(approval);
@@ -652,7 +656,7 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       const expired = timeout ? events.flatMap((e, i): Row[] => {
         const id = requestIdOf(e), at = e.timestamp;
         if (e.event !== 'approval.request' || at === undefined || id === requestId || answeredHere.has(id)) return [];
-        const closed = events.slice(i + 1).find((x) => ENDS_ASK.has(x.event))?.timestamp;
+        const closed = events.slice(i + 1).find((x) => ENDS_ASK.has(x.event) && (x.event !== 'approval.responded' || !requestIdOf(x) || requestIdOf(x) === id))?.timestamp;
         const shown = str(e.command) ?? str(e.preview) ?? '';
         return closed !== undefined && closed >= at + timeout - 1 && shown ? [{ ...plain, id: `expired-${id}`, kind: 'approval', text: shown, status: 'expired', summary: str(e.description) ?? '' }] : [];
       }) : [];
@@ -899,7 +903,7 @@ const sources: Sources = {
     local = fresh();
     await save(storage);
     sessionsSeen = []; cardsSeen = []; cardsLive = false; delivered = []; approvalTimeout = undefined;
-    steers.clear(); undelivered.clear(); messagesSeen.clear(); steeredRun.clear(); expiredAsks.clear(); answeredHere.clear();
+    steers.clear(); undelivered.clear(); messagesSeen.clear(); steeredRun.clear(); expiredAsks.clear(); answeredHere.clear(); goneAsks.clear();
     return ok;
   },
   inbox: ([, , showSettled, showSnoozed, query, now], store, storage) => { setClock(now); return inbox(showSettled, showSnoozed, query, now, store, storage); },
@@ -1009,7 +1013,11 @@ const sources: Sources = {
       answeredHere.add(requestId);
       return ok;
     }
-    catch (e) { return failed(e); }
+    catch (e) {
+      if ((e as { code?: string }).code !== 'approval_not_pending') return failed(e);
+      goneAsks.add(requestId);
+      return failed(new Error('That request already closed: it was answered elsewhere or ran out of time.'));
+    }
   },
   // Settle or reopen a thread on the connector, shared with every paired phone.
   settleThread: async ([sessionId, settle, now], store) => {

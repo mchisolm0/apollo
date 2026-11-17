@@ -72,6 +72,10 @@ async function startHermesStub() {
   const approvalStatuses = [];
   // sessions: the /api/sessions list body. messages[id]: a /messages body, or a status number to fail with.
   const hermesData = { sessions: { object: "list", data: [] }, messages: {} };
+  // run_test's event stream, served as SSE once a test adds events; each connection replays after Last-Event-ID and closes.
+  // eventsHold: a promise the first events request awaits, so status reads come first.
+  const runEvents = [];
+  const hermesControl = { eventsHold: null };
   const server = (await import("node:http")).createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
@@ -88,11 +92,20 @@ async function startHermesStub() {
     if (req.url === "/v1/health") return send(res, 200, { status: "ok" });
     if (req.method === "POST" && req.url === "/v1/runs") return send(res, 202, { run_id: "run_test", status: "started" });
     if (req.method === "GET" && req.url === "/v1/runs/run_test") return send(res, 200, runStatuses.get("run_test") ?? { run_id: "run_test", status: "running", session_id: "session_test" });
+    if (req.method === "GET" && req.url === "/v1/runs/run_test/events" && runEvents.length) {
+      const after = Number(req.headers["last-event-id"] ?? -1);
+      await hermesControl.eventsHold;
+      hermesControl.eventsHold = null;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(": open\n\n");
+      runEvents.forEach((event, seq) => { if (seq > after) res.write(`id: ${seq}\ndata: ${JSON.stringify({ ...event, seq })}\n\n`); });
+      return res.end();
+    }
     if (req.url === "/v1/runs/demo/events") { res.writeHead(200, { "content-type": "text/event-stream" }); res.write("event: run.completed\ndata: {}\n\n"); return res.end(); }
     return send(res, 200, { ok: true });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { server, seen, runStatuses, approvalStatuses, hermesData, url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((resolve) => server.close(resolve)) };
+  return { server, seen, runStatuses, runEvents, control: hermesControl, approvalStatuses, hermesData, url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((resolve) => server.close(resolve)) };
 }
 
 function send(res, status, value) { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(value)); }
@@ -535,6 +548,55 @@ test("an approval answered in the app thread resolves its cloud card", async (t)
   await waitFor(() => f.cloud.seen.some((request) => request.method === "PATCH"));
   assert.deepEqual(f.cloud.seen.find((request) => request.method === "PATCH"), { method: "PATCH", url: `/v1/cards/${encodeURIComponent("card:run_test:req_1")}`, authorization: "Bearer connector-secret", body: { state: "resolved" } });
   assert.equal(f.hermes.seen.some((request) => request.url === "/v1/runs/run_test/approval"), false);
+});
+
+test("two approvals at once each get a card, and the older one stays open after the newer is answered", async (t) => {
+  const f = await cloudFixture(); t.after(f.close);
+  const now = Date.now() / 1000;
+  const ask = (id, command) => ({ event: "approval.request", run_id: "run_test", request_id: id, command, timestamp: now });
+  f.hermes.runEvents.push(ask("req_a", "ls"), ask("req_b", "pwd"));
+  // The stream answers only after status reads saw req_a, then just req_b: req_a's card must stay open meanwhile.
+  let release;
+  f.hermes.control.eventsHold = new Promise((resolve) => { release = resolve; });
+  const posted = () => f.cloud.seen.filter((request) => request.url === "/v1/cards").map((request) => request.body.key);
+  f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "waiting_for_approval", session_id: "session_test", approval: { request_id: "req_a", command: "ls" } });
+  await req(f.base, "/v1/runs", { method: "POST", headers: f.headers, body: JSON.stringify({ input: "go", session_id: "session_test" }) });
+  await waitFor(() => posted().includes("run_test:req_a"));
+  // Hermes's status shows only the newest request.
+  f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "waiting_for_approval", session_id: "session_test", approval: { request_id: "req_b", command: "pwd" } });
+  await waitFor(() => posted().includes("run_test:req_b"));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  release();
+  assert.equal(f.cloud.seen.some((request) => request.method === "PATCH"), false);
+  // The newer one is answered in the app: Hermes goes back to running with the older still waiting.
+  f.hermes.runEvents.push({ event: "approval.responded", run_id: "run_test", request_id: "req_b", choice: "once" });
+  f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "running", session_id: "session_test" });
+  await waitFor(() => f.cloud.seen.some((request) => request.method === "PATCH"));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const patched = f.cloud.seen.filter((request) => request.method === "PATCH").map((request) => decodeURIComponent(request.url.split("/").at(-1)));
+  assert.deepEqual([...new Set(patched)], ["card:run_test:req_b"]);
+  assert.ok((await f.connector.store.read()).cloud_approvals["run_test:req_a"]);
+  // The older card's answer goes to Hermes by its own request id.
+  f.cloud.events.push({ seq: 3, cardId: "card:run_test:req_a", source: "hermes", key: "run_test:req_a", at: new Date().toISOString(), by: "phone", type: "action", actionId: "reject" });
+  await waitFor(() => f.hermes.seen.some((request) => request.url === "/v1/runs/run_test/approval"));
+  assert.deepEqual(JSON.parse(f.hermes.seen.find((request) => request.url === "/v1/runs/run_test/approval").body), { choice: "deny", request_id: "req_a" });
+});
+
+test("away mode denies every request a run waits on, not only the newest", async (t) => {
+  const f = await fixture({ notificationPollInterval: 5 }); t.after(async () => { await f.connector.close(); await f.hermes.close(); });
+  const pair = await req(f.base, "/admin/pair", admin({ method: "POST", body: "{}" }));
+  const exchange = await req(f.base, "/v1/pair/exchange", { method: "POST", body: JSON.stringify({ token: pair.body.pairing_token }) });
+  const headers = { authorization: `Bearer ${exchange.body.access_token}`, "content-type": "application/json" };
+  await req(f.base, "/v1/apollo/away", { method: "PUT", headers, body: '{"on":true}' });
+  const now = Date.now() / 1000;
+  f.hermes.runEvents.push(
+    { event: "approval.request", run_id: "run_test", request_id: "req_a", command: "ls", timestamp: now },
+    { event: "approval.request", run_id: "run_test", request_id: "req_b", command: "pwd", timestamp: now });
+  f.hermes.runStatuses.set("run_test", { run_id: "run_test", status: "waiting_for_approval", session_id: "session_test", approval: { request_id: "req_b", command: "pwd" } });
+  await req(f.base, "/v1/runs", { method: "POST", headers, body: JSON.stringify({ input: "go", session_id: "session_test" }) });
+  const denied = () => f.hermes.seen.filter((request) => request.url === "/v1/runs/run_test/approval").map((request) => JSON.parse(request.body).request_id);
+  await waitFor(() => denied().includes("req_a") && denied().includes("req_b"));
+  assert.ok(f.hermes.seen.filter((request) => request.url === "/v1/runs/run_test/approval").every((request) => JSON.parse(request.body).choice === "deny"));
 });
 
 test("away mode denies approvals without a card, and turning it off posts one summary card", async (t) => {

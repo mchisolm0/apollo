@@ -9,15 +9,18 @@ Two small TLA+ models of how a run passes between the phone, the connector,
 the cloud inbox, and Hermes. TLC, the TLA+ model checker, tries every order of
 their steps within the bounds in `check.sh` and checks each rule in every state.
 
-`Approvals.tla` is one run asking for approvals. The thread screen, a cloud
-card answered from any phone, and away mode can all answer, and Hermes can time
-a request out:
+`Approvals.tla` is one run asking for approvals, two at once when parallel
+subagents ask. The run's status shows only the newest request, so the thread
+screen and the connector read the run's events. The thread screen, a cloud card
+answered from any phone, and away mode can all answer, and Hermes can time a
+request out:
 
 1. **AnswerMatches.** An answer settles only the request it was given for.
-2. **PendingVisible.** Once quiet, every request Hermes waits on is shown on
-   the thread screen or has an open card.
-3. **CardsCurrent.** Once quiet, the only open card is for the request on the
-   run's status.
+2. **ScreenShows.** Once quiet, the thread screen shows a request Hermes waits
+   on whenever there is one.
+3. **CardForEach.** Once quiet, every request Hermes waits on has an open card.
+4. **CardsCurrent.** Once quiet, every open card is for a request Hermes waits
+   on.
 
 `Steers.tla` is one thread: created with its first message, steered while it
 runs (one steer request in flight at a time, as the composer allows), and
@@ -27,8 +30,8 @@ them are the saved ones. Steers can repeat each other's words, span two lines,
 share a row (Hermes saves the steers it reads at once as one), and be saved out
 of order. History also holds a steer row from an earlier run:
 
-4. **KeepsStarted.** The app never deletes a thread whose run began.
-5. **UndeliveredExact.** The reopened thread's note holds the lines of each
+5. **KeepsStarted.** The app never deletes a thread whose run began.
+6. **UndeliveredExact.** The reopened thread's note holds the lines of each
    steer Hermes never saved, in the order sent, and no others. It is judged by
    lines because the note joins steers with newlines: `a` and `b` read the
    same as one `a\nb`.
@@ -44,13 +47,15 @@ It needs Java 11 or newer. The first run downloads TLC 1.7.4 into
 `~/.cache/apollo` and checks its sha256.
 
 Each `ok` line is a run that went as expected. The app runs (`answers`, `away`,
-`steers`) must pass. Each break turns off one thing the code does and must fail
-on the rule it names, which proves that rule can still catch a bug:
+`steers`) must pass every rule. Each break turns off one thing the code does and
+must fail the rule it names, which proves that rule can still catch a bug:
 
 | Break | Turns off | Must fail |
 | --- | --- | --- |
 | `blind` | sending `request_id` with every answer | AnswerMatches |
-| `stale-cards` | the bridge resolving a card once its request leaves the status | CardsCurrent |
+| `stale-cards` | the bridge resolving a card once its request closes | CardsCurrent |
+| `status-only` | the connector reading the run's events, not only its status | CardForEach |
+| `latest-only` | the screen showing the oldest open request, not the latest asked | ScreenShows |
 | `delete-start` | `createThread` keeping a thread whose start is uncertain | KeepsStarted |
 | `no-reread` | the reopen reading history again after the run's status | UndeliveredExact |
 | `count-rows` | counting lines, not rows, so a joined row counts for each steer in it | UndeliveredExact |
@@ -64,11 +69,13 @@ reports `FAIL ... got pass` once the gap is closed. Then move it to the app runs
 
 | Gap | Fails | What happens |
 | --- | --- | --- |
-| `two-at-once` | PendingVisible | Two subagents ask at once. Hermes's run status shows only the newest request, the bridge resolves the older card, and `currentApproval` shows only the newest. The older one waits unseen until Hermes times it out and denies it. |
 | `late-reply` | UndeliveredExact | A steer's reply never lands, so the app doesn't track it, but Hermes saves it. Its lines count toward the saved ones, so the reopen misses a dropped steer. Or the first steer's reply lands after the screen drew its saved row, so that row counts as older than the run's steers. Hermes's history has no steer ids, so this is the limit. |
 
 The app runs assume each steer's reply lands before the screen reads history
-again (`OnTime`). `late-reply` is the same model without it.
+again (`OnTime`). `late-reply` is the same model without it. They also assume
+the screen and the connector drop a timed-out request only after Hermes denied
+it: both count from the request's timestamp on Hermes's clock, and the
+connector waits 5 seconds more.
 
 ## When it fails
 
@@ -94,7 +101,7 @@ git log --oneline "$(git log -1 --format=%H -- .agents/skills/verify-run-protoco
   prototypes/apollo-spike-app/app.ts prototypes/apollo-spike-app/app.contract \
   src/lib/run-state.ts src/features/relay/transcript.ts \
   connector/index.mjs connector/cloud.mjs connector/away.mjs \
-  connector/notifications.mjs cloud/src/inbox.ts
+  connector/notifications.mjs connector/run-approvals.mjs cloud/src/inbox.ts
 ```
 
 ## Coverage
@@ -104,14 +111,15 @@ NousResearch/hermes-agent 40d1e95.
 
 | File | What the models stand for |
 | --- | --- |
-| `prototypes/apollo-spike-app/app.ts` | `answerApproval`, `steerRun` and the run's `since`, `unseen` counting the lines of the run's steer rows, `createThread` and `start`, the reopen in `transcript` (the second history read, pending_steer, `undelivered`) |
+| `prototypes/apollo-spike-app/app.ts` | `answerApproval` and a request Hermes says is gone, the shown request expiring at its timeout, `steerRun` and the run's `since`, `unseen` counting the lines of the run's steer rows, `createThread` and `start`, the reopen in `transcript` (the second history read, pending_steer, `undelivered`) |
 | `prototypes/apollo-spike-app/app.contract` | `canSteer`: no new steer while one is on its way |
-| `src/lib/run-state.ts` | `currentApproval`, the request the thread screen shows |
+| `src/lib/run-state.ts` | `openApprovals` and `currentApproval`: the oldest open request the thread screen shows |
 | `src/features/relay/transcript.ts` | `userText`: a saved steer row's words, read from inside Hermes's out-of-band marker |
 | `connector/index.mjs` | `answerApproval`: answers by `request_id`, a 4xx means the request is gone |
-| `connector/cloud.mjs` | `createApprovalBridge`: posting, resolving stale cards, answering from card events |
-| `connector/away.mjs` | `deny`, by the request on the status |
-| `connector/notifications.mjs` | the run monitor: away mode first, then the bridge |
+| `connector/cloud.mjs` | `createApprovalBridge`: a card for each open request, resolving cards whose request closed, answering from card events |
+| `connector/away.mjs` | `deny`, by request id |
+| `connector/notifications.mjs` | the run monitor: away mode denies every open request first, then the bridge |
+| `connector/run-approvals.mjs` | following the run's events for its open requests, dropping timed-out ones, `settled` |
 | `cloud/src/inbox.ts` | answering a card resolves it and appends an action event |
 | Hermes `gateway/platforms/api_server_runs.py` | the status shows the newest request, answering one returns the run to running, steers only while running |
 | Hermes `tools/approval.py` | answering by exact `request_id`, or the oldest without one |
