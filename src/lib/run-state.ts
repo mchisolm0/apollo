@@ -20,10 +20,14 @@ export function approvalDeadline(ask: Readonly<Record<string, unknown>>, timeout
 }
 
 type ApprovalView = { timeoutSeconds?: number; now?: number };
-const expiredBy = (ask: Readonly<Record<string, unknown>>, at: number | undefined, timeoutSeconds?: number) => {
+const expiredBy = (ask: Readonly<Record<string, unknown>>, at: number | undefined, timeoutSeconds?: number, slack = 0) => {
   const deadline = approvalDeadline(ask, timeoutSeconds);
-  return deadline !== undefined && at !== undefined && deadline <= at;
+  return deadline !== undefined && at !== undefined && deadline + slack <= at;
 };
+// Hermes's clock for a request starts after its timestamp, and an answer's timestamp comes after
+// Hermes settled it. An id-less answer this close to a deadline settles that request, never a newer
+// one Hermes may still wait on; that newer one, if wrongly kept, answers "gone" or expires.
+const ANSWER_SLACK_SECONDS = 5;
 
 /**
  * The requests a run still waits on, oldest first. Parallel subagents can ask at once, and Hermes
@@ -45,7 +49,7 @@ export function openApprovals(events: readonly HermesRunEvent[], view?: Approval
         open = open.filter((ask) => requestIdOf(ask) !== id);
       } else {
         const count = typeof event.resolved === 'number' && event.resolved > 0 ? event.resolved : 1;
-        const settled = open.filter((ask) => !expiredBy(ask, event.timestamp, view?.timeoutSeconds)).slice(0, count);
+        const settled = open.filter((ask) => !expiredBy(ask, event.timestamp, view?.timeoutSeconds, ANSWER_SLACK_SECONDS)).slice(0, count);
         open = open.filter((ask) => !settled.includes(ask));
       }
     } else if (RUN_ENDS.has(event.event)) open = [];

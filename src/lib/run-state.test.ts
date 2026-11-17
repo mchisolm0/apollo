@@ -61,6 +61,9 @@ test('a request heard gone only hides, so a late id-less answer still settles th
   const gone = { event: 'approval.gone', request_id: 'a' };
   // Another client answered a without an id; answering it here heard "gone" before that event arrived.
   assert.equal(currentApproval([a, b, gone, { event: 'approval.responded', timestamp: 102 }], run)?.command, 'pwd');
+  // Hermes settled a at its deadline (160) but stamped the answer just after: a closes, b still waits.
+  const timed = [{ ...a, timeout_s: 60 }, b, { event: 'approval.responded', timestamp: 160.001 }];
+  assert.equal(currentApproval(timed, run, { now: 160.002 })?.command, 'pwd');
   // An id-less resolve_all settles as many as Hermes says.
   assert.equal(currentApproval([a, b, { event: 'approval.responded', resolved: 2 }], run), undefined);
   // The status's stale request stays hidden once gone or past its deadline.

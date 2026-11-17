@@ -4,8 +4,10 @@
 import { VALID_ID } from "./cloud.mjs";
 
 const RUN_ENDS = new Set(["run.completed", "run.failed", "run.cancelled", "run.interrupted"]);
-// Hermes denies an unanswered request when its timeout runs out, without an event. A card closes a
-// little after that, so it never closes while Hermes still waits on the request.
+// Hermes denies an unanswered request when its timeout runs out, without an event. Its clock starts
+// after the request's timestamp, and an answer's timestamp comes after Hermes settled it, so a
+// deadline is fuzzy by about this much. A card closes this long after its deadline, and an id-less
+// answer this close to a deadline settles that request, never a newer one Hermes may still wait on.
 const GRACE_SECONDS = 5;
 
 /** When Hermes denies a request: its own `timeout_s`, which Hermes captured when it asked, else the config's. */
@@ -94,7 +96,7 @@ export function createApprovalTracker({ readEvents, timeoutSeconds, retryInterva
       else {
         // Without a request id Hermes settles the oldest `resolved` requests still waiting then.
         const count = Number.isSafeInteger(event.resolved) && event.resolved > 0 ? event.resolved : 1;
-        const settled = [...run.open].filter(([, ask]) => !expiredBy(ask, event.timestamp, configTimeout)).slice(0, count);
+        const settled = [...run.open].filter(([, ask]) => !expiredBy(ask, event.timestamp, configTimeout, GRACE_SECONDS)).slice(0, count);
         for (const [open] of settled) answer(run, open);
       }
     } else if (RUN_ENDS.has(event.event)) {

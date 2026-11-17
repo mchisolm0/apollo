@@ -50,14 +50,15 @@ test("a request keeps the timeout Hermes captured, a replay can't reopen a gone 
   assert.deepEqual((await tracker.open("run", waiting)).map((ask) => ask.request_id), ["c"]);
 });
 
-test("an id-less answer settles what Hermes settled, whatever was said gone here or is in its grace", async () => {
+test("an id-less answer near a deadline settles the older request, and one said gone here still counts", async () => {
   const now = Date.now() / 1000;
   const streams = {
-    // a timed out 2s ago, so the id-less answer 1s ago settled b; a's card waits out its grace.
+    // Hermes settled a just before its deadline but stamped the answer just after it. Had a timed
+    // out first, b would be wrongly kept, which answers "gone" or expires; never the reverse.
     grace: [
-      { event: "approval.request", request_id: "a", timestamp: now - 62, timeout_s: 60 },
-      { event: "approval.request", request_id: "b", timestamp: now - 61, timeout_s: 600 },
-      { event: "approval.responded", timestamp: now - 1 },
+      { event: "approval.request", request_id: "a", timestamp: now - 61, timeout_s: 60 },
+      { event: "approval.request", request_id: "b", timestamp: now - 60, timeout_s: 600 },
+      { event: "approval.responded", timestamp: now - 0.999 },
     ],
     // Another client answered a without an id; a stale card answer for a heard "gone" first.
     gone: [
@@ -78,7 +79,7 @@ test("an id-less answer settles what Hermes settled, whatever was said gone here
     done.abort();
     await following;
   }
-  assert.deepEqual((await tracker.open("grace", waiting)).map((ask) => ask.request_id), ["a"]);
-  assert.deepEqual([...tracker.settled("grace")], ["b"]);
+  assert.deepEqual((await tracker.open("grace", waiting)).map((ask) => ask.request_id), ["b"]);
+  assert.deepEqual([...tracker.settled("grace")], ["a"]);
   assert.deepEqual((await tracker.open("gone", waiting)).map((ask) => ask.request_id), ["b"]);
 });
