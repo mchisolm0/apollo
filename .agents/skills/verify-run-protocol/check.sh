@@ -21,7 +21,7 @@ got=$({ sha256sum "$jar" 2>/dev/null || shasum -a 256 "$jar"; } | awk '{print $1
   { echo "tla2tools.jar checksum mismatch: $jar" >&2; exit 2; }
 
 approvals='Requests={r1,r2} AtOnce=FALSE Away=FALSE'
-steers='Prompt=a Texts={a,b} MaxSteers=4 OnTime=TRUE OneAtATime=TRUE'
+steers='A=A B=B AB=AB MaxSteers=4 OnTime=TRUE'
 
 # name | spec | bounds | flags turned off | expected: pass, or the rule that must fail
 runs="
@@ -33,13 +33,14 @@ two-at-once   | Approvals | ${approvals/AtOnce=FALSE/AtOnce=TRUE} |          | P
 steers        | Steers    | $steers                       |                  | pass
 delete-start  | Steers    | $steers                       | KeepsUncertain   | KeepsStarted
 no-reread     | Steers    | $steers                       | RereadsHistory   | UndeliveredExact
-any-words     | Steers    | $steers                       | CountsBefore     | UndeliveredExact
+count-rows    | Steers    | $steers                       | CountsLines      | UndeliveredExact
+no-since      | Steers    | $steers                       | UsesSince        | UndeliveredExact
+pending-order | Steers    | $steers                       | SendOrder        | UndeliveredExact
 late-reply    | Steers    | ${steers/OnTime=TRUE/OnTime=FALSE} |             | UndeliveredExact
-joined-steers | Steers    | ${steers/OneAtATime=TRUE/OneAtATime=FALSE} |     | UndeliveredExact
 "
 flags() { case $1 in
   Approvals) echo "AnswersById ClosesStaleCards" ;;
-  Steers) echo "KeepsUncertain RereadsHistory CountsBefore" ;;
+  Steers) echo "KeepsUncertain RereadsHistory CountsLines UsesSince SendOrder" ;;
 esac; }
 rules() { case $1 in
   Approvals) echo "AnswerMatches PendingVisible CardsCurrent" ;;

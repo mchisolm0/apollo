@@ -1,35 +1,45 @@
 ------------------------------- MODULE Steers -------------------------------
 (* One thread from the phone: it is created with its first message, the person
    steers the running turn, and the thread is opened again after the run ends.
-   The app matches steers to history by their words, so a steer can repeat the
-   first message or another steer. *)
+   Hermes's history has no steer ids, so the app counts the lines of the run's
+   steer rows. Steers can repeat each other's words or the first message's, span
+   two lines, share a row, and be saved out of order. *)
 EXTENDS Integers, Sequences, FiniteSets
 
 CONSTANTS
-  Prompt,           \* the first message's words
-  Texts,            \* words a steer can carry, e.g. {a, b}
+  A, B, AB,         \* the words a message can carry: "a", "b", or "a" and "b" on two lines
   MaxSteers,
   OnTime,           \* every steer's reply reaches the app before its screen reads again
-  OneAtATime,       \* the agent reads each steer before the person sends the next
   KeepsUncertain,   \* FALSE: createThread deletes the thread on any failed start
   RereadsHistory,   \* FALSE: a reopen trusts history it read before the run's status
-  CountsBefore,     \* FALSE: a steer counts as saved once any message has its words
+  CountsLines,      \* FALSE: the app counts each steer row as one steer
+  UsesSince,        \* FALSE: the app counts steer rows from earlier runs too
+  SendOrder,        \* FALSE: the note copies pending_steer whenever it has one
   NONE
 
 Ids == 1..MaxSteers
+Prompt == A
+Texts == {A, B, AB}
+\* A message's lines. Steers Hermes read at once are one row of all their lines.
+Lines(x) == IF x = AB THEN <<A, B>> ELSE <<x>>
+\* A steer row an earlier run of the thread saved.
+Earlier == <<{-1}, <<A>>>>
 
 VARIABLES
   start,     \* "new", "running" (the app knows the run), "kept", "deleted"
   began,     \* Hermes started the run
-  hist,      \* the user rows Hermes saved, as <<ids, words>>; id 0 is the first message
-  waiting,   \* steers Hermes took and has not saved, oldest first
+  hist,      \* the user rows Hermes saved, as <<ids, lines>>; id 0 is the first message,
+             \* a row's place is its message id
+  waiting,   \* steers Hermes took and the agent has not read, oldest first
+  unflushed, \* rows the agent read and Hermes has not saved yet, in the order it will save them
   ended,     \* the run ended
   named,     \* the steers pending_steer lists, as <<id, words>>
   said,      \* id -> the words of each steer the person sent
   posts,     \* steer requests on their way to Hermes
   replies,   \* "accepted" replies on their way back
   accepted,  \* steers Hermes took
-  tracked,   \* steers the app recorded: [id, words, before], in the order recorded
+  tracked,   \* steers the app recorded: [id, words], in the order recorded
+  since,     \* how many rows the screen had drawn when the app recorded its first steer, or NONE
   rowsSeen,  \* the user rows the thread screen drew last, or NONE before it drew
   phase,     \* reopening: "idle", "history" (read), "status" (read), "done"
   h1,        \* the history the reopen read first
@@ -37,35 +47,38 @@ VARIABLES
   lost,      \* the words the reopened thread names as undelivered
   known      \* the steers the app had recorded when it named them
 
-vars == <<start, began, hist, waiting, ended, named, said, posts, replies, accepted,
-          tracked, rowsSeen, phase, h1, lostBefore, lost, known>>
+vars == <<start, began, hist, waiting, unflushed, ended, named, said, posts, replies, accepted,
+          tracked, since, rowsSeen, phase, h1, lostBefore, lost, known>>
 
 Words(s) == [i \in 1..Len(s) |-> s[i][2]]
-Range(s) == {s[i] : i \in 1..Len(s)}
-Count(s, x) == Cardinality({i \in 1..Len(s) : s[i] = x})
-\* A row's words are a sequence: Hermes joins the steers it read at once into
-\* one row, and the app compares a steer with whole rows (app.ts said).
-Rows(h) == Words(h)
-RowCount(rows, x) == Count(rows, <<x>>)
+RECURSIVE LinesOf(_)
+LinesOf(s) == IF s = <<>> THEN <<>> ELSE Lines(Head(s)) \o LinesOf(Tail(s))
+\* The app's view of a row: whether it is a steer row (display_kind), and its lines.
+Rows(h) == [k \in 1..Len(h) |-> <<h[k][1] # {0}, h[k][2]>>]
 \* The app reads only once every steer reply has landed, unless replies can be late.
 Settled == OnTime => replies = {}
 
-\* The recorded steers a set of rows doesn't show yet (app.ts unseen): one counts
-\* as shown once its words appear more often than `before`.
-Unseen(rows) ==
-  {i \in 1..Len(tracked) :
-     IF CountsBefore THEN RowCount(rows, tracked[i].words) <= tracked[i].before
-     ELSE RowCount(rows, tracked[i].words) = 0}
-RECURSIVE InOrder(_)
-InOrder(S) == IF S = {} THEN <<>>
-              ELSE LET i == CHOOSE j \in S : \A k \in S : j <= k
-                   IN <<tracked[i].words>> \o InOrder(S \ {i})
+\* The lines of this run's steer rows: steer rows newer than the history the
+\* first steer saw (app.ts unseen).
+RECURSIVE SumLines(_, _)
+SumLines(rows, k) ==
+  IF k > Len(rows) THEN 0
+  ELSE (IF rows[k][1] /\ (~UsesSince \/ since = NONE \/ k > since)
+          THEN (IF CountsLines THEN Len(rows[k][2]) ELSE 1) ELSE 0)
+       + SumLines(rows, k + 1)
+\* The first recorded steers fill the saved lines; the rest are unseen.
+RECURSIVE Filled(_, _)
+Filled(left, i) ==
+  IF i > Len(tracked) \/ left <= 0 THEN i - 1
+  ELSE Filled(left - (IF CountsLines THEN Len(Lines(tracked[i].words)) ELSE 1), i + 1)
+Unseen(rows) == (Filled(SumLines(rows, 1), 1) + 1)..Len(tracked)
+UnseenWords(rows) == [k \in 1..Cardinality(Unseen(rows)) |-> tracked[Filled(SumLines(rows, 1), 1) + k].words]
 
 Init ==
-  /\ start = "new" /\ began = FALSE /\ hist = <<>> /\ waiting = <<>>
+  /\ start = "new" /\ began = FALSE /\ hist = <<Earlier>> /\ waiting = <<>> /\ unflushed = <<>>
   /\ ended = FALSE /\ named = <<>>
   /\ said = [i \in Ids |-> NONE]
-  /\ posts = {} /\ replies = {} /\ accepted = {} /\ tracked = <<>>
+  /\ posts = {} /\ replies = {} /\ accepted = {} /\ tracked = <<>> /\ since = NONE
   /\ rowsSeen = NONE /\ phase = "idle" /\ h1 = <<>> /\ lostBefore = <<>> /\ lost = <<>> /\ known = {}
 
 (* createThread makes the session, then asks Hermes for the run. A 4xx means
@@ -78,30 +91,28 @@ Create ==
        /\ reply = "ok" => b
        /\ reply = "refused" => ~b
        /\ began' = b
-       /\ hist' = IF b THEN <<<<{0}, <<Prompt>>>>>> ELSE <<>>
+       /\ hist' = IF b THEN Append(hist, <<{0}, Lines(Prompt)>>) ELSE hist
        /\ ended' = ~b
        /\ start' = IF reply = "ok" THEN "running"
                    ELSE IF reply = "refused" \/ ~KeepsUncertain THEN "deleted"
                    ELSE "kept"
-  /\ UNCHANGED <<waiting, named, said, posts, replies, accepted, tracked, rowsSeen, phase, h1, lostBefore, lost, known>>
+  /\ UNCHANGED <<waiting, unflushed, named, said, posts, replies, accepted, tracked, since, rowsSeen, phase, h1, lostBefore, lost, known>>
 
-\* The thread screen draws history while the run streams. Its user rows are
-\* the history it read when it opened (app.ts transcript, withSteers).
+\* The thread screen draws history while the run streams (app.ts transcript, withSteers).
 Draw ==
   /\ start = "running" /\ ~ended /\ phase = "idle" /\ Settled
   /\ rowsSeen' = Rows(hist)
-  /\ UNCHANGED <<start, began, hist, waiting, ended, named, said, posts, replies, accepted, tracked, phase, h1, lostBefore, lost, known>>
+  /\ UNCHANGED <<start, began, hist, waiting, unflushed, ended, named, said, posts, replies, accepted, tracked, since, phase, h1, lostBefore, lost, known>>
 
 \* The person steers the running turn (app.ts steerRun). The composer allows it
-\* only while no steer is pending (app.contract canSteer).
+\* only while no steer request is on its way (app.contract canSteer).
 Steer(i, x) ==
   /\ start = "running" /\ rowsSeen # NONE /\ phase # "done"
   /\ posts = {} /\ replies = {}
-  /\ OneAtATime => waiting = <<>>
   /\ said[i] = NONE /\ (IF i = 1 THEN TRUE ELSE said[i - 1] # NONE)
   /\ said' = [said EXCEPT ![i] = x]
   /\ posts' = posts \cup {i}
-  /\ UNCHANGED <<start, began, hist, waiting, ended, named, replies, accepted, tracked, rowsSeen, phase, h1, lostBefore, lost, known>>
+  /\ UNCHANGED <<start, began, hist, waiting, unflushed, ended, named, replies, accepted, tracked, since, rowsSeen, phase, h1, lostBefore, lost, known>>
 
 \* Hermes queues a steer while the run is running, else answers 409
 \* run_not_accepting_steer (api_server_runs.py _handle_steer_run).
@@ -113,49 +124,63 @@ HermesSteer(i) ==
             /\ accepted' = accepted \cup {i}
             /\ replies' = replies \cup {i}
        ELSE UNCHANGED <<waiting, accepted, replies>>
-  /\ UNCHANGED <<start, began, hist, ended, named, said, tracked, rowsSeen, phase, h1, lostBefore, lost, known>>
+  /\ UNCHANGED <<start, began, hist, unflushed, ended, named, said, tracked, since, rowsSeen, phase, h1, lostBefore, lost, known>>
 
-\* The app records an accepted steer, with how often its words already show:
-\* in the rows drawn, plus recorded steers with those words still unseen.
+\* The app records an accepted steer. The first one also notes the newest row the
+\* screen drew (app.ts steerRun).
 Record(i) ==
   /\ i \in replies
   /\ replies' = replies \ {i}
-  /\ LET x == said[i]
-         rows == IF rowsSeen = NONE THEN <<>> ELSE rowsSeen
-     IN tracked' = Append(tracked, [id |-> i, words |-> x,
-          before |-> RowCount(rows, x) + Cardinality({j \in Unseen(rows) : tracked[j].words = x})])
-  /\ UNCHANGED <<start, began, hist, waiting, ended, named, said, posts, accepted, rowsSeen, phase, h1, lostBefore, lost, known>>
+  /\ tracked' = Append(tracked, [id |-> i, words |-> said[i]])
+  /\ since' = IF since = NONE THEN Len(rowsSeen) ELSE since
+  /\ UNCHANGED <<start, began, hist, waiting, unflushed, ended, named, said, posts, accepted, rowsSeen, phase, h1, lostBefore, lost, known>>
 
 \* The reply is lost, so the app shows an error for a steer Hermes has.
 LoseReply(i) ==
   /\ ~OnTime /\ i \in replies
   /\ replies' = replies \ {i}
-  /\ UNCHANGED <<start, began, hist, waiting, ended, named, said, posts, accepted, tracked, rowsSeen, phase, h1, lostBefore, lost, known>>
+  /\ UNCHANGED <<start, began, hist, waiting, unflushed, ended, named, said, posts, accepted, tracked, since, rowsSeen, phase, h1, lostBefore, lost, known>>
 
-\* The agent reads every steer waiting, and Hermes saves them as one user row,
-\* their words joined by newlines (interrupt_control.py _drain_pending_steer).
+\* The agent reads every steer waiting as one user row, their lines joined by
+\* newlines (interrupt_control.py _drain_pending_steer). After a tool batch the row
+\* goes last (agent_runtime_helpers.py apply_pending_steer_to_tool_results); just
+\* before a model call it goes right after the newest tool result
+\* (turn_iteration_prep.py), ahead of rows not saved yet. A retry can do that
+\* again, so the row can land anywhere among the unsaved ones.
 Deliver ==
   /\ ~ended /\ waiting # <<>>
-  /\ hist' = Append(hist, <<{waiting[k][1] : k \in 1..Len(waiting)}, Words(waiting)>>)
+  /\ LET row == <<{waiting[k][1] : k \in 1..Len(waiting)}, LinesOf(Words(waiting))>>
+     IN \E p \in 0..Len(unflushed) :
+          unflushed' = SubSeq(unflushed, 1, p) \o <<row>> \o SubSeq(unflushed, p + 1, Len(unflushed))
   /\ waiting' = <<>>
-  /\ UNCHANGED <<start, began, ended, named, said, posts, replies, accepted, tracked, rowsSeen, phase, h1, lostBefore, lost, known>>
+  /\ UNCHANGED <<start, began, hist, ended, named, said, posts, replies, accepted, tracked, since, rowsSeen, phase, h1, lostBefore, lost, known>>
 
-\* The turn ends. Finishing names every steer still waiting in pending_steer;
-\* a hard stop drops them unnamed (interrupt_control.py).
+\* Hermes saves the rows the agent read (_flush_messages_to_session_db).
+Flush ==
+  /\ unflushed # <<>>
+  /\ hist' = hist \o unflushed
+  /\ unflushed' = <<>>
+  /\ UNCHANGED <<start, began, waiting, ended, named, said, posts, replies, accepted, tracked, since, rowsSeen, phase, h1, lostBefore, lost, known>>
+
+\* The turn ends. Finishing names every steer still waiting in pending_steer, a
+\* requeued one behind newer ones (interrupt_control.py requeue_drained_steer);
+\* a hard stop drops them unnamed. Rows already read are saved.
 End ==
   /\ began /\ ~ended
   /\ ended' = TRUE
+  /\ hist' = hist \o unflushed /\ unflushed' = <<>>
   /\ \/ named' = waiting
+     \/ Len(waiting) > 1 /\ named' = Tail(waiting) \o <<Head(waiting)>>
      \/ named' = <<>>
   /\ waiting' = <<>>
-  /\ UNCHANGED <<start, began, hist, said, posts, replies, accepted, tracked, rowsSeen, phase, h1, lostBefore, lost, known>>
+  /\ UNCHANGED <<start, began, said, posts, replies, accepted, tracked, since, rowsSeen, phase, h1, lostBefore, lost, known>>
 
 \* Opening the thread reads its history, then its run's status (app.ts transcript).
 ReadHistory ==
   /\ start = "running" /\ phase = "idle" /\ Settled
   /\ h1' = Rows(hist)
   /\ phase' = "history"
-  /\ UNCHANGED <<start, began, hist, waiting, ended, named, said, posts, replies, accepted, tracked, rowsSeen, lostBefore, lost, known>>
+  /\ UNCHANGED <<start, began, hist, waiting, unflushed, ended, named, said, posts, replies, accepted, tracked, since, rowsSeen, lostBefore, lost, known>>
 
 \* Still running: the thread streams with the history it read.
 ReadStatus ==
@@ -163,22 +188,23 @@ ReadStatus ==
   /\ IF ended
        THEN /\ lostBefore' = Words(named) /\ phase' = "status" /\ UNCHANGED rowsSeen
        ELSE /\ rowsSeen' = h1 /\ phase' = "idle" /\ UNCHANGED lostBefore
-  /\ UNCHANGED <<start, began, hist, waiting, ended, named, said, posts, replies, accepted, tracked, h1, lost, known>>
+  /\ UNCHANGED <<start, began, hist, waiting, unflushed, ended, named, said, posts, replies, accepted, tracked, since, h1, lost, known>>
 
 \* The run ended. History read before the status can miss a steer saved as the
-\* run ended, so it is read once more when a steer is unseen. A steer neither
-\* saved nor named never reached the run either.
+\* run ended, so it is read once more when a steer is unseen. The note lists the
+\* unseen steers in the order sent, unless pending_steer has more lines.
 Settle ==
   /\ phase = "status" /\ Settled
   /\ LET rows == IF RereadsHistory /\ Unseen(h1) # {} THEN Rows(hist) ELSE h1
-         missed == InOrder(Unseen(rows))
-     IN lost' = lostBefore \o SelectSeq(missed, LAMBDA x : x \notin Range(lostBefore))
+         missed == UnseenWords(rows)
+     IN lost' = IF Len(LinesOf(lostBefore)) > Len(LinesOf(missed)) \/ (~SendOrder /\ lostBefore # <<>>)
+                  THEN lostBefore ELSE missed
   /\ known' = {tracked[k].id : k \in 1..Len(tracked)}
   /\ phase' = "done"
-  /\ UNCHANGED <<start, began, hist, waiting, ended, named, said, posts, replies, accepted, tracked, rowsSeen, h1, lostBefore>>
+  /\ UNCHANGED <<start, began, hist, waiting, unflushed, ended, named, said, posts, replies, accepted, tracked, since, rowsSeen, h1, lostBefore>>
 
 Next ==
-  \/ Create \/ Draw \/ Deliver \/ End \/ ReadHistory \/ ReadStatus \/ Settle
+  \/ Create \/ Draw \/ Deliver \/ Flush \/ End \/ ReadHistory \/ ReadStatus \/ Settle
   \/ \E i \in Ids, x \in Texts : Steer(i, x)
   \/ \E i \in Ids : HermesSteer(i) \/ Record(i) \/ LoseReply(i)
 
@@ -187,13 +213,14 @@ Spec == Init /\ [][Next]_vars
 \* Rule 1: the app never deletes a thread whose run began.
 KeepsStarted == began => start # "deleted"
 
-\* Rule 2: the reopened thread names each steer Hermes never saved once, and no
-\* other. That is each unsaved steer pending_steer named or the app had recorded:
-\* one whose reply never landed and that a hard stop dropped is known to nobody.
+\* Rule 2: the reopened thread's note holds the lines of each steer Hermes never
+\* saved, in the order sent, and no others. That is each unsaved steer
+\* pending_steer named or the app had recorded: one whose reply never landed and
+\* that a hard stop dropped is known to nobody. The note joins its steers with
+\* newlines, so it is judged by lines: "a" and "b" read the same as one "a\nb".
 Saved == UNION {hist[k][1] : k \in 1..Len(hist)}
-Undelivered(x) ==
-  Cardinality({i \in accepted \ Saved :
-                 said[i] = x /\ (i \in known \/ \E k \in 1..Len(named) : named[k][1] = i)})
-UndeliveredExact ==
-  phase = "done" => \A x \in Texts \cup {Prompt} : Count(lost, x) = Undelivered(x)
+Unsaved == {i \in accepted \ Saved : i \in known \/ \E k \in 1..Len(named) : named[k][1] = i}
+UnsavedWords == LET ids == SelectSeq([i \in Ids |-> i], LAMBDA i : i \in Unsaved)
+                IN [k \in 1..Len(ids) |-> said[ids[k]]]
+UndeliveredExact == phase = "done" => LinesOf(lost) = LinesOf(UnsavedWords)
 =============================================================================

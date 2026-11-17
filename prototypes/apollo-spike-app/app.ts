@@ -504,20 +504,44 @@ function withExpired(rows: Row[], sessionId: string): Row[] {
 
 // Steers this phone sent into a running turn, drawn under it until Hermes's history has them, and
 // what Hermes said it never delivered (`pending_steer` on a terminal event), until the next send.
-// A steer is in history once its text shows more often than `before`: what history held when it
-// was sent, plus the same words still waiting then. So an earlier message with the same words
-// doesn't hide it, and a repeated steer waits for its own copy.
-const steers = new Map<string, { text: string; before: number }[]>();
+// Each run keeps its steers in the order sent and the newest message time history held when the
+// first was sent, so only this run's steer rows count. Time, not id: compression copies rows under
+// new ids but keeps their time.
+const steers = new Map<string, { since: number; texts: string[] }>();
 // The run each thread last steered, kept past the run ledger so a reopened thread can still check it.
 const steeredRun = new Map<string, string>();
 const undelivered = new Map<string, string>();
-const rowsSeen = new Map<string, Row[]>();
-const said = (rows: Row[], text: string) => rows.filter((r) => r.kind === 'user' && r.text.trim() === text).length;
+// The history each thread screen drew last.
+const messagesSeen = new Map<string, readonly HermesMessage[]>();
+const lineCount = (text: string) => text.split(/\r?\n/).length;
+// How many lines of steers a user message holds, or 0 for one that isn't a steer row. Hermes types
+// steer rows `steer` and wraps them in its out-of-band marker: the steers are the lines between its
+// first line and its last closing line, whatever they quote and whatever Hermes appends after it.
+// A row compression merged a summary into loses the type but keeps the marker.
+function steerLines(m: HermesMessage) {
+  const lines = (m.content ?? '').trim().split(/\r?\n/);
+  const end = lines.lastIndexOf('[/OUT-OF-BAND USER MESSAGE]');
+  if (lines[0].startsWith('[OUT-OF-BAND USER MESSAGE') && end > 1) return end - 1;
+  return m.displayKind === 'steer' ? lines.length : 0;
+}
 // The steers sent into a run that history doesn't show yet, with their place in the order sent.
-const unseen = (rows: Row[], runId: string) => (steers.get(runId) ?? []).flatMap(({ text, before }, i) => (said(rows, text) > before ? [] : [{ text, i }]));
-function withSteers(rows: Row[], sessionId: string, runId: string): Row[] {
-  rowsSeen.set(sessionId, rows);
-  const echoes = unseen(rows, runId).map(({ text, i }): Row => ({ ...plain, id: `steer-${runId}-${i}`, kind: 'user', text, status: 'steered' }));
+// Hermes reads waiting steers first in, first out, saves the ones it read at once as one steer row
+// joined by newlines, and can save two rows in either order. So the saved steers are the first
+// ones sent, as many as fill the lines of the run's steer rows, whatever their words.
+function unseen(messages: readonly HermesMessage[], runId: string) {
+  const run = steers.get(runId);
+  if (!run) return [];
+  let saved = messages
+    .filter((m) => m.role === 'user' && (m.timestamp ?? 0) > run.since)
+    .reduce((n, m) => n + steerLines(m), 0);
+  return run.texts.flatMap((text, i) => {
+    if (saved > 0) { saved -= lineCount(text); return []; }
+    return [{ text, i }];
+  });
+}
+function withSteers(rows: Row[], messages: readonly HermesMessage[], sessionId: string, runId: string): Row[] {
+  messagesSeen.set(sessionId, messages);
+  const echoes = unseen(messages, runId).map(({ text, i }): Row => ({ ...plain, id: `steer-${runId}-${i}`, kind: 'user', text, status: 'steered' }));
   const lost = undelivered.get(sessionId);
   return [...rows, ...echoes, ...(lost ? [{ ...plain, id: `undelivered-${sessionId}`, kind: 'error', text: `Hermes finished before it read: “${lost}”. Send it again as a new message.` }] : [])];
 }
@@ -533,6 +557,19 @@ function opened(l: Local, id: string, title: string) {
 function inboxFacts(sessionId: string) {
   const s = sessionsSeen.find((x) => x.id === sessionId);
   return { settled: s?.settled ?? false, canSettle: s ? canSettleSession(s) : false, autoSettle: !(s?.autoSettleDisabled ?? false), activityAt: s?.activityAt ?? 0 };
+}
+
+// History back to `since`, for counting a run's saved steers: pages of 500 from the newest until one
+// reaches `since`, since a long run can push its steer rows off the latest page, and with the rows
+// compression summarized away, which the default history leaves out.
+async function historySince(store: Store, sessionId: string, since: number) {
+  let all: HermesMessage[] = [];
+  for (;;) {
+    const page = await api(store, `/api/sessions/${encodeURIComponent(sessionId)}/messages?order=latest&limit=500&offset=${all.length}&include_compacted=true`);
+    const older = ((page.data as Json[] | undefined) ?? []).map(parseMessage);
+    all = [...older, ...all];
+    if (older.length < 500 || (older[0].timestamp ?? 0) <= since) return all;
+  }
 }
 
 async function history(store: Store, sessionId: string) {
@@ -562,28 +599,33 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       if (runId && unreachable) {
         // Shown as still running, so Stop stays and nothing new is sent over it.
         const thread: Thread = { ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", recent, title, canSettle: false,
-          rows: withSteers(toRows(project({ history: messages, events: [], running: false })), sessionId, runId), runId, status: 'unknown', active: true, error: 'Could not reach the running turn. Retry to check on it.' };
+          rows: withSteers(toRows(project({ history: messages, events: [], running: false })), messages, sessionId, runId), runId, status: 'unknown', active: true, error: 'Could not reach the running turn. Retry to check on it.' };
         await save(storage);
         return thread;
       }
       // A thread read with nothing running is read, as Apollo marks it.
       if (runId && l.runs[sessionId] === runId) delete l.runs[sessionId];
       l.read[sessionId] = Math.floor(now / 1000);
-      let rows = toRows(project({ history: messages, events: [], running: false }));
+      let saved = messages;
       // A steer the ended run neither saved nor named as undelivered never reached it either. History
       // read before the run's status can miss a steer saved as it ended, so it is read once more.
       if (runId) {
-        if (unseen(rows, runId).length) rows = toRows(createTranscriptProjector()({ history: (await history(store, sessionId)).messages, events: [], running: false }));
-        const missed = unseen(rows, runId).map((m) => m.text);
-        // Hermes joins every steer it never delivered with newlines, so a steer it named is a whole
-        // line run of that text.
-        const named = (text: string) => lostBefore !== undefined && `\n${lostBefore}\n`.includes(`\n${text}\n`);
-        const lost = [...(lostBefore ? [lostBefore] : []), ...missed.filter((text) => !named(text))];
+        if (unseen(saved, runId).length) saved = (await history(store, sessionId)).messages;
+        const since = steers.get(runId)?.since;
+        const counted = since !== undefined && unseen(saved, runId).length ? await historySince(store, sessionId, since) : saved;
+        const missed = unseen(counted, runId).map((m) => m.text);
+        // pending_steer joins the steers still waiting when the run finished, and a hard stop names
+        // none. The note lists the unseen steers in the order sent, since a requeued steer can sit
+        // behind newer ones in pending_steer. Only a pending_steer with more lines, from steers whose
+        // reply never landed here, says more.
+        const unseenLines = missed.reduce((n, text) => n + lineCount(text), 0);
+        const lost = lostBefore && lineCount(lostBefore) > unseenLines ? [lostBefore] : missed;
         if (lost.length) undelivered.set(sessionId, lost.join('\n'));
         steers.delete(runId);
         steeredRun.delete(sessionId);
       }
-      const thread: Thread = { ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", recent, title, rows: withSteers(withExpired(rows, sessionId), sessionId, '') };
+      const rows = toRows((saved === messages ? project : createTranscriptProjector())({ history: saved, events: [], running: false }));
+      const thread: Thread = { ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", recent, title, rows: withSteers(withExpired(rows, sessionId), saved, sessionId, '') };
       // The kept copy leaves out the undelivered and expired notes, which last only until the next send.
       await keepThread(storage, l, { ...thread, recent: [], rows: thread.rows.filter((r) => !r.id.startsWith('undelivered-') && !r.id.startsWith('expired-')).slice(-KEEP_ROWS) });
       await save(storage);
@@ -616,7 +658,7 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       }) : [];
       if (expired.length) expiredAsks.set(sessionId, expired);
       return {
-        ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", canSettle: false, recent, title, rows: [...withSteers(withExpired(toRows(rows), sessionId), sessionId, runId), ...asked], runId, status: current.status, active: running, ended: !running, error,
+        ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", canSettle: false, recent, title, rows: [...withSteers(withExpired(toRows(rows), sessionId), messages, sessionId, runId), ...asked], runId, status: current.status, active: running, ended: !running, error,
         ...(approval && command ? { approvalId: requestId, approvalTitle: approval.tool ? `Allow ${approval.tool}?` : 'Allow this command?', approvalCommand: command, approvalReason: approval.description ?? '', approvalChoices: approvalChoices(approval.choices),
           approvalDeadline: timeout && askedAt !== undefined ? (askedAt + timeout) * 1000 : 0 } : {}),
       };
@@ -857,7 +899,7 @@ const sources: Sources = {
     local = fresh();
     await save(storage);
     sessionsSeen = []; cardsSeen = []; cardsLive = false; delivered = []; approvalTimeout = undefined;
-    steers.clear(); undelivered.clear(); rowsSeen.clear(); steeredRun.clear(); expiredAsks.clear(); answeredHere.clear();
+    steers.clear(); undelivered.clear(); messagesSeen.clear(); steeredRun.clear(); expiredAsks.clear(); answeredHere.clear();
     return ok;
   },
   inbox: ([, , showSettled, showSnoozed, query, now], store, storage) => { setClock(now); return inbox(showSettled, showSnoozed, query, now, store, storage); },
@@ -895,7 +937,7 @@ const sources: Sources = {
       const l = await state(storage);
       const runId = l.runs[sessionId];
       if (runId) steers.delete(runId);
-      undelivered.delete(sessionId); rowsSeen.delete(sessionId); steeredRun.delete(sessionId);
+      undelivered.delete(sessionId); messagesSeen.delete(sessionId); steeredRun.delete(sessionId);
       for (const ledger of [l.runs, l.read, l.snoozed, l.models]) delete ledger[sessionId];
       l.recent = l.recent.filter((r) => r.id !== sessionId);
       await forgetThread(storage, l, sessionId);
@@ -929,9 +971,8 @@ const sources: Sources = {
       const body = await api(store, `/v1/runs/${encodeURIComponent(runId)}/steer`, { method: 'POST', body: { input: text } });
       if (body.accepted !== true) throw new Error('Hermes did not take the message. Send it again when the run ends.');
       const sent = text.trim();
-      const rows = rowsSeen.get(sessionId) ?? [];
-      const waiting = unseen(rows, runId).filter((m) => m.text === sent).length;
-      steers.set(runId, [...(steers.get(runId) ?? []), { text: sent, before: said(rows, sent) + waiting }]);
+      const run = steers.get(runId) ?? { since: Math.max(0, ...(messagesSeen.get(sessionId) ?? []).map((m) => m.timestamp ?? 0)), texts: [] };
+      steers.set(runId, { ...run, texts: [...run.texts, sent] });
       steeredRun.set(sessionId, runId);
       return ok;
     } catch (e) {
