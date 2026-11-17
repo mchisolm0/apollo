@@ -504,30 +504,45 @@ function withExpired(rows: Row[], sessionId: string): Row[] {
 
 // Steers this phone sent into a running turn, drawn under it until Hermes's history has them, and
 // what Hermes said it never delivered (`pending_steer` on a terminal event), until the next send.
-// A steer is in history once its text shows more often than `before`: what history held when it
-// was sent, plus the same words still waiting then. So an earlier message with the same words
-// doesn't hide it, and a repeated steer waits for its own copy.
+// Hermes saves each steer once, alone or joined by newlines with the steers it read at the same
+// time. So each steer, in the order sent, takes the first free run of its lines in the user rows
+// past the `before` runs that were free when it was sent, and no other steer can take those lines.
+// An earlier message with the same words doesn't hide a steer, and a repeated steer waits for its
+// own copy.
 const steers = new Map<string, { text: string; before: number }[]>();
 // The run each thread last steered, kept past the run ledger so a reopened thread can still check it.
 const steeredRun = new Map<string, string>();
 const undelivered = new Map<string, string>();
 const rowsSeen = new Map<string, Row[]>();
-// How often a steer's words show in the user rows. Hermes saves the steers it read at once as one
-// row, their words joined by newlines, so a steer counts once for each whole run of lines it fills.
-function said(rows: Row[], text: string): number {
+// Each free whole run of `text`'s lines in the user rows, in order, as the `row:line` keys it covers.
+function freeRuns(rows: Row[], text: string, taken: ReadonlySet<string>): string[][] {
   const want = text.split(/\r?\n/);
-  let found = 0;
-  for (const r of rows) {
-    if (r.kind !== 'user') continue;
+  const found: string[][] = [];
+  rows.forEach((r, row) => {
+    if (r.kind !== 'user') return;
     const lines = r.text.trim().split(/\r?\n/);
     for (let k = 0; k + want.length <= lines.length; ) {
-      if (want.every((w, j) => lines[k + j] === w)) { found++; k += want.length; } else k++;
+      const at = want.map((_, j) => `${row}:${k + j}`);
+      if (want.every((w, j) => lines[k + j] === w) && !at.some((x) => taken.has(x))) { found.push(at); k += want.length; } else k++;
     }
-  }
+  });
   return found;
 }
+// Which of a run's steers the rows show, in the order sent, and the lines those steers took.
+function reconcile(rows: Row[], runId: string) {
+  const taken = new Set<string>();
+  const shown = (steers.get(runId) ?? []).map(({ text, before }) => {
+    const at = freeRuns(rows, text, taken)[before];
+    at?.forEach((x) => taken.add(x));
+    return at !== undefined;
+  });
+  return { shown, taken };
+}
 // The steers sent into a run that history doesn't show yet, with their place in the order sent.
-const unseen = (rows: Row[], runId: string) => (steers.get(runId) ?? []).flatMap(({ text, before }, i) => (said(rows, text) > before ? [] : [{ text, i }]));
+function unseen(rows: Row[], runId: string) {
+  const { shown } = reconcile(rows, runId);
+  return (steers.get(runId) ?? []).flatMap(({ text }, i) => (shown[i] ? [] : [{ text, i }]));
+}
 function withSteers(rows: Row[], sessionId: string, runId: string): Row[] {
   rowsSeen.set(sessionId, rows);
   const echoes = unseen(rows, runId).map(({ text, i }): Row => ({ ...plain, id: `steer-${runId}-${i}`, kind: 'user', text, status: 'steered' }));
@@ -943,8 +958,8 @@ const sources: Sources = {
       if (body.accepted !== true) throw new Error('Hermes did not take the message. Send it again when the run ends.');
       const sent = text.trim();
       const rows = rowsSeen.get(sessionId) ?? [];
-      const waiting = unseen(rows, runId).filter((m) => m.text === sent).length;
-      steers.set(runId, [...(steers.get(runId) ?? []), { text: sent, before: said(rows, sent) + waiting }]);
+      const before = freeRuns(rows, sent, reconcile(rows, runId).taken).length;
+      steers.set(runId, [...(steers.get(runId) ?? []), { text: sent, before }]);
       steeredRun.set(sessionId, runId);
       return ok;
     } catch (e) {

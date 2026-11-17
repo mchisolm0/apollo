@@ -2,26 +2,30 @@
 (* One thread from the phone: it is created with its first message, the person
    steers the running turn, and the thread is opened again after the run ends.
    The app matches steers to history by their words, so a steer can repeat the
-   first message or another steer. *)
+   first message or another steer, or fill only part of a row. *)
 EXTENDS Integers, Sequences, FiniteSets
 
 CONSTANTS
-  Prompt,           \* the first message's words
-  Texts,            \* words a steer can carry, e.g. {a, b}
+  A, B, AB,         \* the words a message can carry: "a", "b", or "a" and "b" on two lines
   MaxSteers,
   OnTime,           \* every steer's reply reaches the app before its screen reads again
   SplitsRows,       \* FALSE: the app compares a steer with whole rows only
+  TakesLines,       \* FALSE: two steers can both count the same saved lines
   KeepsUncertain,   \* FALSE: createThread deletes the thread on any failed start
   RereadsHistory,   \* FALSE: a reopen trusts history it read before the run's status
   CountsBefore,     \* FALSE: a steer counts as saved once any message has its words
   NONE
 
 Ids == 1..MaxSteers
+Prompt == A
+Texts == {A, B, AB}
+\* A message's lines. Two steers Hermes read at once are one row of both's lines.
+Lines(x) == IF x = AB THEN <<A, B>> ELSE <<x>>
 
 VARIABLES
   start,     \* "new", "running" (the app knows the run), "kept", "deleted"
   began,     \* Hermes started the run
-  hist,      \* the user rows Hermes saved, as <<ids, words>>; id 0 is the first message
+  hist,      \* the user rows Hermes saved, as <<ids, lines>>; id 0 is the first message
   waiting,   \* steers Hermes took and has not saved, oldest first
   ended,     \* the run ended
   named,     \* the steers pending_steer lists, as <<id, words>>
@@ -43,23 +47,42 @@ vars == <<start, began, hist, waiting, ended, named, said, posts, replies, accep
 Words(s) == [i \in 1..Len(s) |-> s[i][2]]
 Range(s) == {s[i] : i \in 1..Len(s)}
 Count(s, x) == Cardinality({i \in 1..Len(s) : s[i] = x})
-\* A row's words are a sequence: Hermes joins the steers it read at once into
-\* one row. The app counts each steer inside a row (app.ts said).
-Rows(h) == Words(h)
-RowCount(rows, x) ==
-  IF SplitsRows
-    THEN Cardinality({kj \in (1..Len(rows)) \X (0..MaxSteers) :
-                        kj[2] \in 1..Len(rows[kj[1]]) /\ rows[kj[1]][kj[2]] = x})
-    ELSE Count(rows, <<x>>)
+RECURSIVE LinesOf(_)
+LinesOf(s) == IF s = <<>> THEN <<>> ELSE Lines(Head(s)) \o LinesOf(Tail(s))
+\* Whether x's lines run whole through `all` from line j.
+RunAt(all, j, x) ==
+  /\ j + Len(Lines(x)) - 1 <= Len(all)
+  /\ \A m \in 1..Len(Lines(x)) : all[j + m - 1] = Lines(x)[m]
+Rows(h) == [k \in 1..Len(h) |-> h[k][2]]
 \* The app reads only once every steer reply has landed, unless replies can be late.
 Settled == OnTime => replies = {}
 
-\* The recorded steers a set of rows doesn't show yet (app.ts unseen): one counts
-\* as shown once its words appear more often than `before`.
-Unseen(rows) ==
-  {i \in 1..Len(tracked) :
-     IF CountsBefore THEN RowCount(rows, tracked[i].words) <= tracked[i].before
-     ELSE RowCount(rows, tracked[i].words) = 0}
+\* The lines of row k a run of x from line j covers.
+Cover(x, kj) == {<<kj[1], kj[2] + m - 1>> : m \in 1..Len(Lines(x))}
+\* Where each free run of x's lines starts in the rows (app.ts freeRuns). No text
+\* here can overlap itself, so every match is a run.
+Starts(rows, x, taken) ==
+  {kj \in (1..Len(rows)) \X (1..2 * MaxSteers) :
+     /\ RunAt(rows[kj[1]], kj[2], x)
+     /\ SplitsRows \/ (kj[2] = 1 /\ Len(rows[kj[1]]) = Len(Lines(x)))
+     /\ TakesLines => Cover(x, kj) \cap taken = {}}
+First(S) == CHOOSE s \in S : \A t \in S : s[1] < t[1] \/ (s[1] = t[1] /\ s[2] <= t[2])
+RECURSIVE Nth(_, _)
+Nth(S, n) == IF n = 1 THEN First(S) ELSE Nth(S \ {First(S)}, n - 1)
+\* The first n recorded steers, in the order sent, each take the first free run
+\* of their lines past their `before` (app.ts reconcile): <<shown, lines taken>>.
+RECURSIVE Take(_, _)
+Take(rows, n) ==
+  IF n = 0 THEN <<{}, {}>>
+  ELSE LET prev == Take(rows, n - 1)
+           t == tracked[n]
+           need == IF CountsBefore THEN t.before ELSE 0
+           S == Starts(rows, t.words, prev[2])
+       IN IF Cardinality(S) > need
+            THEN <<prev[1] \cup {n}, prev[2] \cup Cover(t.words, Nth(S, need + 1))>>
+            ELSE prev
+\* The recorded steers a set of rows doesn't show yet (app.ts unseen).
+Unseen(rows) == (1..Len(tracked)) \ Take(rows, Len(tracked))[1]
 RECURSIVE InOrder(_)
 InOrder(S) == IF S = {} THEN <<>>
               ELSE LET i == CHOOSE j \in S : \A k \in S : j <= k
@@ -82,7 +105,7 @@ Create ==
        /\ reply = "ok" => b
        /\ reply = "refused" => ~b
        /\ began' = b
-       /\ hist' = IF b THEN <<<<{0}, <<Prompt>>>>>> ELSE <<>>
+       /\ hist' = IF b THEN <<<<{0}, Lines(Prompt)>>>> ELSE <<>>
        /\ ended' = ~b
        /\ start' = IF reply = "ok" THEN "running"
                    ELSE IF reply = "refused" \/ ~KeepsUncertain THEN "deleted"
@@ -118,15 +141,19 @@ HermesSteer(i) ==
        ELSE UNCHANGED <<waiting, accepted, replies>>
   /\ UNCHANGED <<start, began, hist, ended, named, said, tracked, rowsSeen, phase, h1, lostBefore, lost, known>>
 
-\* The app records an accepted steer, with how often its words already show:
-\* in the rows drawn, plus recorded steers with those words still unseen.
+\* The app records an accepted steer, with the runs of its lines free in the rows
+\* drawn once the steers recorded before it took theirs (app.ts steerRun). With
+\* TakesLines off it counts every run, plus recorded steers with those words
+\* still unseen.
 Record(i) ==
   /\ i \in replies
   /\ replies' = replies \ {i}
   /\ LET x == said[i]
          rows == IF rowsSeen = NONE THEN <<>> ELSE rowsSeen
+         free == Cardinality(Starts(rows, x, Take(rows, Len(tracked))[2]))
+         same == Cardinality({j \in Unseen(rows) : tracked[j].words = x})
      IN tracked' = Append(tracked, [id |-> i, words |-> x,
-          before |-> RowCount(rows, x) + Cardinality({j \in Unseen(rows) : tracked[j].words = x})])
+          before |-> free + (IF TakesLines THEN 0 ELSE same)])
   /\ UNCHANGED <<start, began, hist, waiting, ended, named, said, posts, accepted, rowsSeen, phase, h1, lostBefore, lost, known>>
 
 \* The reply is lost, so the app shows an error for a steer Hermes has.
@@ -136,10 +163,10 @@ LoseReply(i) ==
   /\ UNCHANGED <<start, began, hist, waiting, ended, named, said, posts, accepted, tracked, rowsSeen, phase, h1, lostBefore, lost, known>>
 
 \* The agent reads every steer waiting, and Hermes saves them as one user row,
-\* their words joined by newlines (interrupt_control.py _drain_pending_steer).
+\* their lines joined by newlines (interrupt_control.py _drain_pending_steer).
 Deliver ==
   /\ ~ended /\ waiting # <<>>
-  /\ hist' = Append(hist, <<{waiting[k][1] : k \in 1..Len(waiting)}, Words(waiting)>>)
+  /\ hist' = Append(hist, <<{waiting[k][1] : k \in 1..Len(waiting)}, LinesOf(Words(waiting))>>)
   /\ waiting' = <<>>
   /\ UNCHANGED <<start, began, ended, named, said, posts, replies, accepted, tracked, rowsSeen, phase, h1, lostBefore, lost, known>>
 
@@ -170,12 +197,15 @@ ReadStatus ==
 
 \* The run ended. History read before the status can miss a steer saved as the
 \* run ended, so it is read once more when a steer is unseen. A steer neither
-\* saved nor named never reached the run either.
+\* saved nor named never reached the run either. A steer counts as named when its
+\* lines run whole through pending_steer (app.ts transcript named).
 Settle ==
   /\ phase = "status" /\ Settled
   /\ LET rows == IF RereadsHistory /\ Unseen(h1) # {} THEN Rows(hist) ELSE h1
          missed == InOrder(Unseen(rows))
-     IN lost' = lostBefore \o SelectSeq(missed, LAMBDA x : x \notin Range(lostBefore))
+         all == LinesOf(lostBefore)
+         isNamed(x) == \E j \in 1..Len(all) : RunAt(all, j, x)
+     IN lost' = lostBefore \o SelectSeq(missed, LAMBDA x : ~isNamed(x))
   /\ known' = {tracked[k].id : k \in 1..Len(tracked)}
   /\ phase' = "done"
   /\ UNCHANGED <<start, began, hist, waiting, ended, named, said, posts, replies, accepted, tracked, rowsSeen, h1, lostBefore>>
