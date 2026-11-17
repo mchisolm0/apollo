@@ -101,7 +101,7 @@ function statusForSession(
 ): Pick<InboxSession, 'status' | 'settled' | 'attention' | 'pendingApproval' | 'failed'> {
   const runBelongs = activeRun?.sessionId === session.id;
   const runEvents = runBelongs ? eventsForRun(events, activeRun) : [];
-  const approval = runBelongs ? currentApproval(runEvents as readonly HermesRunEvent[], activeRun) : undefined;
+  const approval = runBelongs ? currentApproval(runEvents as readonly HermesRunEvent[], activeRun, { now: Date.now() / 1000 }) : undefined;
   const latestRequest = runEvents.findLastIndex((event) => event.event === 'approval.request');
   const latestResponse = runEvents.findLastIndex((event) => event.event === 'approval.responded');
   const pendingApproval = Boolean(approval) || Boolean(runBelongs && activeRun?.status === 'waiting_for_approval' && latestResponse < latestRequest && !runEvents.some((event) => TERMINAL_RUNS.has(event.event.replace('run.', '') as HermesRunStatus['status'])));

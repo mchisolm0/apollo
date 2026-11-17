@@ -11,26 +11,41 @@ const requestIdOf = (event: HermesRunEvent): string | undefined => {
 };
 
 /**
- * The requests a run still waits on, oldest first. Parallel subagents can ask at once, and Hermes
- * settles an answer by its request id, or the oldest request without one. Hermes denies a request
- * `timeoutSeconds` after it asked without an event, so with `expiry` an older one is gone.
+ * When Hermes denies a request nobody answered: its own `timeout_s`, which Hermes captured when it
+ * asked, else `timeoutSeconds` from the config. Hermes denies it then without an event.
  */
-export function openApprovals(events: readonly HermesRunEvent[], expiry?: { timeoutSeconds: number; now: number }): HermesRunEvent[] {
+export function approvalDeadline(ask: Readonly<Record<string, unknown>>, timeoutSeconds?: number): number | undefined {
+  const limit = typeof ask.timeout_s === 'number' ? ask.timeout_s : timeoutSeconds;
+  return limit && typeof ask.timestamp === 'number' ? ask.timestamp + limit : undefined;
+}
+
+/**
+ * The requests a run still waits on, oldest first. Parallel subagents can ask at once, and Hermes
+ * settles an answer by its request id, or the oldest request still waiting without one. With
+ * `expiry.now`, a request past its deadline is gone.
+ */
+export function openApprovals(events: readonly HermesRunEvent[], expiry?: { timeoutSeconds?: number; now?: number }): HermesRunEvent[] {
+  const expiredBy = (ask: HermesRunEvent, at: number | undefined) => {
+    const deadline = approvalDeadline(ask, expiry?.timeoutSeconds);
+    return deadline !== undefined && at !== undefined && deadline <= at;
+  };
   let open: HermesRunEvent[] = [];
+  const closed = new Set<string>();
   for (const event of events) {
-    if (event.event === 'approval.request') open.push(event);
-    else if (event.event === 'approval.responded') {
-      const id = requestIdOf(event);
-      const at = id ? open.findIndex((ask) => requestIdOf(ask) === id) : 0;
+    const id = requestIdOf(event);
+    if (event.event === 'approval.request') {
+      if (!id || (!closed.has(id) && !open.some((ask) => requestIdOf(ask) === id))) open.push(event);
+    } else if (event.event === 'approval.responded') {
+      const at = id ? open.findIndex((ask) => requestIdOf(ask) === id) : open.findIndex((ask) => !expiredBy(ask, event.timestamp));
+      if (id) closed.add(id);
       if (at >= 0) open = open.filter((_, index) => index !== at);
     } else if (RUN_ENDS.has(event.event)) open = [];
   }
-  if (!expiry?.timeoutSeconds) return open;
-  return open.filter((ask) => ask.timestamp === undefined || ask.timestamp + expiry.timeoutSeconds > expiry.now);
+  return expiry?.now === undefined ? open : open.filter((ask) => !expiredBy(ask, expiry.now));
 }
 
 /** The request a thread shows: the oldest one still open. Events win over a stale status approval. */
-export function currentApproval(events: readonly HermesRunEvent[], status?: HermesRunStatus, expiry?: { timeoutSeconds: number; now: number }): HermesApprovalRequest | undefined {
+export function currentApproval(events: readonly HermesRunEvent[], status?: HermesRunStatus, expiry?: { timeoutSeconds?: number; now?: number }): HermesApprovalRequest | undefined {
   if (status && !isRunActive(status.status)) return undefined;
   const decided = events.some((event) => event.event === 'approval.request' || event.event === 'approval.responded' || RUN_ENDS.has(event.event));
   if (decided) return openApprovals(events, expiry)[0];

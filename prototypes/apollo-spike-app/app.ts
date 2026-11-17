@@ -16,7 +16,7 @@ import { attachmentMessage, MAX_ATTACHMENT_BYTES, splitAttachmentMessage, type A
 import { createTranscriptProjector, cronDelivery, type TranscriptRow } from './apollo/src/features/relay/transcript.ts';
 import { setClock } from './apollo/clock.ts';
 import { normalizeEndpoint } from './apollo/src/lib/endpoint.ts';
-import { currentApproval, isRunActive, statusAfterEvent } from './apollo/src/lib/run-state.ts';
+import { approvalDeadline, currentApproval, isRunActive, statusAfterEvent } from './apollo/src/lib/run-state.ts';
 import type { HermesMessage, HermesRunEvent, HermesRunState, HermesRunStatus, HermesSession } from './apollo/src/lib/types.ts';
 
 const SECRET = 'apollo.credential';
@@ -652,7 +652,6 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       const asked: Row[] = approval && command ? [{ id: `approval-${requestId}`, kind: 'approval', text: command, table: [], status: '', summary: approval.description ?? '', running: false, startedAt: 0, steps: [] }] : [];
       // Hermes denies a request after `timeout` seconds from when it asked. One that closed that late
       // without an answer from here expired; one closed sooner was answered elsewhere.
-      const askedAt = events.find((e) => e.event === 'approval.request' && requestIdOf(e) === requestId)?.timestamp;
       const expired = timeout ? events.flatMap((e, i): Row[] => {
         const id = requestIdOf(e), at = e.timestamp;
         if (e.event !== 'approval.request' || at === undefined || id === requestId || answeredHere.has(id)) return [];
@@ -664,7 +663,7 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       return {
         ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", canSettle: false, recent, title, rows: [...withSteers(withExpired(toRows(rows), sessionId), messages, sessionId, runId), ...asked], runId, status: current.status, active: running, ended: !running, error,
         ...(approval && command ? { approvalId: requestId, approvalTitle: approval.tool ? `Allow ${approval.tool}?` : 'Allow this command?', approvalCommand: command, approvalReason: approval.description ?? '', approvalChoices: approvalChoices(approval.choices),
-          approvalDeadline: timeout && askedAt !== undefined ? (askedAt + timeout) * 1000 : 0 } : {}),
+          approvalDeadline: (approvalDeadline(approval, timeout) ?? 0) * 1000 } : {}),
       };
     };
     const take = (data: string) => {

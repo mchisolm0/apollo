@@ -8,6 +8,12 @@ const RUN_ENDS = new Set(["run.completed", "run.failed", "run.cancelled", "run.i
 // counts as gone a little after that, so it never looks gone while Hermes still waits on it.
 const GRACE_SECONDS = 5;
 
+/** When a request counts as gone: its own `timeout_s`, which Hermes captured when it asked, else the config's. */
+function deadline(ask, timeoutSeconds) {
+  const limit = typeof ask.timeout_s === "number" ? ask.timeout_s : timeoutSeconds;
+  return limit && typeof ask.timestamp === "number" ? ask.timestamp + limit + GRACE_SECONDS : undefined;
+}
+
 const wait = (delay, signal) => new Promise((resolve) => {
   const timer = setTimeout(resolve, delay);
   timer.unref?.();
@@ -68,14 +74,18 @@ export function createApprovalTracker({ readEvents, timeoutSeconds, retryInterva
     return runs.get(runId);
   };
   const close = (run, id) => { run.open.delete(id); run.closed.add(id); };
+  // The config's timeout as last read, for requests that don't carry their own.
+  let configTimeout = 0;
+  const expiredBy = (ask, at) => { const end = deadline(ask, configTimeout); return end !== undefined && typeof at === "number" && end <= at; };
 
   function apply(run, seq, event) {
     if (seq !== undefined) run.seq = Math.max(run.seq, seq);
     const id = typeof event.request_id === "string" && VALID_ID.test(event.request_id) ? event.request_id : null;
-    if (event.event === "approval.request" && id) run.open.set(id, event);
+    // A replay can arrive after Hermes said a request was gone; it stays closed.
+    if (event.event === "approval.request" && id) { if (!run.closed.has(id)) run.open.set(id, event); }
     else if (event.event === "approval.responded") {
-      // Without a request id Hermes settles the oldest request.
-      const settled = id ?? run.open.keys().next().value;
+      // Without a request id Hermes settles the oldest request still waiting then.
+      const settled = id ?? [...run.open].find(([, ask]) => !expiredBy(ask, event.timestamp))?.[0];
       if (settled !== undefined) close(run, settled);
     } else if (RUN_ENDS.has(event.event)) {
       for (const open of [...run.open.keys()]) close(run, open);
@@ -104,17 +114,15 @@ export function createApprovalTracker({ readEvents, timeoutSeconds, retryInterva
     },
 
     /**
-     * The requests the run waits on, oldest first: the open ones from its events, younger than the
-     * timeout, plus the one on `status` if the stream hasn't shown it yet.
+     * The requests the run waits on, oldest first: the open ones from its events, before their
+     * deadline, plus the one on `status` unless it closed.
      */
     async open(runId, status) {
-      const limit = await timeoutSeconds().catch(() => 0);
+      configTimeout = await timeoutSeconds().catch(() => configTimeout);
       const now = Date.now() / 1000;
       const run = runOf(runId);
       // Hermes has dropped a timed-out request from its queue, so it leaves this one too.
-      for (const [id, ask] of run.open) {
-        if (limit && typeof ask.timestamp === "number" && ask.timestamp + limit + GRACE_SECONDS <= now) close(run, id);
-      }
+      for (const [id, ask] of run.open) if (expiredBy(ask, now)) close(run, id);
       const asks = [...run.open.values()];
       const current = status.status === "waiting_for_approval" ? status.approval : null;
       if (current && !run.closed.has(current.request_id) && !asks.some((ask) => ask.request_id === current.request_id)) asks.push(current);

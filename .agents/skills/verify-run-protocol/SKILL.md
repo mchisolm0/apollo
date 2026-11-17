@@ -74,8 +74,8 @@ reports `FAIL ... got pass` once the gap is closed. Then move it to the app runs
 The app runs assume each steer's reply lands before the screen reads history
 again (`OnTime`). `late-reply` is the same model without it. They also assume
 the screen and the connector drop a timed-out request only after Hermes denied
-it: both count from the request's timestamp on Hermes's clock, and the
-connector waits 5 seconds more.
+it: both count the request's own `timeout_s` from its timestamp on Hermes's
+clock, and the connector waits 5 seconds more.
 
 ## When it fails
 
@@ -120,6 +120,7 @@ NousResearch/hermes-agent 40d1e95.
 | `connector/away.mjs` | `deny`, by request id |
 | `connector/notifications.mjs` | the run monitor: away mode denies every open request first, then the bridge |
 | `connector/run-approvals.mjs` | following the run's events for its open requests, dropping timed-out ones, `settled` |
+| `src/app/(sessions)/session/[id].tsx`, `src/lib/apollo-context.tsx` | the Expo thread screen: the oldest open request, drawn again at its deadline; an answer closes only its own request, and one Hermes says is gone |
 | `cloud/src/inbox.ts` | answering a card resolves it and appends an action event |
 | Hermes `gateway/platforms/api_server_runs.py` | the status shows the newest request, answering one returns the run to running, steers only while running |
 | Hermes `tools/approval.py` | answering by exact `request_id`, or the oldest without one |
@@ -146,7 +147,7 @@ compression. The steer echoes drawn while the run streams count from the history
 saved steer that compression summarized mid-run shows as an echo until the thread reopens.
 
 
-The Expo app's thread screen, which has its own steer and approval code. Push
+The Expo app's steers, which have their own code. Push
 notifications and the direct-push fallback when the cloud is down. Retrying a
 lost start, which sends a fresh `Idempotency-Key` and can start a second run.
 Another phone or client steering the same run, whose steer rows count as this one's. Steer echoes while the run streams, approval tiers and countdowns, routines,
