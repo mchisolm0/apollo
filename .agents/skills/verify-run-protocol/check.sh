@@ -37,10 +37,11 @@ any-words     | Steers    | $steers                       | CountsBefore     | U
 late-reply    | Steers    | ${steers/OnTime=TRUE/OnTime=FALSE} |             | UndeliveredExact
 whole-rows    | Steers    | $steers                       | SplitsRows       | UndeliveredExact
 shared-lines  | Steers    | $steers                       | TakesLines       | UndeliveredExact
+send-order    | Steers    | $steers                       | LongestFirst     | UndeliveredExact
 "
 flags() { case $1 in
   Approvals) echo "AnswersById ClosesStaleCards" ;;
-  Steers) echo "KeepsUncertain RereadsHistory CountsBefore SplitsRows TakesLines" ;;
+  Steers) echo "KeepsUncertain RereadsHistory CountsBefore SplitsRows TakesLines LongestFirst" ;;
 esac; }
 rules() { case $1 in
   Approvals) echo "AnswerMatches PendingVisible CardsCurrent" ;;

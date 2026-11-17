@@ -23,11 +23,13 @@ a request out:
 runs (one steer request in flight at a time, as the composer allows), and
 opened again after the run ends. A steer can repeat another's words or the
 first message's, span two lines, or share a row: Hermes saves the steers it
-reads at once as one row:
+reads at once as one row, and can save two rows in either order:
 
 4. **KeepsStarted.** The app never deletes a thread whose run began.
-5. **UndeliveredExact.** The reopened thread names each steer Hermes never
-   saved exactly once, and no other.
+5. **UndeliveredExact.** The reopened thread's note holds the lines of each
+   steer Hermes never saved, once, and no others. It is judged by lines
+   because the note joins steers with newlines: `a` and `b` read the same as
+   one `a\nb`, and history can't tell them apart either.
 
 ## Run it
 
@@ -52,6 +54,7 @@ on the rule it names, which proves that rule can still catch a bug:
 | `any-words` | counting a steer's words against `before` | UndeliveredExact |
 | `whole-rows` | counting a steer inside a row Hermes joined | UndeliveredExact |
 | `shared-lines` | each saved line counting for one steer only | UndeliveredExact |
+| `send-order` | steers with more lines taking theirs first | UndeliveredExact |
 
 ## Known gaps
 
@@ -100,7 +103,7 @@ NousResearch/hermes-agent 40d1e95.
 
 | File | What the models stand for |
 | --- | --- |
-| `prototypes/apollo-spike-app/app.ts` | `answerApproval`, `steerRun` and its `before` count, `freeRuns` and `reconcile`, where each steer takes its own saved lines in the order sent, `createThread` and `start`, the reopen in `transcript` (`unseen`, the second history read, `undelivered`) |
+| `prototypes/apollo-spike-app/app.ts` | `answerApproval`, `steerRun` and its `before` count, `freeRuns` and `reconcile`, where each steer takes its own saved lines, longest first, `createThread` and `start`, the reopen in `transcript` (`unseen`, the second history read, `undelivered`) |
 | `prototypes/apollo-spike-app/app.contract` | `canSteer`: no new steer while one is on its way |
 | `src/lib/run-state.ts` | `currentApproval`, the request the thread screen shows |
 | `src/features/relay/transcript.ts` | a saved steer row's words, read from inside Hermes's out-of-band marker |
@@ -112,6 +115,7 @@ NousResearch/hermes-agent 40d1e95.
 | Hermes `gateway/platforms/api_server_runs.py` | the status shows the newest request, answering one returns the run to running, steers only while running |
 | Hermes `tools/approval.py` | answering by exact `request_id`, or the oldest without one |
 | Hermes `agent/interrupt_control.py` | one drain reads every waiting steer as one joined row, `pending_steer` on a finished run, steers dropped unnamed on a hard stop |
+| Hermes `agent/agent_runtime_helpers.py`, `agent/turn_iteration_prep.py` | a steer read after a tool batch goes last, one read just before the next model call goes ahead of it while neither is saved |
 
 ## Not covered
 

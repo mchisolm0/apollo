@@ -505,10 +505,11 @@ function withExpired(rows: Row[], sessionId: string): Row[] {
 // Steers this phone sent into a running turn, drawn under it until Hermes's history has them, and
 // what Hermes said it never delivered (`pending_steer` on a terminal event), until the next send.
 // Hermes saves each steer once, alone or joined by newlines with the steers it read at the same
-// time. So each steer, in the order sent, takes the first free run of its lines in the user rows
-// past the `before` runs that were free when it was sent, and no other steer can take those lines.
-// An earlier message with the same words doesn't hide a steer, and a repeated steer waits for its
-// own copy.
+// time, and can save two in either order. So each steer takes the first free run of its lines in
+// the user rows past the `before` runs that were free when it was sent, and no other steer can
+// take those lines. Steers with more lines take theirs first, so a shorter steer can't take part
+// of a longer one's row. An earlier message with the same words doesn't hide a steer, and a
+// repeated steer waits for its own copy.
 const steers = new Map<string, { text: string; before: number }[]>();
 // The run each thread last steered, kept past the run ledger so a reopened thread can still check it.
 const steeredRun = new Map<string, string>();
@@ -530,12 +531,15 @@ function freeRuns(rows: Row[], text: string, taken: ReadonlySet<string>): string
 }
 // Which of a run's steers the rows show, in the order sent, and the lines those steers took.
 function reconcile(rows: Row[], runId: string) {
+  const list = steers.get(runId) ?? [];
+  const lines = (text: string) => text.split(/\r?\n/).length;
   const taken = new Set<string>();
-  const shown = (steers.get(runId) ?? []).map(({ text, before }) => {
-    const at = freeRuns(rows, text, taken)[before];
+  const shown = list.map(() => false);
+  for (const i of [...list.keys()].sort((x, y) => lines(list[y].text) - lines(list[x].text))) {
+    const at = freeRuns(rows, list[i].text, taken)[list[i].before];
     at?.forEach((x) => taken.add(x));
-    return at !== undefined;
-  });
+    shown[i] = at !== undefined;
+  }
   return { shown, taken };
 }
 // The steers sent into a run that history doesn't show yet, with their place in the order sent.
