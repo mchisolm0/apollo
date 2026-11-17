@@ -13,7 +13,7 @@ import { autoSettleSessionsDue, canSettleSession, deriveSessionInbox, isSessionS
 import { resolveSnoozePresets } from './apollo/src/features/relay/snooze-presets.ts';
 import { selectedSkillNames } from './apollo/src/features/relay/composer-skills.ts';
 import { attachmentMessage, MAX_ATTACHMENT_BYTES, splitAttachmentMessage, type Attachment } from './apollo/src/lib/attachments.ts';
-import { createTranscriptProjector, cronDelivery, type TranscriptRow } from './apollo/src/features/relay/transcript.ts';
+import { createTranscriptProjector, cronDelivery, userText, type TranscriptRow } from './apollo/src/features/relay/transcript.ts';
 import { setClock } from './apollo/clock.ts';
 import { normalizeEndpoint } from './apollo/src/lib/endpoint.ts';
 import { currentApproval, isRunActive, statusAfterEvent } from './apollo/src/lib/run-state.ts';
@@ -504,52 +504,33 @@ function withExpired(rows: Row[], sessionId: string): Row[] {
 
 // Steers this phone sent into a running turn, drawn under it until Hermes's history has them, and
 // what Hermes said it never delivered (`pending_steer` on a terminal event), until the next send.
-// Hermes saves each steer once, alone or joined by newlines with the steers it read at the same
-// time, and can save two in either order. So each steer takes the first free run of its lines in
-// the user rows past the `before` runs that were free when it was sent, and no other steer can
-// take those lines. Steers with more lines take theirs first, so a shorter steer can't take part
-// of a longer one's row. An earlier message with the same words doesn't hide a steer, and a
-// repeated steer waits for its own copy.
-const steers = new Map<string, { text: string; before: number }[]>();
+// Each run keeps its steers in the order sent and the newest message id history held when the
+// first was sent, so only this run's steer rows count.
+const steers = new Map<string, { since: number; texts: string[] }>();
 // The run each thread last steered, kept past the run ledger so a reopened thread can still check it.
 const steeredRun = new Map<string, string>();
 const undelivered = new Map<string, string>();
-const rowsSeen = new Map<string, Row[]>();
-// Each free whole run of `text`'s lines in the user rows, in order, as the `row:line` keys it covers.
-function freeRuns(rows: Row[], text: string, taken: ReadonlySet<string>): string[][] {
-  const want = text.split(/\r?\n/);
-  const found: string[][] = [];
-  rows.forEach((r, row) => {
-    if (r.kind !== 'user') return;
-    const lines = r.text.trim().split(/\r?\n/);
-    for (let k = 0; k + want.length <= lines.length; ) {
-      const at = want.map((_, j) => `${row}:${k + j}`);
-      if (want.every((w, j) => lines[k + j] === w) && !at.some((x) => taken.has(x))) { found.push(at); k += want.length; } else k++;
-    }
-  });
-  return found;
-}
-// Which of a run's steers the rows show, in the order sent, and the lines those steers took.
-function reconcile(rows: Row[], runId: string) {
-  const list = steers.get(runId) ?? [];
-  const lines = (text: string) => text.split(/\r?\n/).length;
-  const taken = new Set<string>();
-  const shown = list.map(() => false);
-  for (const i of [...list.keys()].sort((x, y) => lines(list[y].text) - lines(list[x].text))) {
-    const at = freeRuns(rows, list[i].text, taken)[list[i].before];
-    at?.forEach((x) => taken.add(x));
-    shown[i] = at !== undefined;
-  }
-  return { shown, taken };
-}
+// The history each thread screen drew last.
+const messagesSeen = new Map<string, readonly HermesMessage[]>();
+const lineCount = (text: string) => text.split(/\r?\n/).length;
 // The steers sent into a run that history doesn't show yet, with their place in the order sent.
-function unseen(rows: Row[], runId: string) {
-  const { shown } = reconcile(rows, runId);
-  return (steers.get(runId) ?? []).flatMap(({ text }, i) => (shown[i] ? [] : [{ text, i }]));
+// Hermes reads waiting steers first in, first out, saves the ones it read at once as one steer row
+// joined by newlines, and can save two rows in either order. So the saved steers are the first
+// ones sent, as many as fill the lines of the run's steer rows, whatever their words.
+function unseen(messages: readonly HermesMessage[], runId: string) {
+  const run = steers.get(runId);
+  if (!run) return [];
+  let saved = messages
+    .filter((m) => m.role === 'user' && m.displayKind === 'steer' && (m.sequence ?? 0) > run.since)
+    .reduce((n, m) => n + lineCount(userText(m.content ?? '').trim()), 0);
+  return run.texts.flatMap((text, i) => {
+    if (saved > 0) { saved -= lineCount(text); return []; }
+    return [{ text, i }];
+  });
 }
-function withSteers(rows: Row[], sessionId: string, runId: string): Row[] {
-  rowsSeen.set(sessionId, rows);
-  const echoes = unseen(rows, runId).map(({ text, i }): Row => ({ ...plain, id: `steer-${runId}-${i}`, kind: 'user', text, status: 'steered' }));
+function withSteers(rows: Row[], messages: readonly HermesMessage[], sessionId: string, runId: string): Row[] {
+  messagesSeen.set(sessionId, messages);
+  const echoes = unseen(messages, runId).map(({ text, i }): Row => ({ ...plain, id: `steer-${runId}-${i}`, kind: 'user', text, status: 'steered' }));
   const lost = undelivered.get(sessionId);
   return [...rows, ...echoes, ...(lost ? [{ ...plain, id: `undelivered-${sessionId}`, kind: 'error', text: `Hermes finished before it read: “${lost}”. Send it again as a new message.` }] : [])];
 }
@@ -594,28 +575,30 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       if (runId && unreachable) {
         // Shown as still running, so Stop stays and nothing new is sent over it.
         const thread: Thread = { ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", recent, title, canSettle: false,
-          rows: withSteers(toRows(project({ history: messages, events: [], running: false })), sessionId, runId), runId, status: 'unknown', active: true, error: 'Could not reach the running turn. Retry to check on it.' };
+          rows: withSteers(toRows(project({ history: messages, events: [], running: false })), messages, sessionId, runId), runId, status: 'unknown', active: true, error: 'Could not reach the running turn. Retry to check on it.' };
         await save(storage);
         return thread;
       }
       // A thread read with nothing running is read, as Apollo marks it.
       if (runId && l.runs[sessionId] === runId) delete l.runs[sessionId];
       l.read[sessionId] = Math.floor(now / 1000);
-      let rows = toRows(project({ history: messages, events: [], running: false }));
+      let saved = messages;
       // A steer the ended run neither saved nor named as undelivered never reached it either. History
       // read before the run's status can miss a steer saved as it ended, so it is read once more.
       if (runId) {
-        if (unseen(rows, runId).length) rows = toRows(createTranscriptProjector()({ history: (await history(store, sessionId)).messages, events: [], running: false }));
-        const missed = unseen(rows, runId).map((m) => m.text);
-        // Hermes joins every steer it never delivered with newlines, so a steer it named is a whole
-        // line run of that text.
-        const named = (text: string) => lostBefore !== undefined && `\n${lostBefore}\n`.includes(`\n${text}\n`);
-        const lost = [...(lostBefore ? [lostBefore] : []), ...missed.filter((text) => !named(text))];
+        if (unseen(saved, runId).length) saved = (await history(store, sessionId)).messages;
+        const missed = unseen(saved, runId).map((m) => m.text);
+        // pending_steer joins the steers still waiting when the run finished, the last ones sent; a
+        // hard stop names none. Unseen steers before those lines never reached the run either.
+        let named = lostBefore ? lineCount(lostBefore) : 0;
+        while (named > 0 && missed.length) named -= lineCount(missed.pop()!);
+        const lost = [...missed, ...(lostBefore ? [lostBefore] : [])];
         if (lost.length) undelivered.set(sessionId, lost.join('\n'));
         steers.delete(runId);
         steeredRun.delete(sessionId);
       }
-      const thread: Thread = { ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", recent, title, rows: withSteers(withExpired(rows, sessionId), sessionId, '') };
+      const rows = toRows((saved === messages ? project : createTranscriptProjector())({ history: saved, events: [], running: false }));
+      const thread: Thread = { ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", recent, title, rows: withSteers(withExpired(rows, sessionId), saved, sessionId, '') };
       // The kept copy leaves out the undelivered and expired notes, which last only until the next send.
       await keepThread(storage, l, { ...thread, recent: [], rows: thread.rows.filter((r) => !r.id.startsWith('undelivered-') && !r.id.startsWith('expired-')).slice(-KEEP_ROWS) });
       await save(storage);
@@ -648,7 +631,7 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       }) : [];
       if (expired.length) expiredAsks.set(sessionId, expired);
       return {
-        ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", canSettle: false, recent, title, rows: [...withSteers(withExpired(toRows(rows), sessionId), sessionId, runId), ...asked], runId, status: current.status, active: running, ended: !running, error,
+        ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", canSettle: false, recent, title, rows: [...withSteers(withExpired(toRows(rows), sessionId), messages, sessionId, runId), ...asked], runId, status: current.status, active: running, ended: !running, error,
         ...(approval && command ? { approvalId: requestId, approvalTitle: approval.tool ? `Allow ${approval.tool}?` : 'Allow this command?', approvalCommand: command, approvalReason: approval.description ?? '', approvalChoices: approvalChoices(approval.choices),
           approvalDeadline: timeout && askedAt !== undefined ? (askedAt + timeout) * 1000 : 0 } : {}),
       };
@@ -889,7 +872,7 @@ const sources: Sources = {
     local = fresh();
     await save(storage);
     sessionsSeen = []; cardsSeen = []; cardsLive = false; delivered = []; approvalTimeout = undefined;
-    steers.clear(); undelivered.clear(); rowsSeen.clear(); steeredRun.clear(); expiredAsks.clear(); answeredHere.clear();
+    steers.clear(); undelivered.clear(); messagesSeen.clear(); steeredRun.clear(); expiredAsks.clear(); answeredHere.clear();
     return ok;
   },
   inbox: ([, , showSettled, showSnoozed, query, now], store, storage) => { setClock(now); return inbox(showSettled, showSnoozed, query, now, store, storage); },
@@ -927,7 +910,7 @@ const sources: Sources = {
       const l = await state(storage);
       const runId = l.runs[sessionId];
       if (runId) steers.delete(runId);
-      undelivered.delete(sessionId); rowsSeen.delete(sessionId); steeredRun.delete(sessionId);
+      undelivered.delete(sessionId); messagesSeen.delete(sessionId); steeredRun.delete(sessionId);
       for (const ledger of [l.runs, l.read, l.snoozed, l.models]) delete ledger[sessionId];
       l.recent = l.recent.filter((r) => r.id !== sessionId);
       await forgetThread(storage, l, sessionId);
@@ -961,9 +944,8 @@ const sources: Sources = {
       const body = await api(store, `/v1/runs/${encodeURIComponent(runId)}/steer`, { method: 'POST', body: { input: text } });
       if (body.accepted !== true) throw new Error('Hermes did not take the message. Send it again when the run ends.');
       const sent = text.trim();
-      const rows = rowsSeen.get(sessionId) ?? [];
-      const before = freeRuns(rows, sent, reconcile(rows, runId).taken).length;
-      steers.set(runId, [...(steers.get(runId) ?? []), { text: sent, before }]);
+      const run = steers.get(runId) ?? { since: Math.max(0, ...(messagesSeen.get(sessionId) ?? []).map((m) => m.sequence ?? 0)), texts: [] };
+      steers.set(runId, { ...run, texts: [...run.texts, sent] });
       steeredRun.set(sessionId, runId);
       return ok;
     } catch (e) {

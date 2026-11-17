@@ -33,15 +33,13 @@ two-at-once   | Approvals | ${approvals/AtOnce=FALSE/AtOnce=TRUE} |          | P
 steers        | Steers    | $steers                       |                  | pass
 delete-start  | Steers    | $steers                       | KeepsUncertain   | KeepsStarted
 no-reread     | Steers    | $steers                       | RereadsHistory   | UndeliveredExact
-any-words     | Steers    | $steers                       | CountsBefore     | UndeliveredExact
+count-rows    | Steers    | $steers                       | CountsLines      | UndeliveredExact
+no-since      | Steers    | $steers                       | UsesSince        | UndeliveredExact
 late-reply    | Steers    | ${steers/OnTime=TRUE/OnTime=FALSE} |             | UndeliveredExact
-whole-rows    | Steers    | $steers                       | SplitsRows       | UndeliveredExact
-shared-lines  | Steers    | $steers                       | TakesLines       | UndeliveredExact
-send-order    | Steers    | $steers                       | LongestFirst     | UndeliveredExact
 "
 flags() { case $1 in
   Approvals) echo "AnswersById ClosesStaleCards" ;;
-  Steers) echo "KeepsUncertain RereadsHistory CountsBefore SplitsRows TakesLines LongestFirst" ;;
+  Steers) echo "KeepsUncertain RereadsHistory CountsLines UsesSince" ;;
 esac; }
 rules() { case $1 in
   Approvals) echo "AnswerMatches PendingVisible CardsCurrent" ;;

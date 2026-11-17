@@ -21,15 +21,17 @@ a request out:
 
 `Steers.tla` is one thread: created with its first message, steered while it
 runs (one steer request in flight at a time, as the composer allows), and
-opened again after the run ends. A steer can repeat another's words or the
-first message's, span two lines, or share a row: Hermes saves the steers it
-reads at once as one row, and can save two rows in either order:
+opened again after the run ends. Hermes's history has no steer ids, so the app
+counts the lines of the run's steer rows, and the first steers sent that fill
+them are the saved ones. Steers can repeat each other's words, span two lines,
+share a row (Hermes saves the steers it reads at once as one), and be saved out
+of order. History also holds a steer row from an earlier run:
 
 4. **KeepsStarted.** The app never deletes a thread whose run began.
 5. **UndeliveredExact.** The reopened thread's note holds the lines of each
-   steer Hermes never saved, once, and no others. It is judged by lines
-   because the note joins steers with newlines: `a` and `b` read the same as
-   one `a\nb`, and history can't tell them apart either.
+   steer Hermes never saved, in the order sent, and no others. It is judged by
+   lines because the note joins steers with newlines: `a` and `b` read the
+   same as one `a\nb`.
 
 ## Run it
 
@@ -51,10 +53,8 @@ on the rule it names, which proves that rule can still catch a bug:
 | `stale-cards` | the bridge resolving a card once its request leaves the status | CardsCurrent |
 | `delete-start` | `createThread` keeping a thread whose start is uncertain | KeepsStarted |
 | `no-reread` | the reopen reading history again after the run's status | UndeliveredExact |
-| `any-words` | counting a steer's words against `before` | UndeliveredExact |
-| `whole-rows` | counting a steer inside a row Hermes joined | UndeliveredExact |
-| `shared-lines` | each saved line counting for one steer only | UndeliveredExact |
-| `send-order` | steers with more lines taking theirs first | UndeliveredExact |
+| `count-rows` | counting lines, not rows, so a joined row counts for each steer in it | UndeliveredExact |
+| `no-since` | counting only steer rows newer than the history the first steer saw | UndeliveredExact |
 
 ## Known gaps
 
@@ -64,7 +64,7 @@ reports `FAIL ... got pass` once the gap is closed. Then move it to the app runs
 | Gap | Fails | What happens |
 | --- | --- | --- |
 | `two-at-once` | PendingVisible | Two subagents ask at once. Hermes's run status shows only the newest request, the bridge resolves the older card, and `currentApproval` shows only the newest. The older one waits unseen until Hermes times it out and denies it. |
-| `late-reply` | UndeliveredExact | A steer's reply lands after the screen read history again, or never lands. The app records it against the wrong count of matching words, so the reopen names a saved steer as undelivered, or misses a dropped one with the same words. Hermes's history has no steer ids, so matching by words is the limit. |
+| `late-reply` | UndeliveredExact | A steer's reply never lands, so the app doesn't track it, but Hermes saves it. Its lines count toward the saved ones, so the reopen misses a dropped steer. Or the first steer's reply lands after the screen drew its saved row, so that row counts as older than the run's steers. Hermes's history has no steer ids, so this is the limit. |
 
 The app runs assume each steer's reply lands before the screen reads history
 again (`OnTime`). `late-reply` is the same model without it.
@@ -103,10 +103,10 @@ NousResearch/hermes-agent 40d1e95.
 
 | File | What the models stand for |
 | --- | --- |
-| `prototypes/apollo-spike-app/app.ts` | `answerApproval`, `steerRun` and its `before` count, `freeRuns` and `reconcile`, where each steer takes its own saved lines, longest first, `createThread` and `start`, the reopen in `transcript` (`unseen`, the second history read, `undelivered`) |
+| `prototypes/apollo-spike-app/app.ts` | `answerApproval`, `steerRun` and the run's `since`, `unseen` counting the lines of the run's steer rows, `createThread` and `start`, the reopen in `transcript` (the second history read, pending_steer, `undelivered`) |
 | `prototypes/apollo-spike-app/app.contract` | `canSteer`: no new steer while one is on its way |
 | `src/lib/run-state.ts` | `currentApproval`, the request the thread screen shows |
-| `src/features/relay/transcript.ts` | a saved steer row's words, read from inside Hermes's out-of-band marker |
+| `src/features/relay/transcript.ts` | `userText`: a saved steer row's words, read from inside Hermes's out-of-band marker |
 | `connector/index.mjs` | `answerApproval`: answers by `request_id`, a 4xx means the request is gone |
 | `connector/cloud.mjs` | `createApprovalBridge`: posting, resolving stale cards, answering from card events |
 | `connector/away.mjs` | `deny`, by the request on the status |
@@ -115,13 +115,14 @@ NousResearch/hermes-agent 40d1e95.
 | Hermes `gateway/platforms/api_server_runs.py` | the status shows the newest request, answering one returns the run to running, steers only while running |
 | Hermes `tools/approval.py` | answering by exact `request_id`, or the oldest without one |
 | Hermes `agent/interrupt_control.py` | one drain reads every waiting steer as one joined row, `pending_steer` on a finished run, steers dropped unnamed on a hard stop |
-| Hermes `agent/agent_runtime_helpers.py`, `agent/turn_iteration_prep.py` | a steer read after a tool batch goes last, one read just before the next model call goes ahead of it while neither is saved |
+| Hermes `agent/agent_runtime_helpers.py`, `agent/turn_iteration_prep.py` | a steer read after a tool batch goes last, one read just before a model call goes ahead of the rows not saved yet |
+| Hermes `hermes_cli/web_routers/sessions.py` | history is the latest 500 messages, each with its id and `display_kind` (`steer` for a steer row) |
 
 ## Not covered
 
 The Expo app's thread screen, which has its own steer and approval code. Push
 notifications and the direct-push fallback when the cloud is down. Retrying a
 lost start, which sends a fresh `Idempotency-Key` and can start a second run.
-Steer echoes while the run streams, approval tiers and countdowns, routines,
+Another phone or client steering the same run, whose steer rows count as this one's. Steer echoes while the run streams, approval tiers and countdowns, routines,
 the connector restarting, and more than one run per thread. Each run's bounds
 are in `check.sh`. A pass covers those bounds, not every run.
