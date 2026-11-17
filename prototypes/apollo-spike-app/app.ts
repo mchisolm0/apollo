@@ -514,12 +514,13 @@ const undelivered = new Map<string, string>();
 // The history each thread screen drew last.
 const messagesSeen = new Map<string, readonly HermesMessage[]>();
 const lineCount = (text: string) => text.split(/\r?\n/).length;
-// How many lines of steers a steer row holds: its first and last lines are Hermes's out-of-band
-// marker, whatever the steers quote between them.
-function steerLines(content: string) {
-  const lines = content.trim().split(/\r?\n/);
+// How many lines of steers a user message holds, or 0 for one that isn't a steer row. Hermes types
+// steer rows `steer` and wraps them in its out-of-band marker, whatever the steers quote between its
+// first and last lines. A row compression merged a summary into loses the type but keeps the marker.
+function steerLines(m: HermesMessage) {
+  const lines = (m.content ?? '').trim().split(/\r?\n/);
   const wrapped = lines.length > 2 && lines[0].startsWith('[OUT-OF-BAND USER MESSAGE') && lines.at(-1) === '[/OUT-OF-BAND USER MESSAGE]';
-  return wrapped ? lines.length - 2 : lines.length;
+  return wrapped ? lines.length - 2 : m.displayKind === 'steer' ? lines.length : 0;
 }
 // The steers sent into a run that history doesn't show yet, with their place in the order sent.
 // Hermes reads waiting steers first in, first out, saves the ones it read at once as one steer row
@@ -529,8 +530,8 @@ function unseen(messages: readonly HermesMessage[], runId: string) {
   const run = steers.get(runId);
   if (!run) return [];
   let saved = messages
-    .filter((m) => m.role === 'user' && m.displayKind === 'steer' && (m.timestamp ?? 0) > run.since)
-    .reduce((n, m) => n + steerLines(m.content ?? ''), 0);
+    .filter((m) => m.role === 'user' && (m.timestamp ?? 0) > run.since)
+    .reduce((n, m) => n + steerLines(m), 0);
   return run.texts.flatMap((text, i) => {
     if (saved > 0) { saved -= lineCount(text); return []; }
     return [{ text, i }];

@@ -128,7 +128,9 @@ The model leaves out three things `app.ts` handles without it:
   away. So the reopen counts from history read back to `since`, including summarized rows
   (`historySince`).
 - A steer can quote Hermes's marker, so a steer row's lines are counted inside its first and last
-  lines (`steerLines`).
+  lines (`steerLines`). A steer row that compression merged a summary into loses its
+  `display_kind` but keeps the marker, so the marker also marks a steer row
+  (`agent/compaction_display.py`).
 
 Because `since` is a time, a server clock set back after the first steer can leave a saved steer
 looking older, and the reopen names it as undelivered. Hermes exposes no row id that survives
