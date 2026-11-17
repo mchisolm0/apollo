@@ -101,26 +101,27 @@ git log --oneline "$(git log -1 --format=%H -- .agents/skills/verify-run-protoco
   prototypes/apollo-spike-app/app.ts prototypes/apollo-spike-app/app.contract \
   src/lib/run-state.ts src/features/relay/transcript.ts \
   connector/index.mjs connector/cloud.mjs connector/away.mjs \
-  connector/notifications.mjs connector/run-approvals.mjs cloud/src/inbox.ts
+  connector/notifications.mjs connector/run-approvals.mjs cloud/src/inbox.ts \
+  'src/app/(sessions)/session/[id].tsx' src/lib/apollo-context.tsx
 ```
 
 ## Coverage
 
-Last checked against the covered code on 2026-11-16, and against Hermes at
+Last checked against the covered code on 2026-11-17, and against Hermes at
 NousResearch/hermes-agent 40d1e95.
 
 | File | What the models stand for |
 | --- | --- |
-| `prototypes/apollo-spike-app/app.ts` | `answerApproval` and a request Hermes says is gone, the shown request expiring at its timeout, `steerRun` and the run's `since`, `unseen` counting the lines of the run's steer rows, `createThread` and `start`, the reopen in `transcript` (the second history read, pending_steer, `undelivered`) |
+| `prototypes/apollo-spike-app/app.ts` | `answerApproval` by request id, the shown request expiring at its timeout, `steerRun` and the run's `since`, `unseen` counting the lines of the run's steer rows, `createThread` and `start`, the reopen in `transcript` (the second history read, pending_steer, `undelivered`) |
 | `prototypes/apollo-spike-app/app.contract` | `canSteer`: no new steer while one is on its way |
 | `src/lib/run-state.ts` | `openApprovals` and `currentApproval`: the oldest open request the thread screen shows |
 | `src/features/relay/transcript.ts` | `userText`: a saved steer row's words, read from inside Hermes's out-of-band marker |
-| `connector/index.mjs` | `answerApproval`: answers by `request_id`, a 4xx means the request is gone |
+| `connector/index.mjs` | `answerApproval`: answers by `request_id` |
 | `connector/cloud.mjs` | `createApprovalBridge`: a card for each open request, resolving cards whose request closed, answering from card events |
 | `connector/away.mjs` | `deny`, by request id |
 | `connector/notifications.mjs` | the run monitor: away mode denies every open request first, then the bridge |
 | `connector/run-approvals.mjs` | following the run's events for its open requests, dropping timed-out ones, `settled` |
-| `src/app/(sessions)/session/[id].tsx`, `src/lib/apollo-context.tsx` | the Expo thread screen: the oldest open request, drawn again at its deadline; an answer closes only its own request, and one Hermes says is gone |
+| `src/app/(sessions)/session/[id].tsx`, `src/lib/apollo-context.tsx` | the Expo thread screen: the oldest open request, and an answer by request id |
 | `cloud/src/inbox.ts` | answering a card resolves it and appends an action event |
 | Hermes `gateway/platforms/api_server_runs.py` | the status shows the newest request, answering one returns the run to running, steers only while running |
 | Hermes `tools/approval.py` | answering by exact `request_id`, or the oldest without one |
@@ -130,7 +131,14 @@ NousResearch/hermes-agent 40d1e95.
 
 ## Not covered
 
-The model leaves out three things `app.ts` handles without it:
+Every answer in the approvals model names its request. So it leaves out an id-less answer from
+another Hermes client, which settles the oldest request still waiting (past timed-out ones), or
+all of them with `resolve_all`. It also leaves out a 409 telling Apollo or the connector that a
+request is gone, which only hides that request so a late id-less answer still settles the one
+Hermes did, and the screen drawing again at a deadline. `src/lib/run-state.test.ts` and
+`connector/run-approvals.test.mjs` cover those.
+
+The steers model leaves out three things `app.ts` handles without it:
 - Compression copies rows under new ids but keeps their time, so `since` is a time
   (`hermes_state_messages.py`).
 - A long run can push its saved steers off the latest 500, and compression can summarize them

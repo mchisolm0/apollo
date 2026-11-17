@@ -643,8 +643,10 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       const current = run!;
       const running = isRunActive(current.status) && !closed;
       // Hermes can wait on several requests at once; the oldest still open shows first.
-      const asks = events.filter((e) => !(e.event === 'approval.request' && goneAsks.has(requestIdOf(e))));
-      const approval = running ? currentApproval(asks, current, timeout ? { timeoutSeconds: timeout, now: now / 1000 } : undefined) : undefined;
+      // A request Hermes said is gone only hides, so a late id-less answer settles the one Hermes did.
+      const asks = [...events, ...[...goneAsks].map((id): HermesRunEvent => ({ event: 'approval.gone', request_id: id }))];
+      // Each request carries its own timeout; the config's is only the fallback.
+      const approval = running ? currentApproval(asks, current, { timeoutSeconds: timeout || undefined, now: now / 1000 }) : undefined;
       const command = str(approval?.command) ?? str(approval?.preview);
       const rows = project({ history: messages, events, runId, runStartedAt: current.createdAt, runEndedAt: current.updatedAt, runStatus: current.status, runOutput: current.output, running });
       const requestId = requestIdOf(approval);

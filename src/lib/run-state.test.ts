@@ -53,3 +53,19 @@ test('a request expires at its own captured timeout, and an answer without an id
   const twice = [older, newer, { event: 'approval.responded', request_id: 'a' }, { event: 'approval.responded', request_id: 'a' }];
   assert.deepEqual(openApprovals(twice).map((ask) => ask.request_id), ['b']);
 });
+
+test('a request heard gone only hides, so a late id-less answer still settles the one Hermes did', () => {
+  const run = { runId: 'run-1', status: 'running' } as const;
+  const a = { event: 'approval.request', request_id: 'a', command: 'ls', timestamp: 100 };
+  const b = { event: 'approval.request', request_id: 'b', command: 'pwd', timestamp: 101 };
+  const gone = { event: 'approval.gone', request_id: 'a' };
+  // Another client answered a without an id; answering it here heard "gone" before that event arrived.
+  assert.equal(currentApproval([a, b, gone, { event: 'approval.responded', timestamp: 102 }], run)?.command, 'pwd');
+  // An id-less resolve_all settles as many as Hermes says.
+  assert.equal(currentApproval([a, b, { event: 'approval.responded', resolved: 2 }], run), undefined);
+  // The status's stale request stays hidden once gone or past its deadline.
+  const waiting = { runId: 'run-1', status: 'waiting_for_approval', approval: { request_id: 'a', command: 'ls', timestamp: 100, timeout_s: 60 } } as const;
+  assert.equal(currentApproval([gone], waiting), undefined);
+  assert.equal(currentApproval([], waiting, { now: 159 })?.command, 'ls');
+  assert.equal(currentApproval([], waiting, { now: 160 }), undefined);
+});

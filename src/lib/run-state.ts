@@ -5,7 +5,7 @@ export function isRunActive(status?: HermesRunStatus['status']): boolean {
 }
 
 const RUN_ENDS = new Set(['run.completed', 'run.failed', 'run.cancelled', 'run.interrupted']);
-const requestIdOf = (event: HermesRunEvent): string | undefined => {
+const requestIdOf = (event: Readonly<Record<string, unknown>>): string | undefined => {
   const id = event.request_id ?? event.requestId;
   return typeof id === 'string' && id ? id : undefined;
 };
@@ -19,16 +19,20 @@ export function approvalDeadline(ask: Readonly<Record<string, unknown>>, timeout
   return limit && typeof ask.timestamp === 'number' ? ask.timestamp + limit : undefined;
 }
 
+type ApprovalView = { timeoutSeconds?: number; now?: number };
+const expiredBy = (ask: Readonly<Record<string, unknown>>, at: number | undefined, timeoutSeconds?: number) => {
+  const deadline = approvalDeadline(ask, timeoutSeconds);
+  return deadline !== undefined && at !== undefined && deadline <= at;
+};
+
 /**
  * The requests a run still waits on, oldest first. Parallel subagents can ask at once, and Hermes
- * settles an answer by its request id, or the oldest request still waiting without one. With
- * `expiry.now`, a request past its deadline is gone.
+ * settles an answer by its request id, or else the oldest `resolved` requests still waiting. Hermes's
+ * own events are replayed first; an `approval.gone` event (Apollo heard the request already closed)
+ * and, with `view.now`, a deadline then only hide requests, so a late id-less answer still settles
+ * the request Hermes settled.
  */
-export function openApprovals(events: readonly HermesRunEvent[], expiry?: { timeoutSeconds?: number; now?: number }): HermesRunEvent[] {
-  const expiredBy = (ask: HermesRunEvent, at: number | undefined) => {
-    const deadline = approvalDeadline(ask, expiry?.timeoutSeconds);
-    return deadline !== undefined && at !== undefined && deadline <= at;
-  };
+export function openApprovals(events: readonly HermesRunEvent[], view?: ApprovalView): HermesRunEvent[] {
   let open: HermesRunEvent[] = [];
   const closed = new Set<string>();
   for (const event of events) {
@@ -36,20 +40,31 @@ export function openApprovals(events: readonly HermesRunEvent[], expiry?: { time
     if (event.event === 'approval.request') {
       if (!id || (!closed.has(id) && !open.some((ask) => requestIdOf(ask) === id))) open.push(event);
     } else if (event.event === 'approval.responded') {
-      const at = id ? open.findIndex((ask) => requestIdOf(ask) === id) : open.findIndex((ask) => !expiredBy(ask, event.timestamp));
-      if (id) closed.add(id);
-      if (at >= 0) open = open.filter((_, index) => index !== at);
+      if (id) {
+        closed.add(id);
+        open = open.filter((ask) => requestIdOf(ask) !== id);
+      } else {
+        const count = typeof event.resolved === 'number' && event.resolved > 0 ? event.resolved : 1;
+        const settled = open.filter((ask) => !expiredBy(ask, event.timestamp, view?.timeoutSeconds)).slice(0, count);
+        open = open.filter((ask) => !settled.includes(ask));
+      }
     } else if (RUN_ENDS.has(event.event)) open = [];
   }
-  return expiry?.now === undefined ? open : open.filter((ask) => !expiredBy(ask, expiry.now));
+  return open.filter((ask) => !hidden(events, ask, view));
+}
+
+/** Whether Apollo heard this request already closed, or its deadline passed by `view.now`. */
+function hidden(events: readonly HermesRunEvent[], ask: Readonly<Record<string, unknown>>, view?: ApprovalView): boolean {
+  const id = requestIdOf(ask);
+  return Boolean(id && events.some((event) => event.event === 'approval.gone' && requestIdOf(event) === id)) || expiredBy(ask, view?.now, view?.timeoutSeconds);
 }
 
 /** The request a thread shows: the oldest one still open. Events win over a stale status approval. */
-export function currentApproval(events: readonly HermesRunEvent[], status?: HermesRunStatus, expiry?: { timeoutSeconds?: number; now?: number }): HermesApprovalRequest | undefined {
+export function currentApproval(events: readonly HermesRunEvent[], status?: HermesRunStatus, view?: ApprovalView): HermesApprovalRequest | undefined {
   if (status && !isRunActive(status.status)) return undefined;
   const decided = events.some((event) => event.event === 'approval.request' || event.event === 'approval.responded' || RUN_ENDS.has(event.event));
-  if (decided) return openApprovals(events, expiry)[0];
-  return status?.status === 'waiting_for_approval' ? status.approval : undefined;
+  if (decided) return openApprovals(events, view)[0];
+  return status?.status === 'waiting_for_approval' && status.approval && !hidden(events, status.approval, view) ? status.approval : undefined;
 }
 
 export function statusAfterEvent(run: HermesRunStatus, event: HermesRunEvent): HermesRunStatus {

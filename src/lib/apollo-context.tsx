@@ -775,21 +775,23 @@ export function ApolloProvider({
   ): Promise<HermesApprovalResponse> => {
     const client = clients.current.get(agentId);
     if (!client) throw new Error('Agent is offline');
-    // Names the request, so the stream's own approval.responded for it closes nothing more.
-    const answered = { event: 'approval.responded', runId, ...(options?.requestId ? { request_id: options.requestId } : {}) };
     let result: HermesApprovalResponse;
     try {
       result = await client.approveRun(runId, choice, options);
     } catch (error) {
       // Answered elsewhere or timed out: close it here too, so the next request shows.
       if (!(error instanceof HermesRequestError && error.code === 'approval_not_pending' && options?.requestId)) throw error;
+      // Only hides it: a late id-less answer from Hermes still settles the request Hermes settled.
+      const gone = { event: 'approval.gone', runId, request_id: options.requestId };
       setRuntime((current) => {
         const existing = current[agentId];
-        return existing ? { ...current, [agentId]: { ...existing, events: [...existing.events, answered] } } : current;
+        return existing ? { ...current, [agentId]: { ...existing, events: [...existing.events, gone] } } : current;
       });
       throw new Error('That request already closed: it was answered elsewhere or ran out of time.');
     }
     const status = await client.runStatus(runId);
+    // Names the request, so the stream's own approval.responded for it closes nothing more.
+    const answered = { event: 'approval.responded', runId, ...(options?.requestId ? { request_id: options.requestId } : {}) };
     setRuntime((current) => {
       const existing = current[agentId];
       if (!existing || !existing.runs[runId]) return current;

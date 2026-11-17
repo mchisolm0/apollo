@@ -4,15 +4,19 @@
 import { VALID_ID } from "./cloud.mjs";
 
 const RUN_ENDS = new Set(["run.completed", "run.failed", "run.cancelled", "run.interrupted"]);
-// Hermes denies an unanswered request when its timeout runs out, without an event. A request
-// counts as gone a little after that, so it never looks gone while Hermes still waits on it.
+// Hermes denies an unanswered request when its timeout runs out, without an event. A card closes a
+// little after that, so it never closes while Hermes still waits on the request.
 const GRACE_SECONDS = 5;
 
-/** When a request counts as gone: its own `timeout_s`, which Hermes captured when it asked, else the config's. */
+/** When Hermes denies a request: its own `timeout_s`, which Hermes captured when it asked, else the config's. */
 function deadline(ask, timeoutSeconds) {
   const limit = typeof ask.timeout_s === "number" ? ask.timeout_s : timeoutSeconds;
-  return limit && typeof ask.timestamp === "number" ? ask.timestamp + limit + GRACE_SECONDS : undefined;
+  return limit && typeof ask.timestamp === "number" ? ask.timestamp + limit : undefined;
 }
+const expiredBy = (ask, at, timeoutSeconds, grace = 0) => {
+  const end = deadline(ask, timeoutSeconds);
+  return end !== undefined && typeof at === "number" && end + grace <= at;
+};
 
 const wait = (delay, signal) => new Promise((resolve) => {
   const timer = setTimeout(resolve, delay);
@@ -65,30 +69,36 @@ export async function readRunEvents({ url, apiKey, runId, after, onOpen = () => 
  * `timeoutSeconds()` resolves Hermes's approval timeout.
  */
 export function createApprovalTracker({ readEvents, timeoutSeconds, retryInterval = 2_000 }) {
-  // runId → { seq, open: Map<requestId, approval>, closed: Set<requestId>, ended, stream }. `closed`
-  // holds requests answered, timed out or gone, since the status keeps showing a timed-out one.
-  // `stream` is "unknown" until the first connection answers, then "live" or "none".
+  // runId → { seq, open: Map<requestId, approval>, answered: Set<requestId>, gone: Set<requestId>, ended, stream }.
+  // `open` and `answered` replay Hermes's events alone. `gone` holds requests Hermes said are gone
+  // when answered here; like a passed deadline it only hides a request, so a late id-less answer
+  // still settles the request Hermes settled. `stream` is "unknown" until the first connection
+  // answers, then "live" or "none".
   const runs = new Map();
   const runOf = (runId) => {
-    if (!runs.has(runId)) runs.set(runId, { seq: -1, open: new Map(), closed: new Set(), ended: false, stream: "unknown" });
+    if (!runs.has(runId)) runs.set(runId, { seq: -1, open: new Map(), answered: new Set(), gone: new Set(), ended: false, stream: "unknown" });
     return runs.get(runId);
   };
-  const close = (run, id) => { run.open.delete(id); run.closed.add(id); };
+  const answer = (run, id) => { run.open.delete(id); run.answered.add(id); };
   // The config's timeout as last read, for requests that don't carry their own.
   let configTimeout = 0;
-  const expiredBy = (ask, at) => { const end = deadline(ask, configTimeout); return end !== undefined && typeof at === "number" && end <= at; };
+  // Gone here: answered, said gone, or past its deadline and grace. Hermes's status keeps showing a timed-out request.
+  const closed = (run, ask, now) => run.answered.has(ask.request_id) || run.gone.has(ask.request_id) || expiredBy(ask, now, configTimeout, GRACE_SECONDS);
 
   function apply(run, seq, event) {
     if (seq !== undefined) run.seq = Math.max(run.seq, seq);
     const id = typeof event.request_id === "string" && VALID_ID.test(event.request_id) ? event.request_id : null;
-    // A replay can arrive after Hermes said a request was gone; it stays closed.
-    if (event.event === "approval.request" && id) { if (!run.closed.has(id)) run.open.set(id, event); }
+    if (event.event === "approval.request" && id) { if (!run.answered.has(id)) run.open.set(id, event); }
     else if (event.event === "approval.responded") {
-      // Without a request id Hermes settles the oldest request still waiting then.
-      const settled = id ?? [...run.open].find(([, ask]) => !expiredBy(ask, event.timestamp))?.[0];
-      if (settled !== undefined) close(run, settled);
+      if (id) answer(run, id);
+      else {
+        // Without a request id Hermes settles the oldest `resolved` requests still waiting then.
+        const count = Number.isSafeInteger(event.resolved) && event.resolved > 0 ? event.resolved : 1;
+        const settled = [...run.open].filter(([, ask]) => !expiredBy(ask, event.timestamp, configTimeout)).slice(0, count);
+        for (const [open] of settled) answer(run, open);
+      }
     } else if (RUN_ENDS.has(event.event)) {
-      for (const open of [...run.open.keys()]) close(run, open);
+      for (const open of [...run.open.keys()]) answer(run, open);
       run.ended = true;
     }
   }
@@ -97,6 +107,8 @@ export function createApprovalTracker({ readEvents, timeoutSeconds, retryInterva
     /** Follows the run's events until it ends, the stream is unavailable, or `signal` aborts. */
     async follow(runId, signal) {
       const run = runOf(runId);
+      // An id-less answer skips requests past their deadline, which can need the config's timeout.
+      configTimeout = await timeoutSeconds().catch(() => configTimeout);
       let delay = retryInterval;
       while (!signal.aborted && !run.ended) {
         try {
@@ -114,35 +126,36 @@ export function createApprovalTracker({ readEvents, timeoutSeconds, retryInterva
     },
 
     /**
-     * The requests the run waits on, oldest first: the open ones from its events, before their
-     * deadline, plus the one on `status` unless it closed.
+     * The requests the run waits on, oldest first: the open ones from its events, plus the one on
+     * `status`, unless gone here.
      */
     async open(runId, status) {
       configTimeout = await timeoutSeconds().catch(() => configTimeout);
       const now = Date.now() / 1000;
       const run = runOf(runId);
-      // Hermes has dropped a timed-out request from its queue, so it leaves this one too.
-      for (const [id, ask] of run.open) if (expiredBy(ask, now)) close(run, id);
       const asks = [...run.open.values()];
       const current = status.status === "waiting_for_approval" ? status.approval : null;
-      if (current && !run.closed.has(current.request_id) && !asks.some((ask) => ask.request_id === current.request_id)) asks.push(current);
-      return asks;
+      if (current && !asks.some((ask) => ask.request_id === current.request_id)) asks.push(current);
+      return asks.filter((ask) => !closed(run, ask, now));
     },
 
     /**
-     * The requests whose cards can close: a Set of those the stream showed closed, null while the
-     * stream hasn't answered yet (a status read then sees only the newest request, so absence means
-     * nothing), and undefined without a stream, when a request off the status is gone.
+     * The requests whose cards can close: a Set of those gone here, null while the stream hasn't
+     * answered yet (a status read then sees only the newest request, so absence means nothing),
+     * and undefined without a stream, when a request off the status is gone.
      */
     settled(runId) {
       const run = runs.get(runId);
       if (!run || run.stream === "none") return undefined;
-      return run.stream === "live" ? run.closed : null;
+      if (run.stream !== "live") return null;
+      const now = Date.now() / 1000;
+      const expired = [...run.open.values()].filter((ask) => expiredBy(ask, now, configTimeout, GRACE_SECONDS)).map((ask) => ask.request_id);
+      return new Set([...run.answered, ...run.gone, ...expired]);
     },
 
     /** Hermes said this request is gone (answered elsewhere or timed out). */
     gone(runId, requestId) {
-      close(runOf(runId), requestId);
+      runOf(runId).gone.add(requestId);
     },
 
     forget(runId) {
