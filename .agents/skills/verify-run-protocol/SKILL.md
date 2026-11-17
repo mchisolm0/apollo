@@ -55,6 +55,7 @@ on the rule it names, which proves that rule can still catch a bug:
 | `no-reread` | the reopen reading history again after the run's status | UndeliveredExact |
 | `count-rows` | counting lines, not rows, so a joined row counts for each steer in it | UndeliveredExact |
 | `no-since` | counting only steer rows newer than the history the first steer saw | UndeliveredExact |
+| `pending-order` | listing unseen steers in the order sent, not pending_steer's order | UndeliveredExact |
 
 ## Known gaps
 
@@ -116,9 +117,16 @@ NousResearch/hermes-agent 40d1e95.
 | Hermes `tools/approval.py` | answering by exact `request_id`, or the oldest without one |
 | Hermes `agent/interrupt_control.py` | one drain reads every waiting steer as one joined row, `pending_steer` on a finished run, steers dropped unnamed on a hard stop |
 | Hermes `agent/agent_runtime_helpers.py`, `agent/turn_iteration_prep.py` | a steer read after a tool batch goes last, one read just before a model call goes ahead of the rows not saved yet |
-| Hermes `hermes_cli/web_routers/sessions.py` | history is the latest 500 messages, each with its id and `display_kind` (`steer` for a steer row) |
+| Hermes `gateway/platforms/api_server.py` | `_handle_session_messages`: the latest 500 messages, each with its time and `display_kind` (`steer` for a steer row) |
 
 ## Not covered
+
+The model leaves out three things `app.ts` handles without it. Compression copies rows under new
+ids but keeps their time, so `since` is a time (`hermes_state_messages.py`). A long run can push
+its saved steers off the latest 500, so the reopen reads older pages back to `since`
+(`historySince`). A steer can quote Hermes's marker, so a steer row's lines are counted inside
+its first and last lines (`steerLines`).
+
 
 The Expo app's thread screen, which has its own steer and approval code. Push
 notifications and the direct-push fallback when the cloud is down. Retrying a

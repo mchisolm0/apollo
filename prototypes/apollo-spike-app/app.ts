@@ -13,7 +13,7 @@ import { autoSettleSessionsDue, canSettleSession, deriveSessionInbox, isSessionS
 import { resolveSnoozePresets } from './apollo/src/features/relay/snooze-presets.ts';
 import { selectedSkillNames } from './apollo/src/features/relay/composer-skills.ts';
 import { attachmentMessage, MAX_ATTACHMENT_BYTES, splitAttachmentMessage, type Attachment } from './apollo/src/lib/attachments.ts';
-import { createTranscriptProjector, cronDelivery, userText, type TranscriptRow } from './apollo/src/features/relay/transcript.ts';
+import { createTranscriptProjector, cronDelivery, type TranscriptRow } from './apollo/src/features/relay/transcript.ts';
 import { setClock } from './apollo/clock.ts';
 import { normalizeEndpoint } from './apollo/src/lib/endpoint.ts';
 import { currentApproval, isRunActive, statusAfterEvent } from './apollo/src/lib/run-state.ts';
@@ -504,8 +504,9 @@ function withExpired(rows: Row[], sessionId: string): Row[] {
 
 // Steers this phone sent into a running turn, drawn under it until Hermes's history has them, and
 // what Hermes said it never delivered (`pending_steer` on a terminal event), until the next send.
-// Each run keeps its steers in the order sent and the newest message id history held when the
-// first was sent, so only this run's steer rows count.
+// Each run keeps its steers in the order sent and the newest message time history held when the
+// first was sent, so only this run's steer rows count. Time, not id: compression copies rows under
+// new ids but keeps their time.
 const steers = new Map<string, { since: number; texts: string[] }>();
 // The run each thread last steered, kept past the run ledger so a reopened thread can still check it.
 const steeredRun = new Map<string, string>();
@@ -513,6 +514,13 @@ const undelivered = new Map<string, string>();
 // The history each thread screen drew last.
 const messagesSeen = new Map<string, readonly HermesMessage[]>();
 const lineCount = (text: string) => text.split(/\r?\n/).length;
+// How many lines of steers a steer row holds: its first and last lines are Hermes's out-of-band
+// marker, whatever the steers quote between them.
+function steerLines(content: string) {
+  const lines = content.trim().split(/\r?\n/);
+  const wrapped = lines.length > 2 && lines[0].startsWith('[OUT-OF-BAND USER MESSAGE') && lines.at(-1) === '[/OUT-OF-BAND USER MESSAGE]';
+  return wrapped ? lines.length - 2 : lines.length;
+}
 // The steers sent into a run that history doesn't show yet, with their place in the order sent.
 // Hermes reads waiting steers first in, first out, saves the ones it read at once as one steer row
 // joined by newlines, and can save two rows in either order. So the saved steers are the first
@@ -521,8 +529,8 @@ function unseen(messages: readonly HermesMessage[], runId: string) {
   const run = steers.get(runId);
   if (!run) return [];
   let saved = messages
-    .filter((m) => m.role === 'user' && m.displayKind === 'steer' && (m.sequence ?? 0) > run.since)
-    .reduce((n, m) => n + lineCount(userText(m.content ?? '').trim()), 0);
+    .filter((m) => m.role === 'user' && m.displayKind === 'steer' && (m.timestamp ?? 0) > run.since)
+    .reduce((n, m) => n + steerLines(m.content ?? ''), 0);
   return run.texts.flatMap((text, i) => {
     if (saved > 0) { saved -= lineCount(text); return []; }
     return [{ text, i }];
@@ -546,6 +554,19 @@ function opened(l: Local, id: string, title: string) {
 function inboxFacts(sessionId: string) {
   const s = sessionsSeen.find((x) => x.id === sessionId);
   return { settled: s?.settled ?? false, canSettle: s ? canSettleSession(s) : false, autoSettle: !(s?.autoSettleDisabled ?? false), activityAt: s?.activityAt ?? 0 };
+}
+
+// Older pages of history, read until they reach `since`: Hermes returns the latest 500 messages, and a
+// long run can push its own steer rows off that page.
+async function historySince(store: Store, sessionId: string, messages: HermesMessage[], since: number) {
+  let all = messages;
+  while (all.length && all.length % 500 === 0 && (all[0].timestamp ?? 0) > since) {
+    const page = await api(store, `/api/sessions/${encodeURIComponent(sessionId)}/messages?order=latest&limit=500&offset=${all.length}`);
+    const older = ((page.data as Json[] | undefined) ?? []).map(parseMessage);
+    if (!older.length) break;
+    all = [...older, ...all];
+  }
+  return all;
 }
 
 async function history(store: Store, sessionId: string) {
@@ -587,12 +608,15 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       // read before the run's status can miss a steer saved as it ended, so it is read once more.
       if (runId) {
         if (unseen(saved, runId).length) saved = (await history(store, sessionId)).messages;
-        const missed = unseen(saved, runId).map((m) => m.text);
-        // pending_steer joins the steers still waiting when the run finished, the last ones sent; a
-        // hard stop names none. Unseen steers before those lines never reached the run either.
-        let named = lostBefore ? lineCount(lostBefore) : 0;
-        while (named > 0 && missed.length) named -= lineCount(missed.pop()!);
-        const lost = [...missed, ...(lostBefore ? [lostBefore] : [])];
+        const since = steers.get(runId)?.since;
+        const counted = since !== undefined && unseen(saved, runId).length ? await historySince(store, sessionId, saved, since) : saved;
+        const missed = unseen(counted, runId).map((m) => m.text);
+        // pending_steer joins the steers still waiting when the run finished, and a hard stop names
+        // none. The note lists the unseen steers in the order sent, since a requeued steer can sit
+        // behind newer ones in pending_steer. Only a pending_steer with more lines, from steers whose
+        // reply never landed here, says more.
+        const unseenLines = missed.reduce((n, text) => n + lineCount(text), 0);
+        const lost = lostBefore && lineCount(lostBefore) > unseenLines ? [lostBefore] : missed;
         if (lost.length) undelivered.set(sessionId, lost.join('\n'));
         steers.delete(runId);
         steeredRun.delete(sessionId);
@@ -944,7 +968,7 @@ const sources: Sources = {
       const body = await api(store, `/v1/runs/${encodeURIComponent(runId)}/steer`, { method: 'POST', body: { input: text } });
       if (body.accepted !== true) throw new Error('Hermes did not take the message. Send it again when the run ends.');
       const sent = text.trim();
-      const run = steers.get(runId) ?? { since: Math.max(0, ...(messagesSeen.get(sessionId) ?? []).map((m) => m.sequence ?? 0)), texts: [] };
+      const run = steers.get(runId) ?? { since: Math.max(0, ...(messagesSeen.get(sessionId) ?? []).map((m) => m.timestamp ?? 0)), texts: [] };
       steers.set(runId, { ...run, texts: [...run.texts, sent] });
       steeredRun.set(sessionId, runId);
       return ok;

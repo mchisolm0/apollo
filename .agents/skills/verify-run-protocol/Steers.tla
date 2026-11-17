@@ -14,6 +14,7 @@ CONSTANTS
   RereadsHistory,   \* FALSE: a reopen trusts history it read before the run's status
   CountsLines,      \* FALSE: the app counts each steer row as one steer
   UsesSince,        \* FALSE: the app counts steer rows from earlier runs too
+  SendOrder,        \* FALSE: the note copies pending_steer whenever it has one
   NONE
 
 Ids == 1..MaxSteers
@@ -161,13 +162,15 @@ Flush ==
   /\ unflushed' = <<>>
   /\ UNCHANGED <<start, began, waiting, ended, named, said, posts, replies, accepted, tracked, since, rowsSeen, phase, h1, lostBefore, lost, known>>
 
-\* The turn ends. Finishing names every steer still waiting in pending_steer;
-\* a hard stop drops them unnamed (interrupt_control.py). Rows already read are saved.
+\* The turn ends. Finishing names every steer still waiting in pending_steer, a
+\* requeued one behind newer ones (interrupt_control.py requeue_drained_steer);
+\* a hard stop drops them unnamed. Rows already read are saved.
 End ==
   /\ began /\ ~ended
   /\ ended' = TRUE
   /\ hist' = hist \o unflushed /\ unflushed' = <<>>
   /\ \/ named' = waiting
+     \/ Len(waiting) > 1 /\ named' = Tail(waiting) \o <<Head(waiting)>>
      \/ named' = <<>>
   /\ waiting' = <<>>
   /\ UNCHANGED <<start, began, said, posts, replies, accepted, tracked, since, rowsSeen, phase, h1, lostBefore, lost, known>>
@@ -187,19 +190,15 @@ ReadStatus ==
        ELSE /\ rowsSeen' = h1 /\ phase' = "idle" /\ UNCHANGED lostBefore
   /\ UNCHANGED <<start, began, hist, waiting, unflushed, ended, named, said, posts, replies, accepted, tracked, since, h1, lost, known>>
 
-\* Drops unseen steers from the end until n of pending_steer's lines are covered.
-RECURSIVE DropNamed(_, _)
-DropNamed(s, n) ==
-  IF n <= 0 \/ s = <<>> THEN s
-  ELSE DropNamed(SubSeq(s, 1, Len(s) - 1), n - Len(Lines(s[Len(s)])))
-
 \* The run ended. History read before the status can miss a steer saved as the
-\* run ended, so it is read once more when a steer is unseen. pending_steer names
-\* the last steers sent; unseen steers before its lines never reached the run.
+\* run ended, so it is read once more when a steer is unseen. The note lists the
+\* unseen steers in the order sent, unless pending_steer has more lines.
 Settle ==
   /\ phase = "status" /\ Settled
   /\ LET rows == IF RereadsHistory /\ Unseen(h1) # {} THEN Rows(hist) ELSE h1
-     IN lost' = DropNamed(UnseenWords(rows), Len(LinesOf(lostBefore))) \o lostBefore
+         missed == UnseenWords(rows)
+     IN lost' = IF Len(LinesOf(lostBefore)) > Len(LinesOf(missed)) \/ (~SendOrder /\ lostBefore # <<>>)
+                  THEN lostBefore ELSE missed
   /\ known' = {tracked[k].id : k \in 1..Len(tracked)}
   /\ phase' = "done"
   /\ UNCHANGED <<start, began, hist, waiting, unflushed, ended, named, said, posts, replies, accepted, tracked, since, rowsSeen, h1, lostBefore>>

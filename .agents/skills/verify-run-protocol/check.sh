@@ -35,11 +35,12 @@ delete-start  | Steers    | $steers                       | KeepsUncertain   | K
 no-reread     | Steers    | $steers                       | RereadsHistory   | UndeliveredExact
 count-rows    | Steers    | $steers                       | CountsLines      | UndeliveredExact
 no-since      | Steers    | $steers                       | UsesSince        | UndeliveredExact
+pending-order | Steers    | $steers                       | SendOrder        | UndeliveredExact
 late-reply    | Steers    | ${steers/OnTime=TRUE/OnTime=FALSE} |             | UndeliveredExact
 "
 flags() { case $1 in
   Approvals) echo "AnswersById ClosesStaleCards" ;;
-  Steers) echo "KeepsUncertain RereadsHistory CountsLines UsesSince" ;;
+  Steers) echo "KeepsUncertain RereadsHistory CountsLines UsesSince SendOrder" ;;
 esac; }
 rules() { case $1 in
   Approvals) echo "AnswerMatches PendingVisible CardsCurrent" ;;
