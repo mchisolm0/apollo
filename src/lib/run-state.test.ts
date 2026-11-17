@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { currentApproval, isRunActive, statusAfterEvent } from './run-state.ts';
+import { currentApproval, isRunActive, openApprovals, statusAfterEvent } from './run-state.ts';
 
 test('a lost run does not keep streaming or show a stale approval', () => {
   const run = { runId: 'lost', status: 'unknown', approval: { command: 'pwd' } } as const;
@@ -23,4 +23,52 @@ test('interruption clears a pending decision and ends the active run', () => {
   const event = { event: 'run.interrupted' };
   assert.equal(statusAfterEvent(run, event).status, 'interrupted');
   assert.equal(currentApproval([event], run), undefined);
+});
+
+test('two requests at once: the older one shows once the newer is answered, until its time runs out', () => {
+  const run = { runId: 'run-1', status: 'running' } as const;
+  const older = { event: 'approval.request', request_id: 'a', command: 'ls', timestamp: 100 };
+  const newer = { event: 'approval.request', request_id: 'b', command: 'pwd', timestamp: 101 };
+  assert.equal(currentApproval([older, newer], run)?.command, 'ls');
+  assert.equal(currentApproval([older, newer, { event: 'approval.responded', request_id: 'a' }], run)?.command, 'pwd');
+  const answeredNewer = [older, newer, { event: 'approval.responded', request_id: 'b' }];
+  assert.equal(currentApproval(answeredNewer, run)?.command, 'ls');
+  assert.equal(currentApproval(answeredNewer, run, { timeoutSeconds: 300, now: 399 })?.command, 'ls');
+  assert.equal(currentApproval(answeredNewer, run, { timeoutSeconds: 300, now: 400 }), undefined);
+  // An answer without a request id settles the oldest, as Hermes does.
+  assert.equal(currentApproval([older, newer, { event: 'approval.responded' }], run)?.command, 'pwd');
+});
+
+test('a request expires at its own captured timeout, and an answer without an id skips expired ones', () => {
+  const run = { runId: 'run-1', status: 'running' } as const;
+  const older = { event: 'approval.request', request_id: 'a', command: 'ls', timestamp: 100, timeout_s: 60 };
+  const newer = { event: 'approval.request', request_id: 'b', command: 'pwd', timestamp: 101, timeout_s: 600 };
+  // The config changed to 30s after both asked; each keeps the timeout Hermes captured.
+  assert.equal(currentApproval([older, newer], run, { timeoutSeconds: 30, now: 150 })?.command, 'ls');
+  assert.equal(currentApproval([older, newer], run, { timeoutSeconds: 30, now: 160 })?.command, 'pwd');
+  // a timed out at 160; an id-less answer at 170 settled b, the oldest still waiting.
+  assert.equal(currentApproval([older, newer, { event: 'approval.responded', timestamp: 170 }], run, { now: 170 }), undefined);
+  assert.deepEqual(openApprovals([older, newer, { event: 'approval.responded', timestamp: 170 }]).map((ask) => ask.request_id), ['a']);
+  // A local answer and the stream's answer for the same request close only that one.
+  const twice = [older, newer, { event: 'approval.responded', request_id: 'a' }, { event: 'approval.responded', request_id: 'a' }];
+  assert.deepEqual(openApprovals(twice).map((ask) => ask.request_id), ['b']);
+});
+
+test('a request heard gone only hides, so a late id-less answer still settles the one Hermes did', () => {
+  const run = { runId: 'run-1', status: 'running' } as const;
+  const a = { event: 'approval.request', request_id: 'a', command: 'ls', timestamp: 100 };
+  const b = { event: 'approval.request', request_id: 'b', command: 'pwd', timestamp: 101 };
+  const gone = { event: 'approval.gone', request_id: 'a' };
+  // Another client answered a without an id; answering it here heard "gone" before that event arrived.
+  assert.equal(currentApproval([a, b, gone, { event: 'approval.responded', timestamp: 102 }], run)?.command, 'pwd');
+  // Hermes settled a at its deadline (160) but stamped the answer just after: a closes, b still waits.
+  const timed = [{ ...a, timeout_s: 60 }, b, { event: 'approval.responded', timestamp: 160.001 }];
+  assert.equal(currentApproval(timed, run, { now: 160.002 })?.command, 'pwd');
+  // An id-less resolve_all settles as many as Hermes says.
+  assert.equal(currentApproval([a, b, { event: 'approval.responded', resolved: 2 }], run), undefined);
+  // The status's stale request stays hidden once gone or past its deadline.
+  const waiting = { runId: 'run-1', status: 'waiting_for_approval', approval: { request_id: 'a', command: 'ls', timestamp: 100, timeout_s: 60 } } as const;
+  assert.equal(currentApproval([gone], waiting), undefined);
+  assert.equal(currentApproval([], waiting, { now: 159 })?.command, 'ls');
+  assert.equal(currentApproval([], waiting, { now: 160 }), undefined);
 });

@@ -271,6 +271,8 @@ component Apollo
   state accountRevision = 0
   state tick = 0
   state clock = 0
+  // The approval deadline the thread was last read again for, so it is read once per deadline.
+  state reloadedFor = 0
   state notice = ""
   state opened = []
   state showSettled = false
@@ -422,7 +424,13 @@ component Apollo
     tick = performanceNow()
     revision = revision + 1
   action tickClock
-    clock = time.epochAtZero + performanceNow()
+    let next = time.epochAtZero + performanceNow()
+    clock = next
+    // Hermes denies a request at its deadline without an event: read the thread again so the
+    // next request it waits on shows.
+    if thread.approvalDeadline > 0 and next >= thread.approvalDeadline and reloadedFor != thread.approvalDeadline
+      reloadedFor = thread.approvalDeadline
+      refreshAll()
   action markHidden
     wasHidden = true
   action onReturn

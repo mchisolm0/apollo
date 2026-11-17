@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Model-checks Approvals.tla and Steers.tla. Every app run must pass, every
-# break must fail on the rule it names, which proves that rule can still catch
-# a bug, and every gap must keep failing until the app closes it.
+# Model-checks Approvals.tla and Steers.tla. Every app run must pass every rule,
+# every break must fail the rule it names, which proves that rule can still
+# catch a bug, and every gap must keep failing until the app closes it.
 # Usage: check.sh            run everything (under a minute)
 #        check.sh <run>      one run, with its full TLC output
 set -euo pipefail
@@ -20,7 +20,7 @@ got=$({ sha256sum "$jar" 2>/dev/null || shasum -a 256 "$jar"; } | awk '{print $1
 [ "$got" = "$TLC_SHA256" ] ||
   { echo "tla2tools.jar checksum mismatch: $jar" >&2; exit 2; }
 
-approvals='Requests={r1,r2} AtOnce=FALSE Away=FALSE'
+approvals='Requests={r1,r2} AtOnce=TRUE Away=FALSE'
 steers='A=A B=B AB=AB MaxSteers=4 OnTime=TRUE'
 
 # name | spec | bounds | flags turned off | expected: pass, or the rule that must fail
@@ -29,7 +29,8 @@ answers       | Approvals | $approvals                    |                  | p
 away          | Approvals | ${approvals/Away=FALSE/Away=TRUE} |              | pass
 blind         | Approvals | $approvals                    | AnswersById      | AnswerMatches
 stale-cards   | Approvals | $approvals                    | ClosesStaleCards | CardsCurrent
-two-at-once   | Approvals | ${approvals/AtOnce=FALSE/AtOnce=TRUE} |          | PendingVisible
+status-only   | Approvals | $approvals                    | ReadsEvents      | CardForEach
+latest-only   | Approvals | $approvals                    | OldestOpen       | ScreenShows
 steers        | Steers    | $steers                       |                  | pass
 delete-start  | Steers    | $steers                       | KeepsUncertain   | KeepsStarted
 no-reread     | Steers    | $steers                       | RereadsHistory   | UndeliveredExact
@@ -39,11 +40,11 @@ pending-order | Steers    | $steers                       | SendOrder        | U
 late-reply    | Steers    | ${steers/OnTime=TRUE/OnTime=FALSE} |             | UndeliveredExact
 "
 flags() { case $1 in
-  Approvals) echo "AnswersById ClosesStaleCards" ;;
+  Approvals) echo "AnswersById ClosesStaleCards ReadsEvents OldestOpen" ;;
   Steers) echo "KeepsUncertain RereadsHistory CountsLines UsesSince SendOrder" ;;
 esac; }
 rules() { case $1 in
-  Approvals) echo "AnswerMatches PendingVisible CardsCurrent" ;;
+  Approvals) echo "AnswerMatches ScreenShows CardForEach CardsCurrent" ;;
   Steers) echo "KeepsStarted UndeliveredExact" ;;
 esac; }
 
@@ -58,7 +59,8 @@ run() { # name spec bounds off expected [verbose]
       [[ " $4 " == *" $f "* ]] && echo "  $f = FALSE" || echo "  $f = TRUE"
     done
     echo "SPECIFICATION Spec"
-    echo "INVARIANTS $(rules "$2")"
+    # An app run checks every rule; a break or gap checks the one rule it must fail.
+    [ "$5" = pass ] && echo "INVARIANTS $(rules "$2")" || echo "INVARIANTS $5"
   } >"$cfg"
   out=$(java -XX:+UseParallelGC -cp "$jar" tlc2.TLC -config "$cfg" -deadlock \
     -workers auto -metadir "$meta/states" "$2.tla" 2>&1 || true)

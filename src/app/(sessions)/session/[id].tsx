@@ -19,7 +19,7 @@ import { useSessionDraft } from '@/features/relay/use-session-draft';
 import { setVisibleNotificationSession } from '@/features/notifications/foreground';
 import { useApollo } from '@/lib';
 import { useSidebarWidth } from '@/features/layout/use-sidebar-width';
-import { currentApproval, isRunActive, sessionRun } from '@/lib/run-state';
+import { approvalDeadline, currentApproval, isRunActive, sessionRun } from '@/lib/run-state';
 import { useStreamTick } from '@/lib/haptics';
 import type { HermesMessage, HermesModel, HermesRunEvent, HermesSkill } from '@/lib';
 
@@ -177,7 +177,15 @@ function Session({ id, agentId, shareId }: { id: string; agentId: string; shareI
   const focused = useIsFocused();
   const streaming = events.findLast((row) => row.kind === 'assistant' && row.status === 'running');
   useStreamTick(streaming?.kind === 'assistant' ? { id: streaming.id, length: streaming.text.length } : undefined, focused);
-  const request = currentApproval(live, run);
+  // Hermes denies a request at its deadline without an event; draw again then so the next shows.
+  const [now, setNow] = useState(() => Date.now() / 1000);
+  const request = currentApproval(live, run, { now });
+  const deadline = request ? approvalDeadline(request) : undefined;
+  useEffect(() => {
+    if (deadline === undefined) return;
+    const timer = setTimeout(() => setNow(Date.now() / 1000), Math.max(0, deadline * 1000 - Date.now()) + 250);
+    return () => clearTimeout(timer);
+  }, [deadline]);
   const command = typeof request?.command === 'string' ? request.command : typeof request?.preview === 'string' ? request.preview : undefined;
   const approval = command ? {
     id: typeof request?.request_id === 'string' ? request.request_id : request?.requestId ?? 'approval',

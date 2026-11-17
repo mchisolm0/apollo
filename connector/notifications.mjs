@@ -70,10 +70,6 @@ function notificationFor(kind, agentId, run) {
 }
 
 function eventFromStatus(status) {
-  if (status.status === "waiting_for_approval") {
-    const approvalId = status.approval?.request_id ?? status.updated_at;
-    return { key: `approval:${String(approvalId)}`, kind: "approval" };
-  }
   if (status.status === "completed") return { key: "completed", kind: "completed" };
   if (status.status === "failed") return { key: "failed", kind: "failed" };
   return null;
@@ -88,9 +84,10 @@ function wants(registration, kind) {
  * Polls runs started through the connector and pushes approval, completion and failure
  * notifications. With a cloud `approvals` bridge, approvals become cloud inbox cards
  * instead of direct pushes, and runs are watched even without a registered device.
- * With `away` on (away.mjs), approvals are denied before either sees them.
+ * With `away` on (away.mjs), approvals are denied before either sees them. With `asks`
+ * (run-approvals.mjs), every request the run waits on counts, not only the newest on its status.
  */
-export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPush, approvals = null, away = null, pollInterval = 2_000 }) {
+export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPush, approvals = null, away = null, asks = null, pollInterval = 2_000 }) {
   const active = new Map();
   let closed = false;
 
@@ -165,6 +162,8 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
   async function watch(runId) {
     let delay = pollInterval;
     let deliveryAttempts = 0;
+    const following = new AbortController();
+    asks?.follow(runId, following.signal).catch(() => {});
     try {
       while (!closed && active.has(runId)) {
         const state = await store.read();
@@ -182,22 +181,29 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
             continue;
           }
         }
-        if (away?.enabled() && status.status === "waiting_for_approval") {
-          // Denied: the next status shows the run moving on. A transient failure retries the denial.
-          let denied = true;
-          try { denied = await away.deny(runId, { ...status, session_id: status.session_id ?? tracked.session_id }); } catch { /* retried below */ }
+        const sessionStatus = { ...status, session_id: status.session_id ?? tracked.session_id };
+        const waiting = TERMINAL.has(status.status) ? [] : asks ? await asks.open(runId, status) : status.status === "waiting_for_approval" && status.approval ? [status.approval] : [];
+        if (away?.enabled() && waiting.length) {
+          // Denied: the next read shows the run moving on. A transient failure retries the denial.
+          let denied = false;
+          for (const approval of waiting) {
+            try { if (await away.deny(runId, { ...sessionStatus, status: "waiting_for_approval", approval })) denied = true; } catch { denied = true; }
+          }
           if (denied) { await wait(delay); continue; }
         }
-        let event = eventFromStatus(status);
+        const events = waiting.map((approval) => ({ key: `approval:${String(approval.request_id ?? status.updated_at)}`, kind: "approval" }));
         if (approvals) {
           // The bridge retries posting and resolving cards on its own; this only reports the run.
-          const result = await approvals.runStatus(runId, { ...status, session_id: status.session_id ?? tracked.session_id });
-          // The card replaces the direct approval push unless the cloud has been down too long.
-          if (event?.kind === "approval" && !result.fallback) event = null;
+          const result = await approvals.runStatus(runId, sessionStatus, waiting, TERMINAL.has(status.status) ? undefined : asks?.settled(runId));
+          // The cards replace the direct approval pushes unless the cloud has been down too long.
+          if (!result.fallback) events.length = 0;
         }
-        const delivered = event ? await deliver(runId, status, event) : true;
+        const ended = eventFromStatus(status);
+        if (ended) events.push(ended);
+        let delivered = true;
+        for (const event of events) if (!await deliver(runId, status, event)) delivered = false;
         if (TERMINAL.has(status.status) && delivered) {
-          if (!event) await store.update((current) => {
+          if (!ended) await store.update((current) => {
             const run = current.notification_runs?.[runId];
             if (run) { run.status = status.status; run.updated_at = new Date().toISOString(); }
           });
@@ -208,6 +214,8 @@ export function createRunNotificationMonitor({ store, agentId, fetchRun, sendPus
         await wait(delay);
       }
     } finally {
+      following.abort();
+      asks?.forget(runId);
       active.delete(runId);
     }
   }

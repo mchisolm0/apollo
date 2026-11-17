@@ -3,6 +3,7 @@ import { generateThreadTitle } from './thread-title.mjs';
 import { createExpoPushSender, createRunNotificationMonitor, parseNotificationRegistration } from './notifications.mjs';
 import { createApprovalBridge, createCloudClient, loadCloudConfig } from './cloud.mjs';
 import { createAwayMode } from './away.mjs';
+import { createApprovalTracker, readRunEvents } from './run-approvals.mjs';
 import { createPreviewFiller } from './session-preview.mjs';
 import { readApprovalConfig } from './hermes-config.mjs';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
@@ -291,6 +292,23 @@ export function createConnectorServer(options = {}) {
     });
     if (!response.ok) throw new Error(`Hermes run status failed (${response.status})`);
     return response.json();
+  }
+
+  // Hermes's approval timeout changes only when its config does; read it at most once a minute.
+  let approvalTimeout = { at: 0, seconds: 0 };
+  const approvalAsks = createApprovalTracker({
+    readEvents: (runId, after, onEvent, signal, onOpen) => readRunEvents({ url: hermesUrl, apiKey: hermesApiKey, runId, after, onOpen, onEvent, signal, fetchImpl: options.fetchImpl ?? fetch }),
+    async timeoutSeconds() {
+      if (Date.now() - approvalTimeout.at > 60_000) approvalTimeout = { at: Date.now(), seconds: (await readApprovalConfig(options.hermesConfigPath)).timeout_seconds };
+      return approvalTimeout.seconds;
+    },
+    retryInterval: options.notificationPollInterval,
+  });
+  // An answer Hermes says is gone (answered elsewhere or timed out) closes that request here too.
+  async function answerAsk(runId, choice, requestId) {
+    const taken = await answerApproval(runId, choice, requestId);
+    if (!taken && requestId) approvalAsks.gone(runId, requestId);
+    return taken;
   }
 
   let notificationMonitor = null;
@@ -634,9 +652,9 @@ export function createConnectorServer(options = {}) {
       const state = await store.load();
       const cloudConfig = options.cloud !== undefined ? options.cloud : await loadCloudConfig({ path: options.cloudConfigPath ?? defaultCloudPath(options.statePath) });
       cloud = cloudConfig ? createCloudClient({ ...cloudConfig, fetchImpl: options.fetchImpl ?? fetch }) : null;
-      approvalBridge = cloud ? createApprovalBridge({ store, client: cloud, agentId: state.agent_id, answer: answerApproval, pollInterval: options.cloudPollInterval, fallbackAfter: options.cloudFallbackAfter }) : null;
-      awayMode = createAwayMode({ store, agentId: state.agent_id, answer: answerApproval, cloud: () => cloud });
-      notificationMonitor = createRunNotificationMonitor({ store, agentId: state.agent_id, fetchRun, sendPush, approvals: approvalBridge, away: awayMode, pollInterval: options.notificationPollInterval });
+      approvalBridge = cloud ? createApprovalBridge({ store, client: cloud, agentId: state.agent_id, answer: answerAsk, pollInterval: options.cloudPollInterval, fallbackAfter: options.cloudFallbackAfter }) : null;
+      awayMode = createAwayMode({ store, agentId: state.agent_id, answer: answerAsk, cloud: () => cloud });
+      notificationMonitor = createRunNotificationMonitor({ store, agentId: state.agent_id, fetchRun, sendPush, approvals: approvalBridge, away: awayMode, asks: approvalAsks, pollInterval: options.notificationPollInterval });
       await notificationMonitor.registrationsChanged();
       approvalBridge?.start();
       if (cloud) {
