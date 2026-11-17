@@ -657,15 +657,17 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       const requestId = requestIdOf(approval);
       // The request where it happened in the transcript; the pinned copy above the composer answers it.
       const asked: Row[] = approval && command ? [{ id: `approval-${requestId}`, kind: 'approval', text: command, table: [], status: '', summary: approval.description ?? '', running: false, startedAt: 0, steps: [] }] : [];
-      // Hermes denies a request after `timeout` seconds from when it asked. One that closed that late
-      // without an answer from here expired; one closed sooner was answered elsewhere.
-      const expired = timeout ? events.flatMap((e, i): Row[] => {
-        const id = requestIdOf(e), at = e.timestamp;
-        if (e.event !== 'approval.request' || at === undefined || id === requestId || answeredHere.has(id)) return [];
-        const closed = events.slice(i + 1).find((x) => ENDS_ASK.has(x.event) && (x.event !== 'approval.responded' || !requestIdOf(x) || requestIdOf(x) === id))?.timestamp;
+      // Hermes denies a request at its deadline without an event. One that closed that late without an
+      // answer from here expired; one closed sooner was answered elsewhere. With nothing after it, one
+      // whose deadline has passed closed then, so it shows as expired while the run goes on.
+      const expired = events.flatMap((e, i): Row[] => {
+        const id = requestIdOf(e), deadline = approvalDeadline(e, timeout || undefined);
+        if (e.event !== 'approval.request' || deadline === undefined || id === requestId || answeredHere.has(id)) return [];
+        const closed = events.slice(i + 1).find((x) => ENDS_ASK.has(x.event) && (x.event !== 'approval.responded' || !requestIdOf(x) || requestIdOf(x) === id))?.timestamp
+          ?? (deadline <= now / 1000 && !goneAsks.has(id) ? deadline : undefined);
         const shown = str(e.command) ?? str(e.preview) ?? '';
-        return closed !== undefined && closed >= at + timeout - 1 && shown ? [{ ...plain, id: `expired-${id}`, kind: 'approval', text: shown, status: 'expired', summary: str(e.description) ?? '' }] : [];
-      }) : [];
+        return closed !== undefined && closed >= deadline - 1 && shown ? [{ ...plain, id: `expired-${id}`, kind: 'approval', text: shown, status: 'expired', summary: str(e.description) ?? '' }] : [];
+      });
       if (expired.length) expiredAsks.set(sessionId, expired);
       return {
         ...emptyThread, ...inboxFacts(sessionId), id: sessionId, live: true, model: l.models[sessionId] ?? "", canSettle: false, recent, title, rows: [...withSteers(withExpired(toRows(rows), sessionId), messages, sessionId, runId), ...asked], runId, status: current.status, active: running, ended: !running, error,
