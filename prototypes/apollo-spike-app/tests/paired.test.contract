@@ -297,7 +297,7 @@ test "a draft card opens Send with the draft to edit"
   expect text "card-outcome" == "Send by exact-fixture"
   expect tree missing "reply"
 
-test "an approval counts down, and can't be answered once its time is up"
+test "an approval counts down, and once its time is up it leaves the pin and shows as expired"
   epoch now
   type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
   tap "pair"
@@ -311,9 +311,11 @@ test "an approval counts down, and can't be answered once its time is up"
   expect tree has "approval-expiry"
   expect enabled "approve-once"
   clock +310000
-  expect text "approval-expiry" == "Expired"
-  expect disabled "approve-once"
-  expect disabled "approve-more"
+  clock data
+  expect tree missing "approval-expiry"
+  expect tree missing "approve-once"
+  expect tree has "approval-expired"
+  expect tree has "stop"
 
 test "a request Hermes denied unanswered stays in the thread as expired"
   type "pair-link" "apollo://pair?host=http%3A%2F%2F127.0.0.1%3A19111#token=fixture"
