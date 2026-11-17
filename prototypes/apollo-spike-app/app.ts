@@ -556,17 +556,17 @@ function inboxFacts(sessionId: string) {
   return { settled: s?.settled ?? false, canSettle: s ? canSettleSession(s) : false, autoSettle: !(s?.autoSettleDisabled ?? false), activityAt: s?.activityAt ?? 0 };
 }
 
-// Older pages of history, read until they reach `since`: Hermes returns the latest 500 messages, and a
-// long run can push its own steer rows off that page.
-async function historySince(store: Store, sessionId: string, messages: HermesMessage[], since: number) {
-  let all = messages;
-  while (all.length && all.length % 500 === 0 && (all[0].timestamp ?? 0) > since) {
-    const page = await api(store, `/api/sessions/${encodeURIComponent(sessionId)}/messages?order=latest&limit=500&offset=${all.length}`);
+// History back to `since`, for counting a run's saved steers: pages of 500 from the newest until one
+// reaches `since`, since a long run can push its steer rows off the latest page, and with the rows
+// compression summarized away, which the default history leaves out.
+async function historySince(store: Store, sessionId: string, since: number) {
+  let all: HermesMessage[] = [];
+  for (;;) {
+    const page = await api(store, `/api/sessions/${encodeURIComponent(sessionId)}/messages?order=latest&limit=500&offset=${all.length}&include_compacted=true`);
     const older = ((page.data as Json[] | undefined) ?? []).map(parseMessage);
-    if (!older.length) break;
     all = [...older, ...all];
+    if (older.length < 500 || (older[0].timestamp ?? 0) <= since) return all;
   }
-  return all;
 }
 
 async function history(store: Store, sessionId: string) {
@@ -609,7 +609,7 @@ async function transcript(sessionId: string, now: number, store: Store, storage:
       if (runId) {
         if (unseen(saved, runId).length) saved = (await history(store, sessionId)).messages;
         const since = steers.get(runId)?.since;
-        const counted = since !== undefined && unseen(saved, runId).length ? await historySince(store, sessionId, saved, since) : saved;
+        const counted = since !== undefined && unseen(saved, runId).length ? await historySince(store, sessionId, since) : saved;
         const missed = unseen(counted, runId).map((m) => m.text);
         // pending_steer joins the steers still waiting when the run finished, and a hard stop names
         // none. The note lists the unseen steers in the order sent, since a requeued steer can sit

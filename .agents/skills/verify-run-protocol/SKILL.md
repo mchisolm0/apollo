@@ -121,11 +121,19 @@ NousResearch/hermes-agent 40d1e95.
 
 ## Not covered
 
-The model leaves out three things `app.ts` handles without it. Compression copies rows under new
-ids but keeps their time, so `since` is a time (`hermes_state_messages.py`). A long run can push
-its saved steers off the latest 500, so the reopen reads older pages back to `since`
-(`historySince`). A steer can quote Hermes's marker, so a steer row's lines are counted inside
-its first and last lines (`steerLines`).
+The model leaves out three things `app.ts` handles without it:
+- Compression copies rows under new ids but keeps their time, so `since` is a time
+  (`hermes_state_messages.py`).
+- A long run can push its saved steers off the latest 500, and compression can summarize them
+  away. So the reopen counts from history read back to `since`, including summarized rows
+  (`historySince`).
+- A steer can quote Hermes's marker, so a steer row's lines are counted inside its first and last
+  lines (`steerLines`).
+
+Because `since` is a time, a server clock set back after the first steer can leave a saved steer
+looking older, and the reopen names it as undelivered. Hermes exposes no row id that survives
+compression. The steer echoes drawn while the run streams count from the history shown, so a
+saved steer that compression summarized mid-run shows as an echo until the thread reopens.
 
 
 The Expo app's thread screen, which has its own steer and approval code. Push
