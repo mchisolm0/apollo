@@ -39,7 +39,7 @@ of order. History also holds a steer row from an earlier run:
 ## Run it
 
 ```bash
-.agents/skills/verify-run-protocol/check.sh             # every run, about 10 seconds
+.agents/skills/verify-run-protocol/check.sh             # every run, about 30 seconds
 .agents/skills/verify-run-protocol/check.sh blind       # one run, with TLC's full output
 ```
 
