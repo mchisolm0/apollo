@@ -6,7 +6,7 @@ import type { Answer, Result, Sources, Storage, Store } from './app.contract.d.t
 import type { Card, CardAction, CardResponse } from './apollo/cloud/src/contract.ts';
 import { parseCard, parseSnapshot } from './apollo/src/features/cloud/cards.ts';
 import { previewLine } from './apollo/src/features/cloud/card-text.ts';
-import { buildInboxRows, cardOpenPlan, hermesApprovalTarget, isCardSettled, settleAction, unabsorbedReplies, updateSettledCards, withPendingResponses, type DeliveredReply, type InboxCard, type SettledCards } from './apollo/src/features/cloud/inbox-rows.ts';
+import { buildInboxRows, deliveredReply, cardOpenPlan, hermesApprovalTarget, isCardSettled, settleAction, unabsorbedReplies, updateSettledCards, withPendingResponses, type DeliveredReply, type InboxCard, type SettledCards } from './apollo/src/features/cloud/inbox-rows.ts';
 import { FEEDBACK_FILTERS, feedbackRows, type FeedbackFilter } from './apollo/src/features/cloud/feedback-rows.ts';
 import { liveActivityLabel, oneLine, readableOutput, settledActivityLabel, toolVerb } from './apollo/src/features/relay/activity.ts';
 import { autoSettleSessionsDue, canSettleSession, deriveSessionInbox, isSessionSnoozed, pruneSnoozedLedger, snoozeSession, unsnoozeSession, type InboxSession } from './apollo/src/features/relay/session-inbox.ts';
@@ -240,10 +240,13 @@ function cardItem(card: InboxCard, settled: boolean, l: Local, now: number): Ite
   const subtitle = settled ? '' : card.kind === 'update' && picks.length
     ? `${picks.filter((p) => p.done).length} of ${picks.length} checked`
     : [card.kind === 'update' ? capitalize(card.source) : '', previewLine(card.body) ?? ''].filter(Boolean).join(' · ');
-  const tone = answer ? (card.resolution!.actionId === 'approve' ? 'green' : card.resolution!.actionId === 'reject' ? 'red' : 'muted') : unanswered ? 'amber' : 'muted';
+  // An answer the producer hasn't written in yet (see answerText). One still on its way to the
+  // cloud is the view's `answering`.
+  const sending = !!answer && !!card.replies?.length;
+  const tone = sending ? 'muted' : answer ? (card.resolution!.actionId === 'approve' ? 'green' : card.resolution!.actionId === 'reject' ? 'red' : 'muted') : unanswered ? 'amber' : 'muted';
   return {
     ...noExtras, key: `card-${card.id}`, kind: 'card', id: card.id, title: card.title, subtitle: unanswered && !settled ? `From ${card.source}` : subtitle, need: unanswered ? 'answer' : '',
-    badge: answer || (unanswered ? 'Needs answer' : ''), tone, time: ago(Date.parse(card.updatedAt) / 1000, now), settled,
+    badge: sending ? 'Sending' : answer || (unanswered ? 'Needs answer' : ''), tone, time: ago(Date.parse(card.updatedAt) / 1000, now), settled,
     swipe: settleAction(card, settledCards(l)) ?? '', count: 0, glyph: card.source.charAt(0).toUpperCase(), link: cardOpenPlan(card).target === 'link' ? card.url ?? '' : '',
     actions: unanswered ? (card.actions ?? []).filter((a) => !a.url).map(button) : [],
   };
@@ -278,7 +281,7 @@ function placeRows(cards: readonly Card[], routines: Routine[]): Item[] {
 function inboxOf({ sessions, cards: all, pendingRunIds, asks = {}, routines = [] }: InboxInputs, l: Local, showSettled: boolean, showSnoozed: boolean, query: string, now: number, live: boolean): Inbox {
   const snoozed = (id: string) => isSessionSnoozed(l.snoozed, id, now / 1000);
   // Player reports sit behind the Feedback row, not among the inbox's own cards.
-  const cards = all.filter((c) => c.source !== 'feedback');
+  const cards = withPendingResponses(all.filter((c) => c.source !== 'feedback'), [], delivered);
   const rows = buildInboxRows({ sessions, cards, isSnoozed: snoozed, settledCards: settledCards(l), pendingRunIds: new Set(pendingRunIds), runStateLive: live, fresh: live, query, collapsed: { snoozed: !showSnoozed, settled: !showSettled }, now });
   const listed = rows.map((row): Item => {
     if (row.kind === 'session') return sessionItem(row.session, snoozed(row.session.id), now, asks[row.session.id]);
@@ -350,7 +353,8 @@ async function feedbackList(filter: string, now: number, storage: Storage) {
 
 // ---- Cards ----
 
-// Text replies the cloud took, shown under the card until its producer writes them into the body.
+// Answers the cloud took (typed replies, and buttons on keepOpen approvals), shown under the card
+// until its producer writes them into the body.
 let delivered: readonly DeliveredReply[] = [];
 
 const emptyCard: CardView = {
@@ -390,9 +394,10 @@ async function respond(store: Store, cardId: string, response: CardResponse) {
   if (!c) throw new Error('Cards are not set up on this connector.');
   try {
     const key = crypto.randomUUID();
-    const before = cardsSeen.find((x) => x.id === cardId)?.body;
+    const seen = cardsSeen.find((x) => x.id === cardId);
     const body = await request(c.url, c.token, `/v1/cards/${encodeURIComponent(cardId)}/respond`, { method: 'POST', body: response, headers: { 'Idempotency-Key': key } });
-    if (response.text) delivered = [...delivered, { key, cardId, text: response.text, body: before }];
+    const reply = seen && deliveredReply(seen, key, response);
+    if (reply) delivered = [...delivered, reply];
     const card = parseCard(body);
     if (card) cardsSeen = cardsSeen.map((x) => (x.id === card.id ? card : x));
   } catch (e) {

@@ -7,15 +7,45 @@ import { parseApolloLink } from './card-text.ts';
  * `pendingAction` is an action still on its way. A morning card stays open after Keep or
  * Skip so its picks stay tappable; `acknowledged` is its `resolution`, or a queued action.
  * A `repeat` action never answers the card, so on its way it only sets `sending`. A text
- * reply instead joins `replies` until the producer writes it into the body.
+ * reply, or a button on a `keepOpen` approval, also joins `replies` (see `answerText`)
+ * until the producer writes it into the body.
  */
 export type InboxCard = Card & { pendingAction?: string; acknowledged?: string; sending?: boolean; replies?: readonly string[] };
 
-/** A reply the server took, with the body it was taken against, shown until the producer re-posts the card with it. */
-export type DeliveredReply = Readonly<{ key: string; cardId: string; text: string; body?: string }>;
+/**
+ * A reply the server took, with the body it was taken against, shown until the producer re-posts the card with it.
+ * `answer` marks an answer to a `keepOpen` approval, which any rewrite of the body takes in.
+ */
+export type DeliveredReply = Readonly<{ key: string; cardId: string; text: string; body?: string; answer?: boolean }>;
 
-// A producer may clip a long reply, so only its start has to appear.
-const absorbed = (card: Card, reply: DeliveredReply) => card.body !== reply.body && (card.body ?? '').includes(reply.text.slice(0, 100));
+// A keepOpen approval's producer moves it on by rewriting the body, e.g. "Sent to T3" or
+// "Approved", which takes in the answer. Elsewhere the body must carry the reply, and since a
+// producer may clip a long one, only its start has to appear.
+const absorbed = (card: Card, reply: DeliveredReply) => card.body !== reply.body
+  && (reply.answer === true || (card.body ?? '').includes(reply.text.slice(0, 100)));
+
+// A button or reply that answers a keepOpen approval, as opposed to a repeat action or a link.
+function keptAnswer(card: Pick<Card, 'kind' | 'keepOpen' | 'actions'>, actionId: string) {
+  const action = card.actions?.find((candidate) => candidate.id === actionId);
+  return card.kind === 'approval' && card.keepOpen === true && action !== undefined && !action.repeat && !action.url ? action : undefined;
+}
+
+/**
+ * What an answer shows as ("You: ...") until its producer writes it in: its typed text, or the
+ * button's label on a `keepOpen` approval, whose producer always rewrites the body. Other
+ * buttons only say how the card was answered.
+ */
+export function answerText(card: Pick<Card, 'kind' | 'keepOpen' | 'actions'>, response: CardResponse): string | undefined {
+  if (response.actionId === undefined) return undefined;
+  return response.text || keptAnswer(card, response.actionId)?.label;
+}
+
+/** What to keep showing once the server takes `response` (see `answerText`), if anything. */
+export function deliveredReply(card: Card, key: string, response: CardResponse): DeliveredReply | undefined {
+  const text = answerText(card, response);
+  if (!text || response.actionId === undefined) return undefined;
+  return { key, cardId: card.id, text, body: card.body, ...(keptAnswer(card, response.actionId) ? { answer: true } : {}) };
+}
 
 /** The replies no card has absorbed yet. Dropping absorbed ones for good keeps a reply that later scrolls out of the body from coming back. */
 export function unabsorbedReplies(cards: readonly Card[], delivered: readonly DeliveredReply[]): readonly DeliveredReply[] {
@@ -39,7 +69,9 @@ export function withPendingResponses(cards: readonly Card[], pending: readonly {
         if (current.actions?.some((action) => action.id === response.actionId && action.repeat)) {
           return response.text ? { ...current, replies: [...current.replies ?? [], response.text] } : { ...current, sending: true };
         }
-        return current.kind === 'briefing' ? { ...current, acknowledged: response.actionId } : { ...current, pendingAction: response.actionId };
+        if (current.kind === 'briefing') return { ...current, acknowledged: response.actionId };
+        const text = answerText(current, response);
+        return { ...current, pendingAction: response.actionId, ...(text ? { replies: [...current.replies ?? [], text] } : {}) };
       }
       return { ...current, picks: current.picks?.map((pick) => pick.n === response.pick ? { ...pick, done: response.done } : pick) };
     }, base);

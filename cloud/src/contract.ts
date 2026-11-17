@@ -105,7 +105,9 @@ export interface CardInput {
   progress?: CardProgress;
   /**
    * An action records the response but leaves the card open, so its producer
-   * can carry it to the next phase. Briefings always behave this way.
+   * can carry it to the next phase. Briefings always behave this way. On an
+   * approval the app shows the answer as pending ("You: Blue") until the
+   * producer next rewrites the body, so the producer should always do so.
    */
   keepOpen?: boolean;
   /**
