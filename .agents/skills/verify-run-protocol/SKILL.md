@@ -20,9 +20,9 @@ a request out:
    run's status.
 
 `Steers.tla` is one thread: created with its first message, steered while it
-runs (one steer pending at a time, as the composer allows), and opened again
-after the run ends. Steers can repeat each other's words or the first
-message's:
+runs (one steer request in flight at a time, as the composer allows), and
+opened again after the run ends. Steers can repeat each other's words or the
+first message's, and Hermes can save several as one row:
 
 4. **KeepsStarted.** The app never deletes a thread whose run began.
 5. **UndeliveredExact.** The reopened thread names each steer Hermes never
@@ -49,6 +49,7 @@ on the rule it names, which proves that rule can still catch a bug:
 | `delete-start` | `createThread` keeping a thread whose start is uncertain | KeepsStarted |
 | `no-reread` | the reopen reading history again after the run's status | UndeliveredExact |
 | `any-words` | counting a steer's words against `before` | UndeliveredExact |
+| `whole-rows` | counting a steer inside a row Hermes joined | UndeliveredExact |
 
 ## Known gaps
 
@@ -58,12 +59,10 @@ reports `FAIL ... got pass` once the gap is closed. Then move it to the app runs
 | Gap | Fails | What happens |
 | --- | --- | --- |
 | `two-at-once` | PendingVisible | Two subagents ask at once. Hermes's run status shows only the newest request, the bridge resolves the older card, and `currentApproval` shows only the newest. The older one waits unseen until Hermes times it out and denies it. |
-| `joined-steers` | UndeliveredExact | Two steers wait before the agent reads either. Hermes saves them as one user row, their words joined by newlines, and the app looks for each steer as a whole row, so the reopen names both as undelivered. |
 | `late-reply` | UndeliveredExact | A steer's reply lands after the screen read history again, or never lands. The app records it against the wrong count of matching words, so the reopen names a saved steer as undelivered, or misses a dropped one with the same words. Hermes's history has no steer ids, so matching by words is the limit. |
 
-The app runs assume the agent reads each steer before the next is sent
-(`OneAtATime`) and that each steer's reply lands before the screen reads
-history again (`OnTime`). Each gap run is the same model without one of them.
+The app runs assume each steer's reply lands before the screen reads history
+again (`OnTime`). `late-reply` is the same model without it.
 
 ## When it fails
 
@@ -99,8 +98,8 @@ NousResearch/hermes-agent 40d1e95.
 
 | File | What the models stand for |
 | --- | --- |
-| `prototypes/apollo-spike-app/app.ts` | `answerApproval`, `steerRun` and its `before` count, `createThread` and `start`, the reopen in `transcript` (`unseen`, the second history read, `undelivered`) |
-| `prototypes/apollo-spike-app/app.contract` | `canSteer`: no new steer while one is pending |
+| `prototypes/apollo-spike-app/app.ts` | `answerApproval`, `steerRun` and its `before` count, `said` counting steers inside joined rows, `createThread` and `start`, the reopen in `transcript` (`unseen`, the second history read, `undelivered`) |
+| `prototypes/apollo-spike-app/app.contract` | `canSteer`: no new steer while one is on its way |
 | `src/lib/run-state.ts` | `currentApproval`, the request the thread screen shows |
 | `src/features/relay/transcript.ts` | a saved steer row's words, read from inside Hermes's out-of-band marker |
 | `connector/index.mjs` | `answerApproval`: answers by `request_id`, a 4xx means the request is gone |

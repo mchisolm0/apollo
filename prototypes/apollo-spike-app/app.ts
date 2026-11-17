@@ -512,7 +512,20 @@ const steers = new Map<string, { text: string; before: number }[]>();
 const steeredRun = new Map<string, string>();
 const undelivered = new Map<string, string>();
 const rowsSeen = new Map<string, Row[]>();
-const said = (rows: Row[], text: string) => rows.filter((r) => r.kind === 'user' && r.text.trim() === text).length;
+// How often a steer's words show in the user rows. Hermes saves the steers it read at once as one
+// row, their words joined by newlines, so a steer counts once for each whole run of lines it fills.
+function said(rows: Row[], text: string): number {
+  const want = text.split(/\r?\n/);
+  let found = 0;
+  for (const r of rows) {
+    if (r.kind !== 'user') continue;
+    const lines = r.text.trim().split(/\r?\n/);
+    for (let k = 0; k + want.length <= lines.length; ) {
+      if (want.every((w, j) => lines[k + j] === w)) { found++; k += want.length; } else k++;
+    }
+  }
+  return found;
+}
 // The steers sent into a run that history doesn't show yet, with their place in the order sent.
 const unseen = (rows: Row[], runId: string) => (steers.get(runId) ?? []).flatMap(({ text, before }, i) => (said(rows, text) > before ? [] : [{ text, i }]));
 function withSteers(rows: Row[], sessionId: string, runId: string): Row[] {

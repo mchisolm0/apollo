@@ -10,7 +10,7 @@ CONSTANTS
   Texts,            \* words a steer can carry, e.g. {a, b}
   MaxSteers,
   OnTime,           \* every steer's reply reaches the app before its screen reads again
-  OneAtATime,       \* the agent reads each steer before the person sends the next
+  SplitsRows,       \* FALSE: the app compares a steer with whole rows only
   KeepsUncertain,   \* FALSE: createThread deletes the thread on any failed start
   RereadsHistory,   \* FALSE: a reopen trusts history it read before the run's status
   CountsBefore,     \* FALSE: a steer counts as saved once any message has its words
@@ -44,9 +44,13 @@ Words(s) == [i \in 1..Len(s) |-> s[i][2]]
 Range(s) == {s[i] : i \in 1..Len(s)}
 Count(s, x) == Cardinality({i \in 1..Len(s) : s[i] = x})
 \* A row's words are a sequence: Hermes joins the steers it read at once into
-\* one row, and the app compares a steer with whole rows (app.ts said).
+\* one row. The app counts each steer inside a row (app.ts said).
 Rows(h) == Words(h)
-RowCount(rows, x) == Count(rows, <<x>>)
+RowCount(rows, x) ==
+  IF SplitsRows
+    THEN Cardinality({kj \in (1..Len(rows)) \X (0..MaxSteers) :
+                        kj[2] \in 1..Len(rows[kj[1]]) /\ rows[kj[1]][kj[2]] = x})
+    ELSE Count(rows, <<x>>)
 \* The app reads only once every steer reply has landed, unless replies can be late.
 Settled == OnTime => replies = {}
 
@@ -93,11 +97,10 @@ Draw ==
   /\ UNCHANGED <<start, began, hist, waiting, ended, named, said, posts, replies, accepted, tracked, phase, h1, lostBefore, lost, known>>
 
 \* The person steers the running turn (app.ts steerRun). The composer allows it
-\* only while no steer is pending (app.contract canSteer).
+\* only while no steer request is on its way (app.contract canSteer).
 Steer(i, x) ==
   /\ start = "running" /\ rowsSeen # NONE /\ phase # "done"
   /\ posts = {} /\ replies = {}
-  /\ OneAtATime => waiting = <<>>
   /\ said[i] = NONE /\ (IF i = 1 THEN TRUE ELSE said[i - 1] # NONE)
   /\ said' = [said EXCEPT ![i] = x]
   /\ posts' = posts \cup {i}
