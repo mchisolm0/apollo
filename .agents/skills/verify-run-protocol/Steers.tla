@@ -10,6 +10,7 @@ CONSTANTS
   Texts,            \* words a steer can carry, e.g. {a, b}
   MaxSteers,
   OnTime,           \* every steer's reply reaches the app before its screen reads again
+  OneAtATime,       \* the agent reads each steer before the person sends the next
   KeepsUncertain,   \* FALSE: createThread deletes the thread on any failed start
   RereadsHistory,   \* FALSE: a reopen trusts history it read before the run's status
   CountsBefore,     \* FALSE: a steer counts as saved once any message has its words
@@ -20,7 +21,7 @@ Ids == 1..MaxSteers
 VARIABLES
   start,     \* "new", "running" (the app knows the run), "kept", "deleted"
   began,     \* Hermes started the run
-  hist,      \* the user messages Hermes saved, as <<id, words>>; id 0 is the first message
+  hist,      \* the user rows Hermes saved, as <<ids, words>>; id 0 is the first message
   waiting,   \* steers Hermes took and has not saved, oldest first
   ended,     \* the run ended
   named,     \* the steers pending_steer lists, as <<id, words>>
@@ -42,6 +43,10 @@ vars == <<start, began, hist, waiting, ended, named, said, posts, replies, accep
 Words(s) == [i \in 1..Len(s) |-> s[i][2]]
 Range(s) == {s[i] : i \in 1..Len(s)}
 Count(s, x) == Cardinality({i \in 1..Len(s) : s[i] = x})
+\* A row's words are a sequence: Hermes joins the steers it read at once into
+\* one row, and the app compares a steer with whole rows (app.ts said).
+Rows(h) == Words(h)
+RowCount(rows, x) == Count(rows, <<x>>)
 \* The app reads only once every steer reply has landed, unless replies can be late.
 Settled == OnTime => replies = {}
 
@@ -49,8 +54,8 @@ Settled == OnTime => replies = {}
 \* as shown once its words appear more often than `before`.
 Unseen(rows) ==
   {i \in 1..Len(tracked) :
-     IF CountsBefore THEN Count(rows, tracked[i].words) <= tracked[i].before
-     ELSE Count(rows, tracked[i].words) = 0}
+     IF CountsBefore THEN RowCount(rows, tracked[i].words) <= tracked[i].before
+     ELSE RowCount(rows, tracked[i].words) = 0}
 RECURSIVE InOrder(_)
 InOrder(S) == IF S = {} THEN <<>>
               ELSE LET i == CHOOSE j \in S : \A k \in S : j <= k
@@ -73,7 +78,7 @@ Create ==
        /\ reply = "ok" => b
        /\ reply = "refused" => ~b
        /\ began' = b
-       /\ hist' = IF b THEN <<<<0, Prompt>>>> ELSE <<>>
+       /\ hist' = IF b THEN <<<<{0}, <<Prompt>>>>>> ELSE <<>>
        /\ ended' = ~b
        /\ start' = IF reply = "ok" THEN "running"
                    ELSE IF reply = "refused" \/ ~KeepsUncertain THEN "deleted"
@@ -84,12 +89,15 @@ Create ==
 \* the history it read when it opened (app.ts transcript, withSteers).
 Draw ==
   /\ start = "running" /\ ~ended /\ phase = "idle" /\ Settled
-  /\ rowsSeen' = Words(hist)
+  /\ rowsSeen' = Rows(hist)
   /\ UNCHANGED <<start, began, hist, waiting, ended, named, said, posts, replies, accepted, tracked, phase, h1, lostBefore, lost, known>>
 
-\* The person steers the running turn (app.ts steerRun).
+\* The person steers the running turn (app.ts steerRun). The composer allows it
+\* only while no steer is pending (app.contract canSteer).
 Steer(i, x) ==
   /\ start = "running" /\ rowsSeen # NONE /\ phase # "done"
+  /\ posts = {} /\ replies = {}
+  /\ OneAtATime => waiting = <<>>
   /\ said[i] = NONE /\ (IF i = 1 THEN TRUE ELSE said[i - 1] # NONE)
   /\ said' = [said EXCEPT ![i] = x]
   /\ posts' = posts \cup {i}
@@ -115,7 +123,7 @@ Record(i) ==
   /\ LET x == said[i]
          rows == IF rowsSeen = NONE THEN <<>> ELSE rowsSeen
      IN tracked' = Append(tracked, [id |-> i, words |-> x,
-          before |-> Count(rows, x) + Cardinality({j \in Unseen(rows) : tracked[j].words = x})])
+          before |-> RowCount(rows, x) + Cardinality({j \in Unseen(rows) : tracked[j].words = x})])
   /\ UNCHANGED <<start, began, hist, waiting, ended, named, said, posts, accepted, rowsSeen, phase, h1, lostBefore, lost, known>>
 
 \* The reply is lost, so the app shows an error for a steer Hermes has.
@@ -124,11 +132,12 @@ LoseReply(i) ==
   /\ replies' = replies \ {i}
   /\ UNCHANGED <<start, began, hist, waiting, ended, named, said, posts, accepted, tracked, rowsSeen, phase, h1, lostBefore, lost, known>>
 
-\* The agent reads the oldest steer, and Hermes saves it as a user message.
+\* The agent reads every steer waiting, and Hermes saves them as one user row,
+\* their words joined by newlines (interrupt_control.py _drain_pending_steer).
 Deliver ==
   /\ ~ended /\ waiting # <<>>
-  /\ hist' = Append(hist, Head(waiting))
-  /\ waiting' = Tail(waiting)
+  /\ hist' = Append(hist, <<{waiting[k][1] : k \in 1..Len(waiting)}, Words(waiting)>>)
+  /\ waiting' = <<>>
   /\ UNCHANGED <<start, began, ended, named, said, posts, replies, accepted, tracked, rowsSeen, phase, h1, lostBefore, lost, known>>
 
 \* The turn ends. Finishing names every steer still waiting in pending_steer;
@@ -144,7 +153,7 @@ End ==
 \* Opening the thread reads its history, then its run's status (app.ts transcript).
 ReadHistory ==
   /\ start = "running" /\ phase = "idle" /\ Settled
-  /\ h1' = Words(hist)
+  /\ h1' = Rows(hist)
   /\ phase' = "history"
   /\ UNCHANGED <<start, began, hist, waiting, ended, named, said, posts, replies, accepted, tracked, rowsSeen, lostBefore, lost, known>>
 
@@ -161,7 +170,7 @@ ReadStatus ==
 \* saved nor named never reached the run either.
 Settle ==
   /\ phase = "status" /\ Settled
-  /\ LET rows == IF RereadsHistory /\ Unseen(h1) # {} THEN Words(hist) ELSE h1
+  /\ LET rows == IF RereadsHistory /\ Unseen(h1) # {} THEN Rows(hist) ELSE h1
          missed == InOrder(Unseen(rows))
      IN lost' = lostBefore \o SelectSeq(missed, LAMBDA x : x \notin Range(lostBefore))
   /\ known' = {tracked[k].id : k \in 1..Len(tracked)}
@@ -181,7 +190,7 @@ KeepsStarted == began => start # "deleted"
 \* Rule 2: the reopened thread names each steer Hermes never saved once, and no
 \* other. That is each unsaved steer pending_steer named or the app had recorded:
 \* one whose reply never landed and that a hard stop dropped is known to nobody.
-Saved == {hist[k][1] : k \in 1..Len(hist)}
+Saved == UNION {hist[k][1] : k \in 1..Len(hist)}
 Undelivered(x) ==
   Cardinality({i \in accepted \ Saved :
                  said[i] = x /\ (i \in known \/ \E k \in 1..Len(named) : named[k][1] = i)})

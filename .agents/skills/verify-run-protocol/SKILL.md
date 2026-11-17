@@ -20,8 +20,9 @@ a request out:
    run's status.
 
 `Steers.tla` is one thread: created with its first message, steered while it
-runs, and opened again after the run ends. Steers can repeat each other's words
-or the first message's:
+runs (one steer pending at a time, as the composer allows), and opened again
+after the run ends. Steers can repeat each other's words or the first
+message's:
 
 4. **KeepsStarted.** The app never deletes a thread whose run began.
 5. **UndeliveredExact.** The reopened thread names each steer Hermes never
@@ -57,10 +58,12 @@ reports `FAIL ... got pass` once the gap is closed. Then move it to the app runs
 | Gap | Fails | What happens |
 | --- | --- | --- |
 | `two-at-once` | PendingVisible | Two subagents ask at once. Hermes's run status shows only the newest request, the bridge resolves the older card, and `currentApproval` shows only the newest. The older one waits unseen until Hermes times it out and denies it. |
+| `joined-steers` | UndeliveredExact | Two steers wait before the agent reads either. Hermes saves them as one user row, their words joined by newlines, and the app looks for each steer as a whole row, so the reopen names both as undelivered. |
 | `late-reply` | UndeliveredExact | A steer's reply lands after the screen read history again, or never lands. The app records it against the wrong count of matching words, so the reopen names a saved steer as undelivered, or misses a dropped one with the same words. Hermes's history has no steer ids, so matching by words is the limit. |
 
-The app runs assume each steer's reply lands before the screen reads history
-again (`OnTime`). `late-reply` is the same model without that assumption.
+The app runs assume the agent reads each steer before the next is sent
+(`OneAtATime`) and that each steer's reply lands before the screen reads
+history again (`OnTime`). Each gap run is the same model without one of them.
 
 ## When it fails
 
@@ -83,7 +86,8 @@ after the last commit to this folder has not been checked against the model:
 
 ```bash
 git log --oneline "$(git log -1 --format=%H -- .agents/skills/verify-run-protocol)..HEAD" -- \
-  prototypes/apollo-spike-app/app.ts src/lib/run-state.ts \
+  prototypes/apollo-spike-app/app.ts prototypes/apollo-spike-app/app.contract \
+  src/lib/run-state.ts src/features/relay/transcript.ts \
   connector/index.mjs connector/cloud.mjs connector/away.mjs \
   connector/notifications.mjs cloud/src/inbox.ts
 ```
@@ -96,7 +100,9 @@ NousResearch/hermes-agent 40d1e95.
 | File | What the models stand for |
 | --- | --- |
 | `prototypes/apollo-spike-app/app.ts` | `answerApproval`, `steerRun` and its `before` count, `createThread` and `start`, the reopen in `transcript` (`unseen`, the second history read, `undelivered`) |
+| `prototypes/apollo-spike-app/app.contract` | `canSteer`: no new steer while one is pending |
 | `src/lib/run-state.ts` | `currentApproval`, the request the thread screen shows |
+| `src/features/relay/transcript.ts` | a saved steer row's words, read from inside Hermes's out-of-band marker |
 | `connector/index.mjs` | `answerApproval`: answers by `request_id`, a 4xx means the request is gone |
 | `connector/cloud.mjs` | `createApprovalBridge`: posting, resolving stale cards, answering from card events |
 | `connector/away.mjs` | `deny`, by the request on the status |
@@ -104,7 +110,7 @@ NousResearch/hermes-agent 40d1e95.
 | `cloud/src/inbox.ts` | answering a card resolves it and appends an action event |
 | Hermes `gateway/platforms/api_server_runs.py` | the status shows the newest request, answering one returns the run to running, steers only while running |
 | Hermes `tools/approval.py` | answering by exact `request_id`, or the oldest without one |
-| Hermes `agent/interrupt_control.py` | `pending_steer` on a finished run, steers dropped unnamed on a hard stop |
+| Hermes `agent/interrupt_control.py` | one drain reads every waiting steer as one joined row, `pending_steer` on a finished run, steers dropped unnamed on a hard stop |
 
 ## Not covered
 
