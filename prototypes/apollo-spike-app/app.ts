@@ -515,12 +515,14 @@ const undelivered = new Map<string, string>();
 const messagesSeen = new Map<string, readonly HermesMessage[]>();
 const lineCount = (text: string) => text.split(/\r?\n/).length;
 // How many lines of steers a user message holds, or 0 for one that isn't a steer row. Hermes types
-// steer rows `steer` and wraps them in its out-of-band marker, whatever the steers quote between its
-// first and last lines. A row compression merged a summary into loses the type but keeps the marker.
+// steer rows `steer` and wraps them in its out-of-band marker: the steers are the lines between its
+// first line and its last closing line, whatever they quote and whatever Hermes appends after it.
+// A row compression merged a summary into loses the type but keeps the marker.
 function steerLines(m: HermesMessage) {
   const lines = (m.content ?? '').trim().split(/\r?\n/);
-  const wrapped = lines.length > 2 && lines[0].startsWith('[OUT-OF-BAND USER MESSAGE') && lines.at(-1) === '[/OUT-OF-BAND USER MESSAGE]';
-  return wrapped ? lines.length - 2 : m.displayKind === 'steer' ? lines.length : 0;
+  const end = lines.lastIndexOf('[/OUT-OF-BAND USER MESSAGE]');
+  if (lines[0].startsWith('[OUT-OF-BAND USER MESSAGE') && end > 1) return end - 1;
+  return m.displayKind === 'steer' ? lines.length : 0;
 }
 // The steers sent into a run that history doesn't show yet, with their place in the order sent.
 // Hermes reads waiting steers first in, first out, saves the ones it read at once as one steer row
