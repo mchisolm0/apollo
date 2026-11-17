@@ -160,11 +160,14 @@ describe('respond', () => {
   it('lets the first action win and answers later ones with 409 card_closed', async () => {
     mockExpo();
     const card = await postCard(producer, approval('run:3:req:1'));
-    const [a, b] = await Promise.all([respond(device, card.id, { actionId: 'approve' }), respond(device, card.id, { actionId: 'reject' })]);
-    expect([a.status, b.status]).toEqual([200, 409]);
-    const conflict = await b.json<ApiError>();
+    const actions = ['approve', 'reject'];
+    const responses = await Promise.all(actions.map((actionId) => respond(device, card.id, { actionId })));
+    // Either can arrive first; the one answered 200 won.
+    expect(responses.map((r) => r.status).sort()).toEqual([200, 409]);
+    const winner = actions[responses.findIndex((r) => r.status === 200)];
+    const conflict = await responses.find((r) => r.status === 409)!.json<ApiError>();
     expect(conflict.error.code).toBe('card_closed');
-    expect(conflict.error.card).toMatchObject({ id: card.id, state: 'resolved', resolution: { actionId: 'approve' } });
+    expect(conflict.error.card).toMatchObject({ id: card.id, state: 'resolved', resolution: { actionId: winner } });
   });
 
   it('replays an Idempotency-Key without a second event, and rejects it with a different body', async () => {
