@@ -820,7 +820,7 @@ component Apollo
                 progress aria-label="Refreshing" width=14 height=14 testId="inbox-refreshing"
               if account.paired
                 button popovertarget="home-menu" aria-label="More" testId="more"
-                  image "symbol:more"
+                  image "symbol:ellipsis"
             column id="home-menu" popover="auto" role="menu" aria-label=account.label
               button press=openSettings popovertarget="home-menu" popovertargetaction="hide" testId="settings"
                 text "Settings"
@@ -898,9 +898,9 @@ component Apollo
                         if it.swipe != ""
                           button id="swipe" press=settleRow(it.id, it.kind, it.swipe) accent-color=(it.swipe == "settle" ? "AccentColor" : "-exact-system-indigo") flex-shrink=0 scroll-snap-align="start" testId=`swipe-${it.id}`
                             text (it.swipe == "settle" ? "Settle" : it.swipe == "unsnooze" ? "Unsnooze" : "Reopen")
-              row gap=8 align-items="center" padding="6px 12px 8px"
+              row gap=8 align-items="center" padding="6px 16px 8px"
                 input type="search" value=searchText input=search placeholder="Search" aria-label="Search threads" testId="search" flex=1 min-width=0
-                button press=openNew aria-label="New Thread" aria-keyshortcuts="Meta+N" testId="new"
+                button press=openNew buttonStyle="glass" aria-label="New Thread" aria-keyshortcuts="Meta+N" testId="new"
                   image "symbol:compose"
               column id="row-ask-menu" popover="auto" role="menu" aria-label="Allow"
                 for c in askChoices.filter(c => c == "session" or c == "always") key=c
@@ -1025,7 +1025,7 @@ component Apollo
                 progress aria-label="Refreshing" width=14 height=14 testId="thread-refreshing"
               if e.name == "session"
                 button popovertarget="thread-menu" aria-label="Thread actions" testId="thread-more"
-                  image "symbol:more"
+                  image "symbol:ellipsis"
             column id="thread-ask-menu" popover="auto" role="menu" aria-label="Allow"
               for c in askChoices.filter(c => c == "session" or c == "always") key=c
                 button press=answerTier(c) destructive=(c == "always") popovertarget="thread-ask-menu" popovertargetaction="hide" disabled=(pending(answered) or not threadLive) testId=`approve-${c}`
@@ -1246,7 +1246,7 @@ component Apollo
                         text j.error font="-exact-footnote" color="-exact-system-red" line-clamp=2 user-select="text" testId=`routine-error-${j.id}`
                     button press=aimRoutine(j.id, j.name, j.status == "paused") popovertarget="routine-menu" appearance="none" padding=8 aria-label=`${j.name} actions`
                       disabled=(not routineList.live or pending(filed)) flex-shrink=0 testId=`routine-more-${j.id}`
-                      image "symbol:more" color="-exact-secondary-label"
+                      image "symbol:ellipsis" color="-exact-secondary-label"
                 if routineList.live and routineList.items.length == 0
                   row justify-content="center" padding="24px 0"
                     text "No routines yet" color="-exact-secondary-label" testId="routines-empty"
