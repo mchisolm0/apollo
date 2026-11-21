@@ -41,8 +41,8 @@ test('card parsing keeps a phased card and its links, and drops a malformed prog
 test('card parsing rejects malformed rows and drops unknown fields', () => {
   assert.equal(parseCard({ ...card('a', 1), source: 'discord' }), undefined);
   assert.equal(parseCard({ ...card('a', 1), rev: '1' }), undefined);
-  const parsed = parseCard({ ...card('a', 1), extra: true, picks: [{ n: 1, text: 'Merge', done: false }, { n: 'two' }], meta: { calendar: '10:00', bad: 3 } });
-  assert.deepEqual(parsed?.picks, [{ n: 1, text: 'Merge', done: false }]);
+  const parsed = parseCard({ ...card('a', 1), extra: true, picks: [{ n: 1, text: 'Merge', done: false, url: 'https://github.com/o/r/pull/1' }, { n: 'two' }], meta: { calendar: '10:00', bad: 3 } });
+  assert.deepEqual(parsed?.picks, [{ n: 1, text: 'Merge', done: false, url: 'https://github.com/o/r/pull/1' }]);
   assert.deepEqual(parsed?.meta, { calendar: '10:00' });
   assert.equal(parsed && 'extra' in parsed, false);
 });
