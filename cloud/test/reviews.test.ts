@@ -8,7 +8,8 @@ import { signJwt } from '../src/stores/jwt';
 import type { StoreReview } from '../src/stores/review';
 import { ADMIN_SECRET, call, createToken, inbox, respond } from './helpers';
 
-const NOW = Date.parse('2026-10-23T12:00:00Z');
+// Review cards expire on the real clock, so a fixed date here goes stale.
+const NOW = Date.now();
 const HOUR = 60 * 60 * 1000;
 const at = (ms: number) => new Date(NOW - ms).toISOString();
 
